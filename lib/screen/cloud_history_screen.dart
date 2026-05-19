@@ -71,7 +71,7 @@ class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
       return;
     }
     setState(() {
-      hisList.addAll(detail.list);
+      hisList.addAll(detail.list.where((x) => x.history.bvid.isNotEmpty));
       viewat = detail.cursor.viewAt;
     });
   }

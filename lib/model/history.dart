@@ -10,8 +10,11 @@ class HistoryResult {
 
   HistoryResult.fromJson(Map<String, dynamic> json) {
     cursor = Cursor.fromJson(json['cursor']);
-    tab = List.from(json['tab']).map((e) => Tab.fromJson(e)).toList();
-    list = List.from(json['list']).map((e) => HistoryData.fromJson(e)).toList();
+    tab = (json['tab'] as List?)?.map((e) => Tab.fromJson(e)).toList() ?? [];
+    list = (json['list'] as List?)
+            ?.map((e) => HistoryData.fromJson(e as Map<String, dynamic>))
+            .toList() ??
+        [];
   }
 }
 
@@ -98,28 +101,38 @@ class HistoryData {
   late final int liveStatus;
 
   HistoryData.fromJson(Map<String, dynamic> json) {
-    title = json['title'];
-    longTitle = json['long_title'];
-    cover = json['cover'];
-    uri = json['uri'];
-    history = History.fromJson(json['history']);
-    videos = json['videos'];
-    authorName = json['author_name'];
-    authorFace = json['author_face'];
-    authorMid = json['author_mid'];
-    viewAt = json['view_at'];
-    progress = json['progress'];
-    badge = json['badge'];
-    showTitle = json['show_title'];
-    duration = json['duration'];
-    current = json['current'];
-    total = json['total'];
-    newDesc = json['new_desc'];
-    isFinish = json['is_finish'];
-    isFav = json['is_fav'];
-    kid = json['kid'];
-    tagName = json['tag_name'];
-    liveStatus = json['live_status'];
+    title = json['title'] ?? '';
+    longTitle = json['long_title'] ?? '';
+    cover = json['cover'] ?? '';
+    uri = json['uri'] ?? '';
+    history = json['history'] != null
+        ? History.fromJson(json['history'])
+        : History(
+            oid: 0,
+            epid: 0,
+            bvid: '',
+            page: 0,
+            cid: 0,
+            part: '',
+            business: '',
+            dt: 0);
+    videos = json['videos'] ?? 0;
+    authorName = json['author_name'] ?? '';
+    authorFace = json['author_face'] ?? '';
+    authorMid = json['author_mid'] ?? 0;
+    viewAt = json['view_at'] ?? 0;
+    progress = json['progress'] ?? 0;
+    badge = json['badge'] ?? '';
+    showTitle = json['show_title'] ?? '';
+    duration = json['duration'] ?? 0;
+    current = json['current'] ?? '';
+    total = json['total'] ?? 0;
+    newDesc = json['new_desc'] ?? '';
+    isFinish = json['is_finish'] ?? 0;
+    isFav = json['is_fav'] ?? 0;
+    kid = json['kid'] ?? 0;
+    tagName = json['tag_name'] ?? '';
+    liveStatus = json['live_status'] ?? 0;
   }
 }
 

@@ -14,11 +14,21 @@ class DynamicResult {
   });
 
   DynamicResult.fromJson(Map<String, dynamic> json) {
-    items = List.from(json['items']).map((e) => DataItem.fromJson(e)).toList();
-    hasMore = json['has_more'];
-    offset = json['offset'];
-    updateBaseline = json['update_baseline'];
-    updateNum = json['update_num'];
+    final rawItems = (json['items'] as List?) ?? [];
+    items = rawItems
+        .map((e) {
+          try {
+            return DataItem.fromJson(e as Map<String, dynamic>);
+          } catch (_) {
+            return null;
+          }
+        })
+        .whereType<DataItem>()
+        .toList();
+    hasMore = json['has_more'] ?? false;
+    offset = json['offset'] as String? ?? '';
+    updateBaseline = json['update_baseline'] as String? ?? '';
+    updateNum = json['update_num'] as int? ?? 0;
   }
 }
 
@@ -92,14 +102,15 @@ class ModuleDynamic {
 }
 
 class DynamicData {
-  late final Archive archive;
+  late final Archive? archive;
 
   DynamicData({
-    required this.archive,
+    this.archive,
   });
 
   DynamicData.fromJson(Map<String, dynamic> json) {
-    archive = Archive.fromJson(json['archive']);
+    archive =
+        json['archive'] != null ? Archive.fromJson(json['archive']) : null;
   }
 }
 

@@ -69,24 +69,27 @@ class _DynamicScreenState extends State<DynamicScreen> {
       return;
     }
     setState(() {
-      dynList.addAll(detail.items.map((e) => e.modules));
+      dynList.addAll(detail.items
+          .map((e) => e.modules)
+          .where((m) => m.moduleDynamic.major.archive != null));
       offset = detail.offset;
     });
   }
 
   dynListTileView(int index) {
+    final arc = dynList[index].moduleDynamic.major.archive!;
     return TrackTile(
-      key: Key(dynList[index].moduleDynamic.major.archive.bvid),
-      pic: dynList[index].moduleDynamic.major.archive.cover,
-      title: dynList[index].moduleDynamic.major.archive.title,
+      key: Key(arc.bvid),
+      pic: arc.cover,
+      title: arc.title,
       author: dynList[index].moduleAuthor.name,
-      len: dynList[index].moduleDynamic.major.archive.durationText,
-      view: dynList[index].moduleDynamic.major.archive.stat.play,
+      len: arc.durationText,
+      view: arc.stat.play,
       time: dynList[index].moduleAuthor.pubTime,
-      onTap: () => AudioService.instance.then(
-          (x) => x.playByBvid(dynList[index].moduleDynamic.major.archive.bvid)),
+      onTap: () =>
+          AudioService.instance.then((x) => x.playByBvid(arc.bvid)),
       onAddToPlaylistButtonPressed: () => AudioService.instance.then((x) =>
-          x.appendPlaylist(dynList[index].moduleDynamic.major.archive.bvid,
+          x.appendPlaylist(arc.bvid,
               insertIndex:
                   x.playlist.length == 0 ? 0 : x.player.currentIndex! + 1)),
       onLongPress: () async {
@@ -119,11 +122,7 @@ class _DynamicScreenState extends State<DynamicScreen> {
                         context,
                         MaterialPageRoute(
                             builder: (context) => CommentScreen(
-                                aid: dynList[index]
-                                    .moduleDynamic
-                                    .major
-                                    .archive
-                                    .aid)));
+                                aid: arc.aid)));
                   },
                 ),
                 ListTile(
@@ -134,8 +133,8 @@ class _DynamicScreenState extends State<DynamicScreen> {
                     showDialog(
                       context: context,
                       builder: (context) => ExcludedPartsDialog(
-                        bvid: dynList[index].moduleDynamic.major.archive.bvid,
-                        title: dynList[index].moduleDynamic.major.archive.title,
+                        bvid: arc.bvid,
+                        title: arc.title,
                       ),
                     ).then((_) {
                       setState(() {});
