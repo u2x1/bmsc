@@ -41,16 +41,19 @@ class BilibiliAPI {
       await SharedPreferencesService.setCookie(cookie);
     }
     cookies = cookie;
+    final ua =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0";
     headers = {
       'cookie': cookie,
-      'User-Agent':
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0",
+      'User-Agent': ua,
       'referer': "https://www.bilibili.com",
     };
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        options.headers.addAll(headers);
+        final merged = Map<String, dynamic>.from(headers)
+          ..addAll(options.headers);
+        options.headers = merged;
         return handler.next(options);
       },
     ));
@@ -72,15 +75,19 @@ class BilibiliAPI {
       Function(dynamic data)? callbackAsync,
       bool isPost = false,
       String unwrapKey = "data",
-      bool needDecode = false}) async {
+      bool needDecode = false,
+      Map<String, dynamic>? extraHeaders}) async {
     try {
       if (noNetwork) {
         _logger.info("no network. return null");
         return null;
       }
+      final options = Options(headers: extraHeaders ?? {});
       final response = isPost
-          ? await dio.post(url, queryParameters: queryParameters)
-          : await dio.get(url, queryParameters: queryParameters);
+          ? await dio.post(url,
+              queryParameters: queryParameters, options: options)
+          : await dio.get(url,
+              queryParameters: queryParameters, options: options);
       _logger.info('calling API: ${response.requestOptions.uri}');
       var data = response.data;
       if (needDecode) {
@@ -203,8 +210,26 @@ class BilibiliAPI {
   }
 
   Future<(List<Meta>, int)?> getUserUploadMetas(int mid, int pn) async {
-    final params = await crypto.encodeParams({'mid': mid, 'ps': 40, 'pn': pn});
-    return _callAPI(apiUserUploadsUrl, queryParameters: params,
+    final params = await crypto.encodeParams({
+      'mid': mid,
+      'ps': 30,
+      'pn': pn,
+      'order': 'pubdate',
+      'platform': 'web',
+      'web_location': 333.1387,
+      'order_avoided': true,
+      'dm_img_list': '[]',
+      'dm_img_str': crypto.generateDmImgStr(),
+      'dm_cover_img_str': crypto.generateDmCoverImgStr(),
+      'dm_img_inter': '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
+    });
+    return _callAPI(apiUserUploadsUrl,
+        queryParameters: params,
+        extraHeaders: {
+          'referer': 'https://space.bilibili.com/$mid',
+          'origin': 'https://space.bilibili.com',
+          'User-Agent': headers['User-Agent'],
+        },
         callback: (data) {
       final uploads = UserUploadResult.fromJson(data);
       final nextPn =
@@ -257,7 +282,7 @@ class BilibiliAPI {
   Future<HistoryResult?> getHistory(int? timestamp) {
     return _callAPI(apiHistoryUrl,
         queryParameters: {
-          'type': 'archive',
+          'type': 'all',
           'ps': 20,
           'max': timestamp ?? 0,
           'view_at': timestamp ?? 0,
@@ -267,7 +292,12 @@ class BilibiliAPI {
 
   Future<DynamicResult?> getDynamics(String? offset) {
     return _callAPI(apiDynamicUrl,
-        queryParameters: {'type': 'video', 'offset': offset},
+        queryParameters: {
+          'type': 'video',
+          'offset': offset ?? '',
+          'timezone_offset': '-480',
+          'features': 'itemOpusStyle,listOnlyfans,onlyfansQaCard',
+        },
         callback: (data) => DynamicResult.fromJson(data));
   }
 
