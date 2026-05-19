@@ -13,46 +13,47 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  dio: ^5.3.2
-  just_audio: ^0.9.34
-  just_audio_media_kit: ^2.0.6
-  media_kit_libs_linux: ^1.1.3
+  dio: ^5.9.2
+  just_audio: ^0.10.5
+  just_audio_media_kit: ^2.1.0
+  media_kit_libs_linux: ^1.2.1
   media_kit_libs_windows_audio: ^1.0.9
-  sqflite_common_ffi: ^2.3.4+4
+  sqflite_common_ffi: ^2.3.4
   audio_service: ^0.18.17
   flutter_html: ^3.0.0-beta.2
-  cupertino_icons: ^1.0.2
+  cupertino_icons: ^1.0.8
   path_provider: ^2.1.0
-  audio_session: ^0.1.16
-  flutter_launcher_icons: ^0.14.1
-  package_info_plus: ^8.1.0
-  url_launcher: ^6.1.12
+  audio_session: ^0.2.3
+  flutter_launcher_icons: ^0.14.4
+  package_info_plus: ^10.1.0
+  url_launcher: ^6.3.1
   audio_video_progress_bar: ^2.0.0
   rxdart: ^0.28.0
-  sqflite: ^2.3.2
-  http: ^1.1.0
-  shared_preferences: ^2.2.2
+  sqflite: ^2.4.1
+  http: ^1.6.0
+  shared_preferences: ^2.5.3
   cached_network_image: ^3.4.1
-  flutter_local_notifications: ^17.2.4
-  permission_handler: ^11.3.0
+  flutter_local_notifications: ^21.0.0
+  permission_handler: ^12.0.1
   logging: ^1.3.0
-  crypto: ^3.0.6
+  crypto: ^3.0.7
   crypton: ^2.2.1
-  provider: ^6.1.2
-  share_plus: ^10.1.3
+  pointycastle: ^3.9.1
+  provider: ^6.1.5
+  share_plus: ^13.1.0
   path: ^1.9.1
-  file_picker: ^8.1.6
-  connectivity_plus: ^6.1.1
+  file_picker: ^12.0.0-beta.3
+  connectivity_plus: ^7.1.1
   gt3_flutter_plugin:
     git:
       url: https://github.com/u2x1/gt3_flutter_plugin/
       ref: 99cf0cd2b3c224904490c37071c9eec4d7e1782b
   scroll_to_index: ^3.0.1
-  async: ^2.12.0
+  async: ^2.13.1
   qr_flutter: ^4.1.0
-  just_audio_platform_interface: ^4.5.0
-  synchronized: ^3.3.0+3
-  
+  just_audio_platform_interface: ^4.6.0
+  synchronized: ^3.3.0
+
 flutter_launcher_icons:
   android: "launcher_icon"
   image_path: "assets/icon.png"

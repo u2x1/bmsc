@@ -10,27 +10,25 @@ jobs:
     name: Build Artifacts and Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Install Ninja
         run: sudo apt-get -y install build-essential ninja-build cmake pkg-config libgtk-3-dev
       - name: Setup Java
-        uses: actions/setup-java@v3
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: "17"
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.3"
           channel: 'stable'
       - run: flutter --version
 
-
-      - uses: olegtarasov/get-tag@v2.1.2
+      - uses: olegtarasov/get-tag@v2.1.4
         id: tagName
         with:
-          tagRegex: 'v([0-9]+.[0-9]+.[0-9]+)' # Optional. Returns specified group text as tag name. Full tag string is returned if regex is not defined.
-          tagRegexGroup: 1 # Optional. Default is 1.
+          tagRegex: 'v([0-9]+.[0-9]+.[0-9]+)'
+          tagRegexGroup: 1
 
       - name: Replace YAML version with tag version
         run: |
@@ -84,6 +82,8 @@ jobs:
       - name: Create Github Release
         uses: ncipollo/release-action@v1
         with:
+          allowUpdates: true
+          replacesArtifacts: true
           artifacts: |
             build/app/outputs/flutter-apk/${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-arm64.apk
             build/app/outputs/flutter-apk/${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-arm32.apk
