@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../component/track_tile.dart';
 import '../model/dynamic.dart';
 import '../component/playing_card.dart';
+import '../util/logger.dart';
 
 class DynamicScreen extends StatefulWidget {
   const DynamicScreen({super.key});
@@ -17,6 +18,7 @@ class DynamicScreen extends StatefulWidget {
 }
 
 class _DynamicScreenState extends State<DynamicScreen> {
+  static final _logger = LoggerUtils.getLogger('DynamicScreen');
   bool login = true;
   List<Modules> dynList = [];
   @override
@@ -63,17 +65,21 @@ class _DynamicScreenState extends State<DynamicScreen> {
 
   String? offset;
   loadMore() async {
+    _logger.info('loadMore: offset=$offset dynList.len=${dynList.length}');
     final detail =
         await BilibiliService.instance.then((x) => x.getDynamics(offset));
     if (detail == null) {
+      _logger.info('loadMore: detail is null');
       return;
     }
+    _logger.info('loadMore: got ${detail.items.length} items');
     setState(() {
       dynList.addAll(detail.items
           .map((e) => e.modules)
           .where((m) => m.moduleDynamic.major.archive != null));
       offset = detail.offset;
     });
+    _logger.info('loadMore: done dynList.len=${dynList.length}');
   }
 
   dynListTileView(int index) {

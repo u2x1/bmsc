@@ -10,6 +10,7 @@ import '../component/track_tile.dart';
 import '../model/history.dart';
 import '../util/string.dart';
 import '../component/playing_card.dart';
+import '../util/logger.dart';
 
 class CloudHistoryScreen extends StatefulWidget {
   const CloudHistoryScreen({super.key});
@@ -19,6 +20,7 @@ class CloudHistoryScreen extends StatefulWidget {
 }
 
 class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
+  static final _logger = LoggerUtils.getLogger('CloudHistoryScreen');
   bool login = true;
   List<HistoryData> hisList = [];
   @override
@@ -65,15 +67,19 @@ class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
 
   int viewat = 0;
   loadMore() async {
+    _logger.info('loadMore: viewat=$viewat hisList.len=${hisList.length}');
     final detail =
         await BilibiliService.instance.then((x) => x.getHistory(viewat));
     if (detail == null) {
+      _logger.info('loadMore: detail is null');
       return;
     }
+    _logger.info('loadMore: got ${detail.list.length} items');
     setState(() {
       hisList.addAll(detail.list.where((x) => x.history.bvid.isNotEmpty));
       viewat = detail.cursor.viewAt;
     });
+    _logger.info('loadMore: done hisList.len=${hisList.length}');
   }
 
   hisListTileView(int index) {

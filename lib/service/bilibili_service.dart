@@ -15,10 +15,10 @@ import 'package:bmsc/model/track.dart';
 import 'package:bmsc/model/user_card.dart' show UserInfoResult;
 import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/util/logger.dart';
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import '../model/meta.dart';
-import '../util/logger.dart';
 
 final _logger = LoggerUtils.getLogger('BilibiliService');
 
@@ -43,6 +43,7 @@ class BilibiliService {
       await SharedPreferencesService.setMyInfo(newInfo);
       service.myInfo = newInfo;
     }
+    service._updateHeadersFromMyInfo();
     return service;
   }
 
@@ -55,12 +56,19 @@ class BilibiliService {
     if (myInfo != null) {
       await SharedPreferencesService.setMyInfo(myInfo!);
     }
+    _updateHeadersFromMyInfo();
   }
 
   Future<void> logout() async {
     await _bilibiliAPI.resetCookies();
     myInfo = null;
     await SharedPreferencesService.setMyInfo(MyInfo(0, "", "", ""));
+    _updateHeadersFromMyInfo();
+  }
+
+  void _updateHeadersFromMyInfo() {
+    final mid = myInfo?.mid ?? 0;
+    _bilibiliAPI.updateBiliHeaders(mid);
   }
 
   Future<List<Fav>?> getFavs(int mid, {int? rid}) async {
