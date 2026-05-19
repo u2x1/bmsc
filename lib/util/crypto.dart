@@ -126,3 +126,13 @@ String generateDmCoverImgStr() {
   final bytes = List<int>.generate(length, (_) => 0x26 + random.nextInt(0x59));
   return base64.encode(bytes).substring(0, base64.encode(bytes).length - 2);
 }
+
+String genAuroraEid(int uid) {
+  if (uid == 0) return '';
+  final midByte = utf8.encode(uid.toString());
+  const key = 'ad1va46a7lza';
+  for (int i = 0; i < midByte.length; i++) {
+    midByte[i] ^= key.codeUnitAt(i % key.length);
+  }
+  return base64.encode(midByte).replaceAll('=', '');
+}

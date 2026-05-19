@@ -47,6 +47,11 @@ class BilibiliAPI {
       'cookie': cookie,
       'User-Agent': ua,
       'referer': "https://www.bilibili.com",
+      'env': 'prod',
+      'app-key': 'android64',
+      'x-bili-aurora-zone': 'sh001',
+      'x-bili-aurora-eid': '',
+      'x-bili-mid': '',
     };
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
@@ -58,6 +63,12 @@ class BilibiliAPI {
       },
     ));
     _logger.info('setCookies: $cookie');
+  }
+
+  void updateBiliHeaders(int mid) {
+    headers['x-bili-mid'] = mid > 0 ? mid.toString() : '';
+    headers['x-bili-aurora-eid'] = mid > 0 ? crypto.genAuroraEid(mid) : '';
+    _logger.info('updateBiliHeaders: mid=$mid');
   }
 
   Future<void> resetCookies() async {
@@ -93,9 +104,10 @@ class BilibiliAPI {
       if (needDecode) {
         data = convert.jsonDecode(data);
       }
-      // _logger.info('response: $data');
+      _logger.info('API response code=${data['code']} msg=${data['message']} dataKeys=${data['data'] is Map ? (data['data'] as Map).keys : data['data'].runtimeType}');
       if ((unwrapKey == "data" && data['code'] != 0) ||
           data[unwrapKey] == null) {
+        _logger.info('_callAPI returning null: code=${data['code']} unwrapKey=$unwrapKey hasData=${data[unwrapKey] != null}');
         return null;
       }
       data = data[unwrapKey];
@@ -280,6 +292,7 @@ class BilibiliAPI {
   }
 
   Future<HistoryResult?> getHistory(int? timestamp) {
+    _logger.info('getHistory: timestamp=$timestamp');
     return _callAPI(apiHistoryUrl,
         queryParameters: {
           'type': 'all',
@@ -287,10 +300,16 @@ class BilibiliAPI {
           'max': timestamp ?? 0,
           'view_at': timestamp ?? 0,
         },
-        callback: (data) => HistoryResult.fromJson(data));
+        callback: (data) {
+      _logger.info('getHistory: list len=${(data['list'] as List?)?.length}');
+      final result = HistoryResult.fromJson(data);
+      _logger.info('getHistory: parsed ${result.list.length} items');
+      return result;
+    });
   }
 
   Future<DynamicResult?> getDynamics(String? offset) {
+    _logger.info('getDynamics: offset=$offset');
     return _callAPI(apiDynamicUrl,
         queryParameters: {
           'type': 'video',
@@ -298,7 +317,12 @@ class BilibiliAPI {
           'timezone_offset': '-480',
           'features': 'itemOpusStyle,listOnlyfans,onlyfansQaCard',
         },
-        callback: (data) => DynamicResult.fromJson(data));
+        callback: (data) {
+      _logger.info('getDynamics: data list len=${(data['items'] as List?)?.length} hasMore=${data['has_more']}');
+      final result = DynamicResult.fromJson(data);
+      _logger.info('getDynamics: parsed ${result.items.length} items offset=${result.offset}');
+      return result;
+    });
   }
 
   Future<VidResult?> getVidDetail({String? bvid, String? aid}) async {
