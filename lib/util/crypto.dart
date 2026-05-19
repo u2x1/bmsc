@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/util/logger.dart';
 import 'dart:convert';
@@ -109,4 +111,18 @@ Future<Map<String, dynamic>?> encodeParams(Map<String, dynamic> params) async {
     ...params,
     'w_rid': wRid,
   };
+}
+
+String generateDmImgStr() {
+  final random = Random.secure();
+  final length = 16 + random.nextInt(49);
+  final bytes = List<int>.generate(length, (_) => 0x26 + random.nextInt(0x59));
+  return base64.encode(bytes).substring(0, base64.encode(bytes).length - 2);
+}
+
+String generateDmCoverImgStr() {
+  final random = Random.secure();
+  final length = 32 + random.nextInt(97);
+  final bytes = List<int>.generate(length, (_) => 0x26 + random.nextInt(0x59));
+  return base64.encode(bytes).substring(0, base64.encode(bytes).length - 2);
 }
