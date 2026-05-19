@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/screen/cloud_history_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
@@ -68,7 +69,7 @@ class _LocalHistoryScreenState extends State<LocalHistoryScreen> {
         ],
       ),
       body: ListView.builder(
-        cacheExtent: 10000,
+        scrollCacheExtent: ScrollCacheExtent.pixels(10000),
         itemCount: hisList.length,
         itemBuilder: (context, index) => hisListTileView(index),
       ),

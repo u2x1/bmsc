@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/component/excluded_parts_dialog.dart';
 import 'package:bmsc/screen/comment_screen.dart';
 import 'package:bmsc/screen/user_detail_screen.dart';
@@ -54,7 +55,7 @@ class _DynamicScreenState extends State<DynamicScreen> {
           return true;
         },
         child: ListView.builder(
-          cacheExtent: 10000,
+          scrollCacheExtent: ScrollCacheExtent.pixels(10000),
           itemCount: dynList.length,
           itemBuilder: (context, index) => dynListTileView(index),
         ));

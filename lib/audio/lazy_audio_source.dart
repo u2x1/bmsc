@@ -1,4 +1,5 @@
 // copy from just_audio source code
+// ignore_for_file: experimental_member_use
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
@@ -447,12 +448,5 @@ class _HttpRangeRequest {
   String get header =>
       'bytes=$start-${end != null ? (end! - 1).toString() : ""}';
 
-  /// Creates an [_HttpRangeRequest] from [header].
-  static _HttpRangeRequest? parse(List<String>? header) {
-    if (header == null || header.isEmpty) return null;
-    final match = RegExp(r'^bytes=(\d+)(-(\d+)?)?').firstMatch(header.first);
-    if (match == null) return null;
-    int? intGroup(int i) => match[i] != null ? int.parse(match[i]!) : null;
-    return _HttpRangeRequest(intGroup(1)!, intGroup(3));
-  }
+  
 }

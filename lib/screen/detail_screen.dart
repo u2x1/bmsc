@@ -70,17 +70,17 @@ class _DetailScreenState extends State<DetailScreen> {
         _currentSequenceState = state;
       });
 
-      if ((state?.currentSource?.tag.extras['dummy'] as bool?) == true) {
-        _checkFavoriteStatus(null, state?.currentSource?.tag.id);
+      if ((state.currentSource?.tag.extras['dummy'] as bool?) == true) {
+        _checkFavoriteStatus(null, state.currentSource?.tag.id);
       }
 
       // Check favorite status when current track changes
-      final bvid = state?.currentSource?.tag.extras['bvid'] as String?;
+      final bvid = state.currentSource?.tag.extras['bvid'] as String?;
       if (bvid != _currentBvid) {
         _currentBvid = bvid;
-        final aid = state?.currentSource?.tag.extras['aid'] as int?;
+        final aid = state.currentSource?.tag.extras['aid'] as int?;
         if (aid != null) {
-          _checkFavoriteStatus(aid, state?.currentSource?.tag.extras['bvid']);
+          _checkFavoriteStatus(aid, state.currentSource?.tag.extras['bvid']);
         }
       }
     });
@@ -201,10 +201,10 @@ class _DetailScreenState extends State<DetailScreen> {
               final bvid = src.tag.extras['bvid'];
               final title = src.tag.title;
               final url = 'https://www.bilibili.com/video/$bvid';
-              Share.share(
-                '$title\n$url',
+              SharePlus.instance.share(ShareParams(
+                text: '$title\n$url',
                 subject: title,
-              );
+              ));
             },
     );
   }
@@ -761,7 +761,7 @@ class _DetailScreenState extends State<DetailScreen> {
           size: iconSize,
         ),
         onPressed: () =>
-            player.seek(Duration.zero, index: player.effectiveIndices!.first),
+            player.seek(Duration.zero, index: player.effectiveIndices.first),
       );
     }
   }
@@ -823,7 +823,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           : Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.6),
+                              .withValues(alpha: 0.6),
                     ),
                   ),
               ],
@@ -1071,7 +1071,7 @@ class _DetailScreenState extends State<DetailScreen> {
               '列表',
               style: TextStyle(
                 fontSize: isSmallScreen ? 8 : 10,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
               ),
             ),
           ],
@@ -1136,7 +1136,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           color: Theme.of(context)
                               .colorScheme
                               .onSurface
-                              .withOpacity(0.6),
+                              .withValues(alpha: 0.6),
                         ),
                       );
                     },
@@ -1149,7 +1149,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       color: Theme.of(context)
                           .colorScheme
                           .onSurface
-                          .withOpacity(0.6),
+                          .withValues(alpha: 0.6),
                     ),
                   )
               ],
@@ -1194,7 +1194,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         : Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.6),
+                            .withValues(alpha: 0.6),
                   ),
                 ),
               ],
@@ -1301,7 +1301,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         color: Theme.of(context)
                             .colorScheme
                             .onSurface
-                            .withOpacity(0.6),
+                            .withValues(alpha: 0.6),
                       ),
                     ),
                   ],
@@ -1426,7 +1426,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                     : Theme.of(context)
                                         .colorScheme
                                         .onSurface
-                                        .withOpacity(0.6),
+                                        .withValues(alpha: 0.6),
                               ),
                             ),
                           ],
@@ -1496,7 +1496,7 @@ class _DetailScreenState extends State<DetailScreen> {
               '歌曲信息暂未加载',
               style: TextStyle(
                 fontSize: 16,
-                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
               ),
             ),
           );
@@ -1535,7 +1535,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       color: Theme.of(context)
                           .colorScheme
                           .onSurface
-                          .withOpacity(0.6),
+                          .withValues(alpha: 0.6),
                     ),
                   ),
                 );
@@ -1597,11 +1597,11 @@ class _DetailScreenState extends State<DetailScreen> {
                                     ? Theme.of(context)
                                         .colorScheme
                                         .onSurface
-                                        .withOpacity(0.8)
+                                        .withValues(alpha: 0.8)
                                     : Theme.of(context)
                                         .colorScheme
                                         .onSurface
-                                        .withOpacity(0.5)),
+                                        .withValues(alpha: 0.5)),
                             height: 1.2,
                           ),
                           child: Center(

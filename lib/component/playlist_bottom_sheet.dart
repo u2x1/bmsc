@@ -56,7 +56,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                     color: Theme.of(context)
                                         .colorScheme
                                         .onSurface
-                                        .withOpacity(0.8),
+                                        .withValues(alpha: 0.8),
                                   ),
                         )
                       ],
@@ -165,7 +165,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                       scrollController: _scrollController,
                       shrinkWrap: true,
                       itemCount: playlist.length,
-                      onReorder: (oldIndex, newIndex) async {
+                      onReorderItem: (oldIndex, newIndex) async {
                         if (oldIndex < newIndex) newIndex--;
                         await service.doAndSavePlaylist(() async {
                           await service.playlist.move(oldIndex, newIndex);

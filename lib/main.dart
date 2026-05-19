@@ -152,7 +152,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     if (vidDetail == null) return;
 
     final as = await app_audio.AudioService.instance;
-    if (as.player.sequenceState?.currentSource?.tag.extras['bvid'] ==
+    if (as.player.sequenceState.currentSource?.tag.extras['bvid'] ==
         vidDetail.bvid) {
       _logger.info('clipboard detected, but already playing');
       return;

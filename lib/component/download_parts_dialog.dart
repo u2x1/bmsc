@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/model/download_task.dart';
 import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/service/bilibili_service.dart';
@@ -213,7 +214,7 @@ class _DownloadPartsDialogState extends State<DownloadPartsDialog> {
           : SizedBox(
               width: double.maxFinite,
               child: ListView.builder(
-                cacheExtent: 10000,
+                scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                 shrinkWrap: true,
                 itemCount: entities.length,
                 itemBuilder: (context, index) {
@@ -248,9 +249,9 @@ class _DownloadPartsDialogState extends State<DownloadPartsDialog> {
                       decoration: BoxDecoration(
                         color: isDownloading
                             ? _getStatusColor(downloadTask.status)
-                                .withOpacity(0.3)
+                                .withValues(alpha: 0.3)
                             : shouldDownload
-                                ? Colors.green.shade100.withOpacity(0.3)
+                                ? Colors.green.shade100.withValues(alpha: 0.3)
                                 : null,
                         border: Border(
                           bottom: BorderSide(

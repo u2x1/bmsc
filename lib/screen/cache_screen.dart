@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/component/playing_card.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
@@ -371,7 +372,7 @@ class _CacheScreenState extends State<CacheScreen> {
                       ],
                     )
                   : ListView.builder(
-                      cacheExtent: 10000,
+                      scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                       itemCount: filteredFiles.length,
                       itemBuilder: (context, index) {
                         final file = filteredFiles[index];

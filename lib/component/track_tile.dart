@@ -1,8 +1,5 @@
-import 'package:bmsc/util/logger.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-
-final _logger = LoggerUtils.getLogger('TrackTile');
 
 class TrackTile extends StatelessWidget {
   const TrackTile({
@@ -51,7 +48,7 @@ class TrackTile extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
       elevation: 2,
-      shadowColor: Theme.of(context).colorScheme.shadow.withOpacity(0.1),
+      shadowColor: Theme.of(context).colorScheme.shadow.withValues(alpha: 0.1),
       color: color,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -70,7 +67,7 @@ class TrackTile extends StatelessWidget {
                         color: Theme.of(context)
                             .colorScheme
                             .primary
-                            .withOpacity(0.1),
+                            .withValues(alpha: 0.1),
                       ),
                     ),
                     Expanded(

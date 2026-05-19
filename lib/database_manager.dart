@@ -7,7 +7,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:path/path.dart';
-import 'package:just_audio/just_audio.dart';
 import '../model/fav.dart';
 import '../model/fav_detail.dart';
 import '../model/meta.dart';

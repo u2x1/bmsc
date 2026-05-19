@@ -95,8 +95,11 @@ Future<Map<String, dynamic>?> encodeParams(Map<String, dynamic> params) async {
   final mixinKey = _getMixinKey(rawWbiKey);
   final wts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   params['wts'] = wts.toString();
+  final chrFilter = RegExp(r"[!'()*]");
   params = Map.fromEntries(
-      params.entries.map((e) => MapEntry(e.key, e.value.toString())).toList()
+      params.entries
+          .map((e) => MapEntry(e.key, e.value.toString().replaceAll(chrFilter, '')))
+          .toList()
         ..sort((a, b) => a.key.compareTo(b.key)));
   final query = Uri(queryParameters: params).query;
   final encryptedQuery = query + mixinKey;

@@ -201,9 +201,9 @@ class _DownloadScreenState extends State<DownloadScreen> {
                                     ? Theme.of(context)
                                         .colorScheme
                                         .primaryContainer
-                                        .withOpacity(0.7)
+                                        .withValues(alpha: 0.7)
                                     : null
-                                : _getColor(task.status).withOpacity(0.3),
+                                : _getColor(task.status).withValues(alpha: 0.3),
                             onTap: isSelectionMode
                                 ? () => _toggleItemSelection(id)
                                 : () async {

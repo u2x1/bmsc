@@ -16,6 +16,7 @@ final _logger = LoggerUtils.getLogger('AudioService');
 class AudioService {
   static final instance = _init();
 
+  // ignore: deprecated_member_use
   final playlist = ConcatenatingAudioSource(
     useLazyPreparation: true,
     children: [],
@@ -211,7 +212,7 @@ class AudioService {
     final interval = await SharedPreferencesService.getReportHistoryInterval();
     _historyReportTimer =
         Timer.periodic(Duration(seconds: interval), (timer) async {
-      final currentSource = player.sequenceState?.currentSource;
+      final currentSource = player.sequenceState.currentSource;
       if (currentSource == null || !player.playing) {
         return;
       }
@@ -243,7 +244,7 @@ class AudioService {
     _playPositionTimer?.cancel();
     _playPositionTimer = Timer.periodic(
         const Duration(seconds: _historyUpdateInterval), (timer) async {
-      final currentSource = player.sequenceState?.currentSource;
+      final currentSource = player.sequenceState.currentSource;
       if (currentSource == null || !player.playing) {
         return;
       }

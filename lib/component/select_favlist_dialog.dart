@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/model/fav.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
@@ -47,7 +48,7 @@ class _SelectFavlistDialogState extends State<SelectFavlistDialog> {
                   const Divider(),
                   Expanded(
                     child: ListView.builder(
-                      cacheExtent: 10000,
+                      scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                       shrinkWrap: true,
                       itemCount: favs.length,
                       itemBuilder: (context, index) {

@@ -50,7 +50,7 @@ class BilibiliAPI {
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        options.headers = headers;
+        options.headers.addAll(headers);
         return handler.next(options);
       },
     ));
@@ -246,15 +246,22 @@ class BilibiliAPI {
         callback: (data) => CommentData.fromJson(data));
   }
 
-  Future<SearchResult?> search(String value, int pn) {
-    return _callAPI(apiSearchUrl,
-        queryParameters: {'search_type': 'video', 'keyword': value, 'page': pn},
+  Future<SearchResult?> search(String value, int pn) async {
+    final params = await crypto.encodeParams(
+        {'search_type': 'video', 'keyword': value, 'page': pn});
+    if (params == null) return null;
+    return _callAPI(apiSearchUrl, queryParameters: params,
         callback: (data) => SearchResult.fromJson(data));
   }
 
   Future<HistoryResult?> getHistory(int? timestamp) {
     return _callAPI(apiHistoryUrl,
-        queryParameters: {'type': 'archive', 'view_at': timestamp},
+        queryParameters: {
+          'type': 'archive',
+          'ps': 20,
+          'max': timestamp ?? 0,
+          'view_at': timestamp ?? 0,
+        },
         callback: (data) => HistoryResult.fromJson(data));
   }
 
@@ -277,9 +284,15 @@ class BilibiliAPI {
 
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
     final hires = await SharedPreferencesService.getHiResFirst();
-    return _callAPI(apiAudioUrl,
-        queryParameters: {'bvid': bvid, 'cid': cid, 'fnval': 16},
-        callback: (data) {
+    final params = await crypto.encodeParams({
+      'bvid': bvid,
+      'cid': cid,
+      'fnval': 4048,
+      'fnver': '0',
+      'fourk': '1',
+    });
+    if (params == null) return null;
+    return _callAPI(apiAudioUrl, queryParameters: params, callback: (data) {
       final dash = TrackResult.fromJson(data).dash;
       if (hires && dash.flac?.audio != null) {
         return [dash.flac!.audio!] + dash.audio;
@@ -393,20 +406,34 @@ class BilibiliAPI {
         lastUpdateDay == currentDay) {
       return rawWbiKey;
     }
-    final data = await _callAPI(apiNavUrl);
-    if (data == null) return null;
-    final wbiImg = data['wbi_img'];
-    final imgsubNew = wbiImg['img_url'] as String?;
-    final subidNew = wbiImg['sub_url'] as String?;
-    if (imgsubNew == null || subidNew == null) return null;
-    final rawWbiKeyNew = imgsubNew.substring(
-            imgsubNew.lastIndexOf('/') + 1, imgsubNew.lastIndexOf('.')) +
-        subidNew.substring(
-            subidNew.lastIndexOf('/') + 1, subidNew.lastIndexOf('.'));
-    await prefs.setString('raw_wbi_key', rawWbiKeyNew);
-    await prefs.setInt('img_sub_key_last_update', currentDay);
-    _logger.info('New raw_wbi_key: $rawWbiKeyNew');
-    return rawWbiKeyNew;
+    try {
+      final response = await dio.get(apiNavUrl);
+      final body = response.data;
+      if (body['data'] == null) return null;
+      final wbiImg = body['data']['wbi_img'];
+      if (wbiImg == null) return null;
+      final imgUrl = wbiImg['img_url'] as String?;
+      final subUrl = wbiImg['sub_url'] as String?;
+      if (imgUrl == null || subUrl == null) return null;
+      final imgKey = _basename(imgUrl, stripExt: true);
+      final subKey = _basename(subUrl, stripExt: true);
+      final rawWbiKeyNew = imgKey + subKey;
+      await prefs.setString('raw_wbi_key', rawWbiKeyNew);
+      await prefs.setInt('img_sub_key_last_update', currentDay);
+      _logger.info('New raw_wbi_key: $rawWbiKeyNew');
+      return rawWbiKeyNew;
+    } catch (e) {
+      _logger.severe('Failed to get WBI key: $e');
+      return null;
+    }
+  }
+
+  String _basename(String url, {bool stripExt = false}) {
+    final start = url.lastIndexOf('/') + 1;
+    if (!stripExt) return url.substring(start);
+    final dot = url.lastIndexOf('.');
+    if (dot > start) return url.substring(start, dot);
+    return url.substring(start);
   }
 
   Future<Map<String, String>?> getLoginCaptcha() async {
@@ -602,4 +629,115 @@ class BilibiliAPI {
       return null;
     }
   }
+
+  Future<List<Map<String, dynamic>>?> getHotSearch() {
+    return _callAPI(apiHotSearchUrl,
+        queryParameters: {'limit': '10'},
+        callback: (data) =>
+            (data['trending']['list'] as List).cast<Map<String, dynamic>>());
+  }
+
+  Future<List<Meta>?> getRanking(int rid) {
+    return _callAPI(apiRankingUrl,
+        queryParameters: {'rid': rid},
+        callback: (data) => (data['list'] as List)
+            .map((x) => Meta(
+                bvid: x['bvid'],
+                title: x['title'],
+                artist: x['owner']['name'],
+                mid: x['owner']['mid'],
+                aid: x['aid'],
+                duration: x['duration'],
+                artUri: x['pic']))
+            .toList());
+  }
+
+  Future<List<Map<String, dynamic>>?> getPageList(String bvid) {
+    return _callAPI(apiPageListUrl,
+        queryParameters: {'bvid': bvid},
+        callback: (data) =>
+            (data as List).cast<Map<String, dynamic>>());
+  }
+
+  Future<Map<String, dynamic>?> getUserInfoByMid(int mid) async {
+    final params =
+        await crypto.encodeParams({'mid': mid.toString()});
+    return _callAPI(apiUserInfoByMidUrl, queryParameters: params);
+  }
+
+  Future<List<Map<String, dynamic>>?> getToViewList() {
+    return _callAPI(apiToViewUrl,
+        callback: (data) =>
+            (data['list'] as List?)?.cast<Map<String, dynamic>>());
+  }
+
+  Future<bool?> deleteToViewVideo({bool? allViewed, int? avid}) {
+    final params = <String, dynamic>{'csrf': crypto.extractCSRF(cookies)};
+    if (allViewed == true) {
+      params['viewed'] = 'true';
+    } else if (avid != null) {
+      params['aid'] = avid;
+    }
+    return _callAPI(apiToViewDelUrl,
+        queryParameters: params, isPost: true, callback: (_) => true);
+  }
+
+  Future<bool?> clearToViewList() {
+    return _callAPI(apiToViewClearUrl,
+        queryParameters: {'csrf': crypto.extractCSRF(cookies)},
+        isPost: true,
+        callback: (_) => true);
+  }
+
+  Future<bool?> thumbUpVideo(String bvid, bool like) {
+    return _callAPI(apiThumbUpUrl,
+        queryParameters: {
+          'bvid': bvid,
+          'like': like ? '1' : '2',
+          'csrf': crypto.extractCSRF(cookies),
+        },
+        isPost: true,
+        callback: (_) => true);
+  }
+
+  Future<bool?> hasLikedVideo(String bvid) {
+    return _callAPI(apiHasLikedUrl,
+        queryParameters: {'bvid': bvid},
+        callback: (data) => data == 1);
+  }
+
+  Future<bool?> batchDelFavResources(int mediaId, List<String> bvids) {
+    final resources = bvids.map((bvid) => '${bv2av(bvid)}:2').join(',');
+    return _callAPI(apiBatchDelFavUrl,
+        queryParameters: {
+          'resources': resources,
+          'media_id': mediaId.toString(),
+          'platform': 'web',
+          'csrf': crypto.extractCSRF(cookies),
+        },
+        isPost: true,
+        callback: (_) => true);
+  }
+}
+
+int bv2av(String bvid) {
+  const xorCode = 23442827791579;
+  const maskCode = 2251799813685247;
+  const base = 58;
+  const data = 'FcwAPNKTMug3GV5Lj7EJnHpWsx4tb8haYeviqBz6rkCy12mUSDQX9RdoZf';
+
+  var bvidArr = bvid.split('');
+  var tmp = bvidArr[3];
+  bvidArr[3] = bvidArr[9];
+  bvidArr[9] = tmp;
+  tmp = bvidArr[4];
+  bvidArr[4] = bvidArr[7];
+  bvidArr[7] = tmp;
+  bvidArr = bvidArr.sublist(3);
+
+  BigInt result = BigInt.zero;
+  for (final c in bvidArr) {
+    result = result * BigInt.from(base) + BigInt.from(data.indexOf(c));
+  }
+  return ((result & BigInt.from(maskCode)) ^ BigInt.from(xorCode)).toInt();
 }

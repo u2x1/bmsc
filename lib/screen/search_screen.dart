@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/component/download_parts_dialog.dart';
 import 'package:bmsc/component/excluded_parts_dialog.dart';
 import 'package:bmsc/screen/comment_screen.dart';
@@ -151,7 +152,7 @@ class _SearchScreenState extends State<SearchScreen> {
         return true;
       },
       child: ListView.builder(
-        cacheExtent: 10000,
+        scrollCacheExtent: ScrollCacheExtent.pixels(10000),
         physics: const ClampingScrollPhysics(),
         itemCount: vidList.length,
         itemBuilder: (BuildContext context, int index) {

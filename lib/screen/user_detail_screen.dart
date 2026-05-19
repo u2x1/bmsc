@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/model/user_card.dart';
 import 'package:bmsc/model/meta.dart';
 import 'package:bmsc/service/audio_service.dart';
@@ -146,7 +147,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
 
   vidListView() {
     return ListView.builder(
-      cacheExtent: 10000,
+      scrollCacheExtent: ScrollCacheExtent.pixels(10000),
       physics: const NeverScrollableScrollPhysics(),
       shrinkWrap: true,
       itemCount: vidList.length,

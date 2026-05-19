@@ -274,7 +274,7 @@ class SettingsScreen extends StatelessWidget {
                 leading: const Icon(Icons.folder),
                 onTap: () async {
                   String? selectedDirectory =
-                      await FilePicker.platform.getDirectoryPath();
+                      await FilePicker.getDirectoryPath();
                   if (selectedDirectory != null) {
                     await SharedPreferencesService.setDownloadPath(
                         selectedDirectory);
@@ -463,46 +463,33 @@ class SettingsScreen extends StatelessWidget {
                   context: context,
                   builder: (context) => AlertDialog(
                     title: const Text('选择主题模式'),
-                    content: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        RadioListTile<ThemeMode>(
-                          title: const Text('浅色'),
-                          value: ThemeMode.light,
-                          groupValue: ThemeProvider.instance.themeMode,
-                          onChanged: (ThemeMode? value) async {
-                            if (value != null) {
-                              await ThemeProvider.instance.setThemeMode(value);
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          },
+                    content: RadioGroup<ThemeMode>(
+                        groupValue: ThemeProvider.instance.themeMode,
+                        onChanged: (ThemeMode? value) async {
+                          if (value != null) {
+                            await ThemeProvider.instance.setThemeMode(value);
+                            if (context.mounted) Navigator.pop(context);
+                          }
+                        },
+                        child: Column(
+                          children: [
+                            RadioListTile<ThemeMode>(
+                              title: const Text('浅色'),
+                              value: ThemeMode.light,
+                            ),
+                            RadioListTile<ThemeMode>(
+                              title: const Text('深色'),
+                              value: ThemeMode.dark,
+                            ),
+                            RadioListTile<ThemeMode>(
+                              title: const Text('跟随系统'),
+                              value: ThemeMode.system,
+                            ),
+                          ],
                         ),
-                        RadioListTile<ThemeMode>(
-                          title: const Text('深色'),
-                          value: ThemeMode.dark,
-                          groupValue: ThemeProvider.instance.themeMode,
-                          onChanged: (ThemeMode? value) async {
-                            if (value != null) {
-                              await ThemeProvider.instance.setThemeMode(value);
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          },
-                        ),
-                        RadioListTile<ThemeMode>(
-                          title: const Text('跟随系统'),
-                          value: ThemeMode.system,
-                          groupValue: ThemeProvider.instance.themeMode,
-                          onChanged: (ThemeMode? value) async {
-                            if (value != null) {
-                              await ThemeProvider.instance.setThemeMode(value);
-                              if (context.mounted) Navigator.pop(context);
-                            }
-                          },
-                        ),
-                      ],
+),
                     ),
-                  ),
-                ).then((_) {
+                  ).then((_) {
                   if (context.mounted) {
                     setState(() {});
                   }

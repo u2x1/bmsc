@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'dart:io';
 import 'package:bmsc/api/music_provider.dart';
 import 'package:bmsc/component/select_favlist_dialog.dart';
@@ -76,7 +77,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       iOS: initializationSettingsIOS,
     );
 
-    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+    await flutterLocalNotificationsPlugin.initialize(settings: initializationSettings);
     _notificationsInitialized = true;
   }
 
@@ -282,7 +283,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                     ),
                   Expanded(
                     child: ListView.builder(
-                      cacheExtent: 10000,
+                      scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                       controller: _scrollController,
                       itemCount: results.length,
                       itemBuilder: (context, index) {
@@ -355,7 +356,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                                       width: double.maxFinite,
                                                       height: 400,
                                                       child: ListView.builder(
-                                                        cacheExtent: 10000,
+                                                        scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                                                         shrinkWrap: true,
                                                         itemCount:
                                                             trackResults.length,
@@ -536,10 +537,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
     }
 
     await flutterLocalNotificationsPlugin.show(
-      0,
-      '歌单搜索',
-      '准备处理...',
-      NotificationDetails(
+      id: 0,
+      title: '歌单搜索',
+      body: '准备处理...',
+      notificationDetails: NotificationDetails(
           android: AndroidNotificationDetails(
         'playlist_search',
         'Playlist Search',
@@ -650,10 +651,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   Future<void> _search() async {
     for (; processedTracks < results.length;) {
       await flutterLocalNotificationsPlugin.show(
-        0,
-        '歌单搜索',
-        '处理中: $processedTracks/$totalTracks',
-        NotificationDetails(
+        id: 0,
+        title: '歌单搜索',
+        body: '处理中: $processedTracks/$totalTracks',
+        notificationDetails: NotificationDetails(
           android: AndroidNotificationDetails(
             'playlist_search',
             'Playlist Search',
@@ -671,10 +672,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       );
       if (isSearchPaused) {
         await flutterLocalNotificationsPlugin.show(
-          0,
-          '歌单搜索',
-          '已暂停: $processedTracks/${results.length}',
-          NotificationDetails(
+          id: 0,
+          title: '歌单搜索',
+          body: '已暂停: $processedTracks/${results.length}',
+          notificationDetails: NotificationDetails(
             android: AndroidNotificationDetails(
               'playlist_search',
               'Playlist Search',
@@ -720,10 +721,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       }
     }
     await flutterLocalNotificationsPlugin.show(
-      0,
-      '歌单搜索',
-      '处理完成: $totalTracks 首歌曲',
-      const NotificationDetails(
+      id: 0,
+      title: '歌单搜索',
+      body: '处理完成: $totalTracks 首歌曲',
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           'playlist_search',
           'Playlist Search',
@@ -746,10 +747,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   Future<void> _save() async {
     for (; processedFavorites < results.length;) {
       await flutterLocalNotificationsPlugin.show(
-        1,
-        '添加收藏',
-        '处理中: $processedFavorites/${results.length}',
-        NotificationDetails(
+        id: 1,
+        title: '添加收藏',
+        body: '处理中: $processedFavorites/${results.length}',
+        notificationDetails: NotificationDetails(
           android: AndroidNotificationDetails(
             'favorite_progress',
             'Favorite Progress',
@@ -767,10 +768,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       );
       if (isSavingPaused) {
         await flutterLocalNotificationsPlugin.show(
-          1,
-          '添加收藏',
-          '已暂停: $processedFavorites/${results.length}',
-          NotificationDetails(
+          id: 1,
+          title: '添加收藏',
+          body: '已暂停: $processedFavorites/${results.length}',
+          notificationDetails: NotificationDetails(
             android: AndroidNotificationDetails(
               'favorite_progress',
               'Favorite Progress',
@@ -821,10 +822,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
 
     // Show completion notification
     await flutterLocalNotificationsPlugin.show(
-      1,
-      '添加收藏',
-      '完成: 已添加 ${results.length} 首曲目到收藏夹',
-      const NotificationDetails(
+      id: 1,
+      title: '添加收藏',
+      body: '完成: 已添加 ${results.length} 首曲目到收藏夹',
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           'favorite_progress',
           'Favorite Progress',

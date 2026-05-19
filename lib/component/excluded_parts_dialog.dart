@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
@@ -166,7 +167,7 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
               : SizedBox(
                   width: double.maxFinite,
                   child: ListView.builder(
-                    cacheExtent: 10000,
+                    scrollCacheExtent: ScrollCacheExtent.pixels(10000),
                     shrinkWrap: true,
                     itemCount: entities.length,
                     itemBuilder: (context, index) {
@@ -186,11 +187,11 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                                 ? Theme.of(context)
                                     .colorScheme
                                     .errorContainer
-                                    .withOpacity(0.3)
+                                    .withValues(alpha: 0.3)
                                 : Theme.of(context)
                                     .colorScheme
                                     .primaryContainer
-                                    .withOpacity(0.3),
+                                    .withValues(alpha: 0.3),
                             border: Border(
                               bottom: BorderSide(
                                 color: Theme.of(context).dividerColor,

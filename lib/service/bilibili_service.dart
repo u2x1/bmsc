@@ -278,6 +278,46 @@ class BilibiliService {
     return _bilibiliAPI.getRawWbiKey();
   }
 
+  Future<List<Map<String, dynamic>>?> getHotSearch() {
+    return _bilibiliAPI.getHotSearch();
+  }
+
+  Future<List<Meta>?> getRanking(int rid) {
+    return _bilibiliAPI.getRanking(rid);
+  }
+
+  Future<List<Map<String, dynamic>>?> getPageList(String bvid) {
+    return _bilibiliAPI.getPageList(bvid);
+  }
+
+  Future<Map<String, dynamic>?> getUserInfoByMid(int mid) {
+    return _bilibiliAPI.getUserInfoByMid(mid);
+  }
+
+  Future<List<Map<String, dynamic>>?> getToViewList() {
+    return _bilibiliAPI.getToViewList();
+  }
+
+  Future<bool?> deleteToViewVideo({bool? allViewed, int? avid}) {
+    return _bilibiliAPI.deleteToViewVideo(allViewed: allViewed, avid: avid);
+  }
+
+  Future<bool?> clearToViewList() {
+    return _bilibiliAPI.clearToViewList();
+  }
+
+  Future<bool?> thumbUpVideo(String bvid, bool like) {
+    return _bilibiliAPI.thumbUpVideo(bvid, like);
+  }
+
+  Future<bool?> hasLikedVideo(String bvid) {
+    return _bilibiliAPI.hasLikedVideo(bvid);
+  }
+
+  Future<bool?> batchDelFavResources(int mediaId, List<String> bvids) {
+    return _bilibiliAPI.batchDelFavResources(mediaId, bvids);
+  }
+
   Future<List<Meta>?> getRecommendations(List<Meta> tracks) async {
     if (tracks.isEmpty) {
       return null;

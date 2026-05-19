@@ -1,3 +1,4 @@
+import 'package:flutter/rendering.dart';
 import 'package:bmsc/component/download_parts_dialog.dart';
 import 'package:bmsc/screen/comment_screen.dart';
 import 'package:bmsc/screen/user_detail_screen.dart';
@@ -237,7 +238,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
       body: RefreshIndicator(
         onRefresh: _refreshData,
         child: ListView.builder(
-          cacheExtent: 10000,
+          scrollCacheExtent: ScrollCacheExtent.pixels(10000),
           itemCount: favInfo.length,
           itemBuilder: (context, index) => favDetailListTileView(index),
         ),
@@ -280,7 +281,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                       ? Theme.of(context)
                           .colorScheme
                           .primaryContainer
-                          .withOpacity(0.7)
+                          .withValues(alpha: 0.7)
                       : Theme.of(context).colorScheme.surfaceContainerLow
                   : null,
               onPicTap: () => _toggleItemSelection(favInfo[index].bvid),
