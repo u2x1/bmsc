@@ -60,8 +60,12 @@ class SettingsScreen extends StatelessWidget {
                               ),
                               FilledButton(
                                 onPressed: () async {
-                                  await bs?.logout();
-                                  await DatabaseManager.cacheFavList([]);
+                                  try {
+                                    await bs?.logout();
+                                    await DatabaseManager.cacheFavList([]);
+                                  } catch (e) {
+                                    // ignore logout error
+                                  }
                                   if (context.mounted) {
                                     Navigator.pop(context);
                                     Navigator.pop(context, true);

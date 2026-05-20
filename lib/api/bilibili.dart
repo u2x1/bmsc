@@ -72,11 +72,18 @@ class BilibiliAPI {
   }
 
   Future<void> resetCookies() async {
-    final response = await dio.get("https://www.bilibili.com");
-    final cookie = response.headers['set-cookie'];
-    _logger.info('init cookies: ${response.headers['set-cookie']}');
-    if (cookie != null) {
-      setCookie(cookie.join('; '), save: true);
+    try {
+      final response = await dio.get("https://www.bilibili.com");
+      final cookie = response.headers['set-cookie'];
+      _logger.info('init cookies: ${response.headers['set-cookie']}');
+      if (cookie != null) {
+        setCookie(cookie.join('; '), save: true);
+      }
+    } catch (e) {
+      _logger.severe('resetCookies failed: $e');
+      if (cookies.isNotEmpty) {
+        setCookie(cookies, save: true);
+      }
     }
   }
 
