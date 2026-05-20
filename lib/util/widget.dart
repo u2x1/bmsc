@@ -10,7 +10,8 @@ Widget shadow(Widget child) {
           boxShadow: [
             BoxShadow(
               color: (isDark
-                  ? const Color(0xFF1A1A1A).withValues(alpha: 0.95) // Darker shadow
+                  ? const Color(0xFF1A1A1A)
+                      .withValues(alpha: 0.95) // Darker shadow
                   : Colors.grey.withValues(alpha: 0.5)),
               spreadRadius: isDark ? 8 : 5, // Increased spread
               blurRadius: isDark ? 25 : 7, // Increased blur
@@ -19,7 +20,8 @@ Widget shadow(Widget child) {
             if (isDark)
               BoxShadow(
                 // Enhanced highlight
-                color: Colors.white.withValues(alpha: 0.05), // Slightly brighter
+                color:
+                    Colors.white.withValues(alpha: 0.05), // Slightly brighter
                 spreadRadius: 2, // Increased spread
                 blurRadius: 8, // Increased blur
                 offset: const Offset(0, 0),

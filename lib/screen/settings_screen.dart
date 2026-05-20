@@ -468,32 +468,32 @@ class SettingsScreen extends StatelessWidget {
                   builder: (context) => AlertDialog(
                     title: const Text('选择主题模式'),
                     content: RadioGroup<ThemeMode>(
-                        groupValue: ThemeProvider.instance.themeMode,
-                        onChanged: (ThemeMode? value) async {
-                          if (value != null) {
-                            await ThemeProvider.instance.setThemeMode(value);
-                            if (context.mounted) Navigator.pop(context);
-                          }
-                        },
-                        child: Column(
-                          children: [
-                            RadioListTile<ThemeMode>(
-                              title: const Text('浅色'),
-                              value: ThemeMode.light,
-                            ),
-                            RadioListTile<ThemeMode>(
-                              title: const Text('深色'),
-                              value: ThemeMode.dark,
-                            ),
-                            RadioListTile<ThemeMode>(
-                              title: const Text('跟随系统'),
-                              value: ThemeMode.system,
-                            ),
-                          ],
-                        ),
-),
+                      groupValue: ThemeProvider.instance.themeMode,
+                      onChanged: (ThemeMode? value) async {
+                        if (value != null) {
+                          await ThemeProvider.instance.setThemeMode(value);
+                          if (context.mounted) Navigator.pop(context);
+                        }
+                      },
+                      child: Column(
+                        children: [
+                          RadioListTile<ThemeMode>(
+                            title: const Text('浅色'),
+                            value: ThemeMode.light,
+                          ),
+                          RadioListTile<ThemeMode>(
+                            title: const Text('深色'),
+                            value: ThemeMode.dark,
+                          ),
+                          RadioListTile<ThemeMode>(
+                            title: const Text('跟随系统'),
+                            value: ThemeMode.system,
+                          ),
+                        ],
+                      ),
                     ),
-                  ).then((_) {
+                  ),
+                ).then((_) {
                   if (context.mounted) {
                     setState(() {});
                   }

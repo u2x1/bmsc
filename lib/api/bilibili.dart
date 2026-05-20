@@ -111,10 +111,12 @@ class BilibiliAPI {
       if (needDecode) {
         data = convert.jsonDecode(data);
       }
-      _logger.info('API response code=${data['code']} msg=${data['message']} dataKeys=${data['data'] is Map ? (data['data'] as Map).keys : data['data'].runtimeType}');
+      _logger.info(
+          'API response code=${data['code']} msg=${data['message']} dataKeys=${data['data'] is Map ? (data['data'] as Map).keys : data['data'].runtimeType}');
       if ((unwrapKey == "data" && data['code'] != 0) ||
           data[unwrapKey] == null) {
-        _logger.info('_callAPI returning null: code=${data['code']} unwrapKey=$unwrapKey hasData=${data[unwrapKey] != null}');
+        _logger.info(
+            '_callAPI returning null: code=${data['code']} unwrapKey=$unwrapKey hasData=${data[unwrapKey] != null}');
         return null;
       }
       data = data[unwrapKey];
@@ -242,14 +244,11 @@ class BilibiliAPI {
       'dm_cover_img_str': crypto.generateDmCoverImgStr(),
       'dm_img_inter': '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
     });
-    return _callAPI(apiUserUploadsUrl,
-        queryParameters: params,
-        extraHeaders: {
-          'referer': 'https://space.bilibili.com/$mid',
-          'origin': 'https://space.bilibili.com',
-          'User-Agent': headers['User-Agent'],
-        },
-        callback: (data) {
+    return _callAPI(apiUserUploadsUrl, queryParameters: params, extraHeaders: {
+      'referer': 'https://space.bilibili.com/$mid',
+      'origin': 'https://space.bilibili.com',
+      'User-Agent': headers['User-Agent'],
+    }, callback: (data) {
       final uploads = UserUploadResult.fromJson(data);
       final nextPn =
           uploads.page.pn * uploads.page.ps < uploads.page.count ? pn + 1 : -1;
@@ -291,23 +290,22 @@ class BilibiliAPI {
   }
 
   Future<SearchResult?> search(String value, int pn) async {
-    final params = await crypto.encodeParams(
-        {'search_type': 'video', 'keyword': value, 'page': pn});
+    final params = await crypto
+        .encodeParams({'search_type': 'video', 'keyword': value, 'page': pn});
     if (params == null) return null;
-    return _callAPI(apiSearchUrl, queryParameters: params,
+    return _callAPI(apiSearchUrl,
+        queryParameters: params,
         callback: (data) => SearchResult.fromJson(data));
   }
 
   Future<HistoryResult?> getHistory(int? timestamp) {
     _logger.info('getHistory: timestamp=$timestamp');
-    return _callAPI(apiHistoryUrl,
-        queryParameters: {
-          'type': 'all',
-          'ps': 20,
-          'max': timestamp ?? 0,
-          'view_at': timestamp ?? 0,
-        },
-        callback: (data) {
+    return _callAPI(apiHistoryUrl, queryParameters: {
+      'type': 'all',
+      'ps': 20,
+      'max': timestamp ?? 0,
+      'view_at': timestamp ?? 0,
+    }, callback: (data) {
       _logger.info('getHistory: list len=${(data['list'] as List?)?.length}');
       final result = HistoryResult.fromJson(data);
       _logger.info('getHistory: parsed ${result.list.length} items');
@@ -317,17 +315,17 @@ class BilibiliAPI {
 
   Future<DynamicResult?> getDynamics(String? offset) {
     _logger.info('getDynamics: offset=$offset');
-    return _callAPI(apiDynamicUrl,
-        queryParameters: {
-          'type': 'video',
-          'offset': offset ?? '',
-          'timezone_offset': '-480',
-          'features': 'itemOpusStyle,listOnlyfans,onlyfansQaCard',
-        },
-        callback: (data) {
-      _logger.info('getDynamics: data list len=${(data['items'] as List?)?.length} hasMore=${data['has_more']}');
+    return _callAPI(apiDynamicUrl, queryParameters: {
+      'type': 'video',
+      'offset': offset ?? '',
+      'timezone_offset': '-480',
+      'features': 'itemOpusStyle,listOnlyfans,onlyfansQaCard',
+    }, callback: (data) {
+      _logger.info(
+          'getDynamics: data list len=${(data['items'] as List?)?.length} hasMore=${data['has_more']}');
       final result = DynamicResult.fromJson(data);
-      _logger.info('getDynamics: parsed ${result.items.length} items offset=${result.offset}');
+      _logger.info(
+          'getDynamics: parsed ${result.items.length} items offset=${result.offset}');
       return result;
     });
   }
@@ -716,13 +714,11 @@ class BilibiliAPI {
   Future<List<Map<String, dynamic>>?> getPageList(String bvid) {
     return _callAPI(apiPageListUrl,
         queryParameters: {'bvid': bvid},
-        callback: (data) =>
-            (data as List).cast<Map<String, dynamic>>());
+        callback: (data) => (data as List).cast<Map<String, dynamic>>());
   }
 
   Future<Map<String, dynamic>?> getUserInfoByMid(int mid) async {
-    final params =
-        await crypto.encodeParams({'mid': mid.toString()});
+    final params = await crypto.encodeParams({'mid': mid.toString()});
     return _callAPI(apiUserInfoByMidUrl, queryParameters: params);
   }
 
@@ -763,8 +759,7 @@ class BilibiliAPI {
 
   Future<bool?> hasLikedVideo(String bvid) {
     return _callAPI(apiHasLikedUrl,
-        queryParameters: {'bvid': bvid},
-        callback: (data) => data == 1);
+        queryParameters: {'bvid': bvid}, callback: (data) => data == 1);
   }
 
   Future<bool?> batchDelFavResources(int mediaId, List<String> bvids) {

@@ -325,7 +325,7 @@ class _LoginScreenState extends State<LoginScreen> {
             icon: Icon(_loginType == LoginType.sms
                 ? Icons.lock_outline
                 : Icons.message_outlined),
-            label: Text(_loginType == LoginType.sms ? '密码':  '短信'),
+            label: Text(_loginType == LoginType.sms ? '密码' : '短信'),
           ),
         ],
       ),
@@ -518,8 +518,10 @@ class _LoginScreenState extends State<LoginScreen> {
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color:
-                          Theme.of(context).colorScheme.error.withValues(alpha: 0.1),
+                      color: Theme.of(context)
+                          .colorScheme
+                          .error
+                          .withValues(alpha: 0.1),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Row(

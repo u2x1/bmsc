@@ -447,6 +447,4 @@ class _HttpRangeRequest {
   /// Format a range header for this request.
   String get header =>
       'bytes=$start-${end != null ? (end! - 1).toString() : ""}';
-
-  
 }

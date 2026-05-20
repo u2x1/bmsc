@@ -92,8 +92,7 @@ class _DynamicScreenState extends State<DynamicScreen> {
       len: arc.durationText,
       view: arc.stat.play,
       time: dynList[index].moduleAuthor.pubTime,
-      onTap: () =>
-          AudioService.instance.then((x) => x.playByBvid(arc.bvid)),
+      onTap: () => AudioService.instance.then((x) => x.playByBvid(arc.bvid)),
       onAddToPlaylistButtonPressed: () => AudioService.instance.then((x) =>
           x.appendPlaylist(arc.bvid,
               insertIndex:
@@ -127,8 +126,7 @@ class _DynamicScreenState extends State<DynamicScreen> {
                     Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (context) => CommentScreen(
-                                aid: arc.aid)));
+                            builder: (context) => CommentScreen(aid: arc.aid)));
                   },
                 ),
                 ListTile(

@@ -77,7 +77,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       iOS: initializationSettingsIOS,
     );
 
-    await flutterLocalNotificationsPlugin.initialize(settings: initializationSettings);
+    await flutterLocalNotificationsPlugin.initialize(
+        settings: initializationSettings);
     _notificationsInitialized = true;
   }
 
@@ -356,7 +357,9 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                                       width: double.maxFinite,
                                                       height: 400,
                                                       child: ListView.builder(
-                                                        scrollCacheExtent: ScrollCacheExtent.pixels(10000),
+                                                        scrollCacheExtent:
+                                                            ScrollCacheExtent
+                                                                .pixels(10000),
                                                         shrinkWrap: true,
                                                         itemCount:
                                                             trackResults.length,
