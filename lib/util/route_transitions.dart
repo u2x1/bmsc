@@ -8,12 +8,12 @@ Route zoomRoute(Widget page) {
         opacity: Tween<double>(begin: 0.0, end: 1.0).animate(
           CurvedAnimation(
             parent: animation,
-            curve: const Interval(0.0, 0.4, curve: Curves.linear),
+            curve: const Interval(0.125, 0.250, curve: Curves.linear),
           ),
         ),
         child: ScaleTransition(
-          scale: Tween<double>(begin: 0.95, end: 1.0).animate(
-            CurvedAnimation(parent: animation, curve: Curves.linear),
+          scale: Tween<double>(begin: 0.85, end: 1.0).animate(
+            CurvedAnimation(parent: animation, curve: Curves.fastOutSlowIn),
           ),
           child: child,
         ),
