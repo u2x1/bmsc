@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import '../screen/detail_screen.dart';
 import '../audio/audio_player_ext.dart';
+import '../util/route_transitions.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'playlist_bottom_sheet.dart';
 
@@ -63,8 +64,7 @@ class PlayingCard extends StatelessWidget {
                       InkWell(
                         onTap: () => Navigator.push(
                           context,
-                          MaterialPageRoute(
-                              builder: (context) => const DetailScreen()),
+                          zoomRoute(const DetailScreen()),
                         ),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(

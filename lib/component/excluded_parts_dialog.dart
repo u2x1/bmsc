@@ -43,9 +43,9 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
       await (await BilibiliService.instance).getVidDetail(bvid: widget.bvid);
       es = await DatabaseManager.getEntities(widget.bvid);
     }
-    
+
     final excludedCids = await DatabaseManager.getExcludedParts(widget.bvid);
-    
+
     if (es.isNotEmpty) {
       setState(() {
         isLoading = false;
@@ -79,10 +79,10 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
   void _selectInvert() {
     final modifiedCopy = List<bool>.from(modified);
     int s = 0;
-      for (var i = 0; i < modified.length; i++) {
-        modifiedCopy[i] = !modified[i];
-      }
-      s = entities.length - excludeCnt;
+    for (var i = 0; i < modified.length; i++) {
+      modifiedCopy[i] = !modified[i];
+    }
+    s = entities.length - excludeCnt;
     setState(() {
       modified = modifiedCopy;
       excludeCnt = s;
@@ -172,7 +172,8 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                     itemCount: entities.length,
                     itemBuilder: (context, index) {
                       final e = entities[index];
-                      final isExcluded = excludedParts.contains(e.cid) ^ modified[index];
+                      final isExcluded =
+                          excludedParts.contains(e.cid) ^ modified[index];
 
                       return InkWell(
                         onTap: () {
@@ -204,8 +205,9 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                           child: Row(
                             children: [
                               CircleAvatar(
-                                backgroundColor:
-                                    Theme.of(context).colorScheme.primaryContainer,
+                                backgroundColor: Theme.of(context)
+                                    .colorScheme
+                                    .primaryContainer,
                                 child: Text('P${index + 1}'),
                               ),
                               const SizedBox(width: 16),
@@ -219,19 +221,22 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 12,
-                                        decoration: isExcluded 
-                                            ? TextDecoration.lineThrough 
+                                        decoration: isExcluded
+                                            ? TextDecoration.lineThrough
                                             : null,
                                         color: isExcluded
-                                            ? Theme.of(context).colorScheme.error
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .error
                                             : null,
                                       ),
                                     ),
                                     Text(
                                       _formatDuration(e.duration),
                                       style: TextStyle(
-                                        color:
-                                            Theme.of(context).colorScheme.secondary,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .secondary,
                                       ),
                                     ),
                                   ],

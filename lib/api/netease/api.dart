@@ -8,8 +8,8 @@ const _apiDomain = 'https://interface3.music.163.com';
 class NeteaseAPI {
   final Dio dio = Dio();
 
-  Future<Map<String, dynamic>?> search(
-      String keyword, {int limit = 30, int offset = 0}) async {
+  Future<Map<String, dynamic>?> search(String keyword,
+      {int limit = 30, int offset = 0}) async {
     final data = {
       's': keyword,
       'type': 1,
@@ -23,8 +23,7 @@ class NeteaseAPI {
         data: encrypted,
         options: Options(
           headers: {
-            'User-Agent':
-                'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
+            'User-Agent': 'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Referer': 'https://music.163.com',
           },
@@ -52,8 +51,7 @@ class NeteaseAPI {
         data: encrypted,
         options: Options(
           headers: {
-            'User-Agent':
-                'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
+            'User-Agent': 'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Referer': 'https://music.163.com',
             'Cookie': 'os=iphone; appver=9.0.90; osver=16.2',
@@ -86,8 +84,7 @@ class NeteaseAPI {
         data: encrypted,
         options: Options(
           headers: {
-            'User-Agent':
-                'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
+            'User-Agent': 'NeteaseMusic 9.0.90/5038 (iPhone; iOS 16.2; zh_CN)',
             'Content-Type': 'application/x-www-form-urlencoded',
             'Referer': 'https://music.163.com',
             'Cookie': 'os=iphone; appver=9.0.90; osver=16.2',

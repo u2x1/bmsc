@@ -1071,7 +1071,10 @@ class _DetailScreenState extends State<DetailScreen> {
               '列表',
               style: TextStyle(
                 fontSize: isSmallScreen ? 8 : 10,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.6),
               ),
             ),
           ],
@@ -1496,7 +1499,10 @@ class _DetailScreenState extends State<DetailScreen> {
               '歌曲信息暂未加载',
               style: TextStyle(
                 fontSize: 16,
-                color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.6),
               ),
             ),
           );

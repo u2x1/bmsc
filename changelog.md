@@ -1,4 +1,18 @@
-# 1.10.1
+# 1.12.1
+- fix WBI 签名算法适配，修复搜索、音频播放等接口
+- fix 动态页/历史页白屏（处理非视频类型动态 & null 安全）
+- fix UP 主空间无法加载投稿列表
+- fix 退出登录按钮无响应
+- feat 优化请求头：添加 `x-bili-mid`、`x-bili-aurora-eid` 等 B 站设备指纹头
+- build Flutter SDK 3.24.3 → 3.44.0，Dart 3.5.3 → 3.12.0
+- build AGP 8.9.1、Gradle 8.12、Kotlin 2.2.0、NDK 28
+- build 升级所有依赖至最新兼容版本
+
+# 1.12.0
+
+- blah 请不要使用这个版本
+
+# 1.11.0
 - revert 移除没用的推荐模式
 - fix 修复下载时的权限问题
 - fix 修复清除缓存的错误问题

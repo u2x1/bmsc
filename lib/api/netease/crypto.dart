@@ -9,7 +9,8 @@ import 'package:pointycastle/export.dart' as pointy;
 const _iv = '0102030405060708';
 const _presetKey = '0CoJUm6Qyw8W8jud';
 const _linuxapiKey = 'rFgB&h#%2?^eDg:Q';
-const _base62 = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+const _base62 =
+    'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 const _publicKey = '''-----BEGIN PUBLIC KEY-----
 MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQDgtQn2JZ34ZC28NWYpAUd98iZ37BUrX/aKzmFbt7clFSs6sXqHauqKWqdtLkF2KexO40H1YTX8z2lSgBBOAxLsvaklV8k4cBFK9snQXE9/DDaFt6Rr7iVZMldczhC0JNgTz+SHXT6CBHuX3e9SdB1Ua44oncaTWz7OBGLbCiK45wIDAQAB
 -----END PUBLIC KEY-----''';
@@ -26,7 +27,8 @@ Uint8List _aesEncrypt(String text, String mode, String key, String iv) {
   } else {
     underlying = pointy.ECBBlockCipher(pointy.AESEngine());
   }
-  final cipher = pointy.PaddedBlockCipherImpl(pointy.PKCS7Padding(), underlying);
+  final cipher =
+      pointy.PaddedBlockCipherImpl(pointy.PKCS7Padding(), underlying);
   final params = mode == 'cbc'
       ? pointy.PaddedBlockCipherParameters(
           pointy.ParametersWithIV(pointy.KeyParameter(keyBytes), ivBytes), null)
@@ -57,7 +59,8 @@ Map<String, String> weapi(Map<String, dynamic> object) {
   final encSecKey = _rsaEncrypt(secretKey.split('').reversed.join());
   return {
     'params': params,
-    'encSecKey': encSecKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
+    'encSecKey':
+        encSecKey.map((b) => b.toRadixString(16).padLeft(2, '0')).join(),
   };
 }
 
@@ -71,8 +74,9 @@ Map<String, String> linuxapi(Map<String, dynamic> object) {
 
 Map<String, String> eapi(String url, dynamic object) {
   final text = object is Map ? jsonEncode(object) : object.toString();
-  final digest =
-      crypto.md5.convert(utf8.encode('nobody${url}use${text}md5forencrypt')).toString();
+  final digest = crypto.md5
+      .convert(utf8.encode('nobody${url}use${text}md5forencrypt'))
+      .toString();
   final data = '$url-36cd479b6b5-$text-36cd479b6b5-$digest';
   final encrypted = _aesEncrypt(data, 'ecb', _eapiKey, '');
   return {

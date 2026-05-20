@@ -173,15 +173,15 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
     return Scaffold(
       appBar: AppBar(
         title: isSearching
-                ? TextField(
-                    controller: _searchController,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      hintText: '搜索标题或作者...',
-                      border: InputBorder.none,
-                    ),
-                  )
-                :Text(widget.fav.title),
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: '搜索标题或作者...',
+                  border: InputBorder.none,
+                ),
+              )
+            : Text(widget.fav.title),
         leading: isSelectionMode
             ? IconButton(
                 icon: const Icon(Icons.close),
@@ -229,10 +229,10 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                 });
               },
             ),
-            IconButton(
-              icon: Icon(isSearching ? Icons.close : Icons.search),
-              onPressed: _toggleSearch,
-            ),
+          IconButton(
+            icon: Icon(isSearching ? Icons.close : Icons.search),
+            onPressed: _toggleSearch,
+          ),
         ],
       ),
       body: RefreshIndicator(

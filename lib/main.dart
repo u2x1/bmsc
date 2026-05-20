@@ -11,6 +11,7 @@ import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/url.dart';
+import 'package:bmsc/util/route_transitions.dart';
 import 'package:flutter/material.dart';
 import 'package:bmsc/screen/search_screen.dart';
 import 'package:flutter/services.dart';
@@ -195,7 +196,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
         title: GestureDetector(
           onTap: () => Navigator.push(
             context,
-            MaterialPageRoute<Widget>(builder: (_) => const AboutScreen()),
+            zoomRoute(const AboutScreen()),
           ),
           child: Row(
             children: [
