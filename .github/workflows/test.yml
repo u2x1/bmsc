@@ -1,0 +1,43 @@
+name: unit tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Analyze & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - run: flutter --version
+
+      - name: Pub Get
+        run: flutter pub get
+
+      - name: Analyze (lib + test)
+        run: flutter analyze --no-pub lib test
+
+      - name: Unit tests
+        run: flutter test test/unit
+
+      # live 集成测试默认 skip（不触网）；此步仅验证 gate 生效，
+      # 防止将来误提交导致 CI 打真实 B 站接口
+      - name: Verify live tests are skip-gated
+        run: flutter test test/integration 2>&1 | tee /tmp/live.out
+      - name: Assert live tests remain skipped in CI
+        run: |
+          if grep -q "~" /tmp/live.out; then
+            echo "OK: live tests skipped in CI (no real Bilibili API calls)"
+          else
+            echo "::error::live 测试在 CI 中真实执行了（应保持 skipped，勿打真实 B 站接口）"
+            exit 1
+          fi
