@@ -424,11 +424,11 @@ class AudioService {
       if (srcs == null) {
         _logger.warning(
             'No audio sources found for BVID: ${currentSource.tag.id}');
-        if (player.loopMode != LoopMode.one &&
-            player.currentIndex != null &&
-            player.currentIndex! < playlist.length - 1) {
-          await player.seekToNext();
-          await player.play();
+        // 不自动跳歌：seekToNext 会再次触发 currentIndexStream →
+        // _hijackDummySource → 又失败又跳，网络异常时表现为「一路跳歌」。
+        // 停在当前曲目并暂停，用户可手动重试或切歌。
+        if (player.playing) {
+          await player.pause();
         }
         return;
       }
