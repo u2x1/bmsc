@@ -410,15 +410,18 @@ class AudioService {
       return;
     }
     await doAndSavePlaylist(() async {
+      // 闭包内无法利用外部的 null 检查做类型提升，取局部非空变量
+      final targetIndex = index!;
+      final newSources = srcs!;
       final isShuffle = player.shuffleModeEnabled;
       if (isShuffle) {
         await player.setShuffleModeEnabled(false);
       }
-      await playlist.insertAll(index! + 1, srcs!);
+      await playlist.insertAll(targetIndex + 1, newSources);
       if (player.loopMode == LoopMode.one) {
-        await player.seek(Duration.zero, index: index + 1);
+        await player.seek(Duration.zero, index: targetIndex + 1);
       }
-      await playlist.removeAt(index);
+      await playlist.removeAt(targetIndex);
       if (isShuffle) {
         await player.setShuffleModeEnabled(true);
       }

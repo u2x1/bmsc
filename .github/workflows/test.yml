@@ -16,6 +16,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          flutter-version: '3.44.0' # 与本地开发环境一致，避免 stable 漂移导致本地过/CI 挂
           cache: true
 
       - run: flutter --version

@@ -22,6 +22,8 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          flutter-version: '3.44.0' # 与本地开发环境一致
+
       - run: flutter --version
 
       - uses: olegtarasov/get-tag@v2.1.4
