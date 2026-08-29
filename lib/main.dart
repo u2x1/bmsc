@@ -75,6 +75,18 @@ class MyApp extends StatelessWidget {
           theme: ThemeProvider.lightTheme,
           darkTheme: ThemeProvider.darkTheme,
           themeMode: ThemeProvider.instance.themeMode,
+          builder: (context, child) {
+            // 长辈模式：在系统字体缩放基础上整体放大
+            if (!ThemeProvider.instance.elderMode) return child!;
+            final systemFactor = MediaQuery.textScalerOf(context).scale(1.0);
+            return MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(
+                    systemFactor * ThemeProvider.elderTextScale),
+              ),
+              child: child!,
+            );
+          },
           home: Builder(builder: (context) {
             return Scaffold(
               body: MyHomePage(title: 'BiliMusic'),
@@ -239,25 +251,28 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
           ),
         ),
         actions: [
-          IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
+          if (!ThemeProvider.instance.elderMode) ...[
+            IconButton(
+              onPressed: () => _pushThrottled<Widget>(
+                MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
+              ),
+              icon: const Icon(Icons.search),
             ),
-            icon: const Icon(Icons.search),
-          ),
-          IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()),
+            IconButton(
+              onPressed: () => _pushThrottled<Widget>(
+                MaterialPageRoute<Widget>(
+                    builder: (_) => const DynamicScreen()),
+              ),
+              icon: const Icon(Icons.dynamic_feed),
             ),
-            icon: const Icon(Icons.dynamic_feed),
-          ),
-          IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(
-                  builder: (_) => const LocalHistoryScreen()),
+            IconButton(
+              onPressed: () => _pushThrottled<Widget>(
+                MaterialPageRoute<Widget>(
+                    builder: (_) => const LocalHistoryScreen()),
+              ),
+              icon: const Icon(Icons.history_outlined),
             ),
-            icon: const Icon(Icons.history_outlined),
-          ),
+          ],
           IconButton(
             onPressed: () => _pushThrottled<bool>(
               MaterialPageRoute<bool>(

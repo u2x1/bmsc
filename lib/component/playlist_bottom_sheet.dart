@@ -1,4 +1,5 @@
 import 'package:bmsc/service/audio_service.dart';
+import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
@@ -178,8 +179,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                       builder: (_, stateSnapshot) {
                         final currentIndex =
                             stateSnapshot.data?.$1?.currentIndex;
-                        final playing =
-                            stateSnapshot.data?.$2.playing ?? false;
+                        final playing = stateSnapshot.data?.$2.playing ?? false;
 
                         // 保留 shrinkWrap 让弹层高度贴合内容
                         return ReorderableListView.builder(
@@ -187,6 +187,8 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                           shrinkWrap: true,
                           itemCount: playlist.length,
                           onReorderItem: (oldIndex, newIndex) async {
+                            // 长辈模式下不允许重排
+                            if (ThemeProvider.instance.elderMode) return;
                             if (oldIndex < newIndex) newIndex--;
                             await service.doAndSavePlaylist(() async {
                               await service.playlist.move(oldIndex, newIndex);
@@ -229,8 +231,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                   children: [
                                     if (item.extras['dummy'] ?? false)
                                       Container(
-                                        margin:
-                                            const EdgeInsets.only(right: 4),
+                                        margin: const EdgeInsets.only(right: 4),
                                         padding: const EdgeInsets.symmetric(
                                             horizontal: 2, vertical: 2),
                                         decoration: BoxDecoration(
@@ -263,8 +264,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                     ),
                                     if (item.extras['cached'] ?? false)
                                       Padding(
-                                        padding:
-                                            const EdgeInsets.only(left: 4),
+                                        padding: const EdgeInsets.only(left: 4),
                                         child: Icon(Icons.check_circle,
                                             size: 16,
                                             color: Theme.of(context)
@@ -277,8 +277,8 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                   children: [
                                     if (item.extras['multi'] ?? false) ...[
                                       const Padding(
-                                        padding: EdgeInsets.symmetric(
-                                            horizontal: 4),
+                                        padding:
+                                            EdgeInsets.symmetric(horizontal: 4),
                                         child: Icon(Icons.album, size: 12),
                                       ),
                                       Flexible(
@@ -307,32 +307,91 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    if (item.extras['multi'] ?? false)
+                                    // 长辈模式下隐藏屏蔽/删除，防止误删
+                                    if (ThemeProvider.instance.elderMode)
+                                      const SizedBox.shrink()
+                                    else ...[
+                                      if (item.extras['multi'] ?? false)
+                                        Container(
+                                          margin:
+                                              const EdgeInsets.only(right: 8),
+                                          child: IconButton(
+                                            tooltip: '屏蔽该分 P',
+                                            style: const ButtonStyle(
+                                              tapTargetSize:
+                                                  MaterialTapTargetSize
+                                                      .shrinkWrap,
+                                            ),
+                                            constraints: const BoxConstraints(
+                                                minWidth: 40, minHeight: 40),
+                                            padding: EdgeInsets.zero,
+                                            iconSize: 20,
+                                            icon: const Icon(
+                                                Icons.not_interested),
+                                            onPressed: () async {
+                                              final bvid =
+                                                  item.extras['bvid'] as String;
+                                              final cid =
+                                                  item.extras['cid'] as int;
+                                              final removedSource =
+                                                  playlist[index];
+                                              await DatabaseManager
+                                                  .addExcludedPart(bvid, cid);
+                                              await service
+                                                  .doAndSavePlaylist(() async {
+                                                await service.playlist
+                                                    .removeAt(index);
+                                              });
+                                              if (!context.mounted) return;
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content:
+                                                      const Text('已屏蔽该分 P'),
+                                                  action: SnackBarAction(
+                                                    label: '撤销',
+                                                    onPressed: () async {
+                                                      await DatabaseManager
+                                                          .removeExcludedPart(
+                                                              bvid, cid);
+                                                      await service
+                                                          .doAndSavePlaylist(
+                                                              () async {
+                                                        if (index <=
+                                                            service.playlist
+                                                                .length) {
+                                                          await service.playlist
+                                                              .insert(index,
+                                                                  removedSource);
+                                                        } else {
+                                                          await service.playlist
+                                                              .add(
+                                                                  removedSource);
+                                                        }
+                                                      });
+                                                    },
+                                                  ),
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                        ),
                                       Container(
-                                        margin:
-                                            const EdgeInsets.only(right: 8),
+                                        margin: const EdgeInsets.only(right: 8),
                                         child: IconButton(
-                                          tooltip: '屏蔽该分 P',
+                                          tooltip: '删除',
                                           style: const ButtonStyle(
-                                            tapTargetSize:
-                                                MaterialTapTargetSize
-                                                    .shrinkWrap,
+                                            tapTargetSize: MaterialTapTargetSize
+                                                .shrinkWrap,
                                           ),
                                           constraints: const BoxConstraints(
                                               minWidth: 40, minHeight: 40),
                                           padding: EdgeInsets.zero,
                                           iconSize: 20,
-                                          icon: const Icon(
-                                              Icons.not_interested),
+                                          icon: const Icon(Icons.delete),
                                           onPressed: () async {
-                                            final bvid = item.extras['bvid']
-                                                as String;
-                                            final cid =
-                                                item.extras['cid'] as int;
                                             final removedSource =
                                                 playlist[index];
-                                            await DatabaseManager
-                                                .addExcludedPart(bvid, cid);
                                             await service
                                                 .doAndSavePlaylist(() async {
                                               await service.playlist
@@ -342,14 +401,10 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                             ScaffoldMessenger.of(context)
                                                 .showSnackBar(
                                               SnackBar(
-                                                content:
-                                                    const Text('已屏蔽该分 P'),
+                                                content: const Text('已从播放列表删除'),
                                                 action: SnackBarAction(
                                                   label: '撤销',
                                                   onPressed: () async {
-                                                    await DatabaseManager
-                                                        .removeExcludedPart(
-                                                            bvid, cid);
                                                     await service
                                                         .doAndSavePlaylist(
                                                             () async {
@@ -371,62 +426,13 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                           },
                                         ),
                                       ),
-                                    Container(
-                                      margin: const EdgeInsets.only(right: 8),
-                                      child: IconButton(
-                                        tooltip: '删除',
-                                        style: const ButtonStyle(
-                                          tapTargetSize:
-                                              MaterialTapTargetSize.shrinkWrap,
-                                        ),
-                                        constraints: const BoxConstraints(
-                                            minWidth: 40, minHeight: 40),
-                                        padding: EdgeInsets.zero,
-                                        iconSize: 20,
-                                        icon: const Icon(Icons.delete),
-                                        onPressed: () async {
-                                          final removedSource =
-                                              playlist[index];
-                                          await service
-                                              .doAndSavePlaylist(() async {
-                                            await service.playlist
-                                                .removeAt(index);
-                                          });
-                                          if (!context.mounted) return;
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            SnackBar(
-                                              content:
-                                                  const Text('已从播放列表删除'),
-                                              action: SnackBarAction(
-                                                label: '撤销',
-                                                onPressed: () async {
-                                                  await service
-                                                      .doAndSavePlaylist(
-                                                          () async {
-                                                    if (index <=
-                                                        service.playlist
-                                                            .length) {
-                                                      await service.playlist
-                                                          .insert(index,
-                                                              removedSource);
-                                                    } else {
-                                                      await service.playlist
-                                                          .add(removedSource);
-                                                    }
-                                                  });
-                                                },
-                                              ),
-                                            ),
-                                          );
-                                        },
+                                    ],
+                                    if (!ThemeProvider.instance.elderMode)
+                                      ReorderableDragStartListener(
+                                        index: index,
+                                        child: const Icon(Icons.drag_handle,
+                                            size: 24),
                                       ),
-                                    ),
-                                    ReorderableDragStartListener(
-                                      index: index,
-                                      child: const Icon(Icons.drag_handle,
-                                          size: 24),
-                                    ),
                                   ],
                                 ),
                                 onTap: () async {

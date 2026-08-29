@@ -1,5 +1,6 @@
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:bmsc/service/audio_service.dart';
+import 'package:bmsc/theme.dart';
 import 'package:bmsc/util/widget.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -36,6 +37,133 @@ class _PlayingCardState extends State<PlayingCard> {
     } finally {
       _navigating = false;
     }
+  }
+
+  /// 长辈模式：大封面、大按钮、无播放列表入口（防误删）
+  Widget _buildElderLayout(
+    BuildContext context,
+    AudioPlayer player,
+    String artUri, {
+    required String title,
+    required String artist,
+    required Duration position,
+    required Duration duration,
+    required bool playing,
+    required bool isLoadingOrBuffering,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ProgressBar(
+          progress: position,
+          total: duration,
+          onSeek: player.seek,
+          barHeight: 6,
+          baseBarColor: colorScheme.surfaceDim,
+          progressBarColor: colorScheme.primary,
+          thumbRadius: 8,
+          thumbColor: colorScheme.primary,
+          timeLabelLocation: TimeLabelLocation.none,
+        ),
+        InkWell(
+          onTap: _openDetail,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            child: Row(
+              children: [
+                shadow(
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: SizedBox(
+                      width: 64,
+                      height: 64,
+                      child: artUri == ""
+                          ? Container(
+                              color: colorScheme.surfaceContainerHighest,
+                              child: Icon(Icons.music_note,
+                                  size: 32, color: colorScheme.primary),
+                            )
+                          : CachedNetworkImage(
+                              imageUrl: "$artUri@256w_144h_1c",
+                              placeholder: (context, url) => Container(
+                                color: colorScheme.surfaceContainerHighest,
+                                child: Icon(Icons.music_note,
+                                    size: 32, color: colorScheme.primary),
+                              ),
+                              errorWidget: (context, url, error) => Container(
+                                color: colorScheme.surfaceContainerHighest,
+                                child: Icon(Icons.music_note,
+                                    size: 32, color: colorScheme.primary),
+                              ),
+                              fit: BoxFit.cover,
+                            ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        title,
+                        style: Theme.of(context).textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        artist,
+                        style: Theme.of(context).textTheme.bodyMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.skip_previous, size: 36),
+                      onPressed: player.hasPrevious
+                          ? player.seekToPreviousRegardlessOfLoopMode
+                          : null,
+                    ),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: colorScheme.primaryContainer,
+                        shape: BoxShape.circle,
+                      ),
+                      child: IconButton(
+                        iconSize: 40,
+                        icon: Icon(
+                          playing ? Icons.pause : Icons.play_arrow,
+                          color: colorScheme.onPrimaryContainer,
+                        ),
+                        onPressed: isLoadingOrBuffering
+                            ? null
+                            : playing
+                                ? player.pause
+                                : player.play,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.skip_next, size: 36),
+                      onPressed: player.hasNext
+                          ? player.seekToNextRegardlessOfLoopMode
+                          : null,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -78,6 +206,20 @@ class _PlayingCardState extends State<PlayingCard> {
                   ProcessingState.buffering
                 ].contains(data?.$4.processingState);
 
+                if (ThemeProvider.instance.elderMode) {
+                  return _buildElderLayout(
+                    context,
+                    player,
+                    artUri,
+                    title: state?.currentSource?.tag.title ?? "",
+                    artist: state?.currentSource?.tag.artist ?? "",
+                    position: position,
+                    duration: duration,
+                    playing: playing,
+                    isLoadingOrBuffering: isLoadingOrBuffering,
+                  );
+                }
+
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -88,8 +230,7 @@ class _PlayingCardState extends State<PlayingCard> {
                       onSeek: player.seek,
                       barHeight: 2,
                       baseBarColor: Theme.of(context).colorScheme.surfaceDim,
-                      progressBarColor:
-                          Theme.of(context).colorScheme.primary,
+                      progressBarColor: Theme.of(context).colorScheme.primary,
                       thumbRadius: 0,
                       timeLabelLocation: TimeLabelLocation.none,
                     ),
@@ -131,9 +272,8 @@ class _PlayingCardState extends State<PlayingCard> {
                                                     .colorScheme
                                                     .primary),
                                           ),
-                                          errorWidget:
-                                              (context, url, error) =>
-                                                  Container(
+                                          errorWidget: (context, url, error) =>
+                                              Container(
                                             color: Theme.of(context)
                                                 .colorScheme
                                                 .surfaceContainerHighest,
@@ -158,9 +298,8 @@ class _PlayingCardState extends State<PlayingCard> {
                                 children: [
                                   Text(
                                     state?.currentSource?.tag.title ?? "",
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleSmall,
+                                    style:
+                                        Theme.of(context).textTheme.titleSmall,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -188,8 +327,7 @@ class _PlayingCardState extends State<PlayingCard> {
                                       : null,
                                 ),
                                 Opacity(
-                                  opacity:
-                                      isLoadingOrBuffering ? 0.6 : 1.0,
+                                  opacity: isLoadingOrBuffering ? 0.6 : 1.0,
                                   child: IconButton(
                                     icon: Icon(playing
                                         ? Icons.pause
@@ -215,15 +353,13 @@ class _PlayingCardState extends State<PlayingCard> {
                                       context: context,
                                       builder: (context) =>
                                           const PlaylistBottomSheet(),
-                                      backgroundColor: Theme.of(context)
-                                          .colorScheme
-                                          .surface,
+                                      backgroundColor:
+                                          Theme.of(context).colorScheme.surface,
                                       isScrollControlled: true,
                                       constraints: BoxConstraints(
-                                        maxHeight: MediaQuery.of(context)
-                                                .size
-                                                .height *
-                                            0.7,
+                                        maxHeight:
+                                            MediaQuery.of(context).size.height *
+                                                0.7,
                                       ),
                                     );
                                   },

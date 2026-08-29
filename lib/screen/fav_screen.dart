@@ -2,6 +2,7 @@ import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/fav.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import '../service/shared_preferences_service.dart';
 import 'fav_detail_screen.dart';
@@ -317,6 +318,7 @@ class FavScreenState extends State<FavScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final elderMode = ThemeProvider.instance.elderMode;
     return Scaffold(
       appBar: AppBar(
         title: const Text('云收藏夹',
@@ -324,10 +326,11 @@ class FavScreenState extends State<FavScreen> {
         actions: !signedin
             ? []
             : [
-                IconButton(
-                  icon: const Icon(Icons.add),
-                  onPressed: _showCreateFolderDialog,
-                ),
+                if (!elderMode)
+                  IconButton(
+                    icon: const Icon(Icons.add),
+                    onPressed: _showCreateFolderDialog,
+                  ),
                 IconButton(
                   icon: const Icon(Icons.refresh),
                   onPressed: loadFavorites,
@@ -360,103 +363,110 @@ class FavScreenState extends State<FavScreen> {
                   ),
                 )
               : ListView(
-              children: [
-                if (favList.isEmpty && collectedFavList.isEmpty)
-                  SizedBox(
-                    height: MediaQuery.of(context).size.height * 0.6,
-                    child: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const Icon(Icons.folder_outlined,
-                              size: 64, color: Colors.grey),
-                          const SizedBox(height: 16),
-                          Text(
-                            '暂无收藏夹',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Theme.of(context).colorScheme.secondary,
-                            ),
+                  children: [
+                    if (favList.isEmpty && collectedFavList.isEmpty)
+                      SizedBox(
+                        height: MediaQuery.of(context).size.height * 0.6,
+                        child: Center(
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              const Icon(Icons.folder_outlined,
+                                  size: 64, color: Colors.grey),
+                              const SizedBox(height: 16),
+                              Text(
+                                '暂无收藏夹',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color:
+                                      Theme.of(context).colorScheme.secondary,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        ),
                       ),
-                    ),
-                  ),
 
-                if (favList.isNotEmpty || collectedFavList.isNotEmpty) ...[
-                  FutureBuilder<bool>(
-                    future: SharedPreferencesService.instance.then((prefs) =>
-                        prefs.getBool('show_daily_recommendations') ?? true),
-                    builder: (context, snapshot) {
-                      if (!snapshot.hasData || !snapshot.data!) {
-                        return const SizedBox();
-                      }
-                      return Column(
-                        children: [
-                          ListTile(
-                            contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 24.0,
-                            ),
-                            leading: const Icon(Icons.star_border),
-                            title: const Text('每日推荐',
-                                style: TextStyle(fontWeight: FontWeight.w500)),
-                            subtitle: const Text('基于收藏夹的推荐'),
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute<Widget>(
-                                  builder: (_) => const RecommendationScreen()),
-                            ),
+                    if (favList.isNotEmpty || collectedFavList.isNotEmpty) ...[
+                      if (!elderMode)
+                        FutureBuilder<bool>(
+                          future: SharedPreferencesService.instance.then(
+                              (prefs) =>
+                                  prefs.getBool('show_daily_recommendations') ??
+                                  true),
+                          builder: (context, snapshot) {
+                            if (!snapshot.hasData || !snapshot.data!) {
+                              return const SizedBox();
+                            }
+                            return Column(
+                              children: [
+                                ListTile(
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 24.0,
+                                  ),
+                                  leading: const Icon(Icons.star_border),
+                                  title: const Text('每日推荐',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w500)),
+                                  subtitle: const Text('基于收藏夹的推荐'),
+                                  onTap: () => Navigator.push(
+                                    context,
+                                    MaterialPageRoute<Widget>(
+                                        builder: (_) =>
+                                            const RecommendationScreen()),
+                                  ),
+                                ),
+                                const Divider(),
+                              ],
+                            );
+                          },
+                        ),
+                    ],
+
+                    // 我的收藏夹标题
+                    if (favList.isNotEmpty)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 24.0, vertical: 8.0),
+                        child: Text(
+                          '我的收藏夹',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
                           ),
-                          const Divider(),
-                        ],
-                      );
-                    },
-                  ),
-                ],
-
-                // 我的收藏夹标题
-                if (favList.isNotEmpty)
-                  const Padding(
-                    padding:
-                        EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-                    child: Text(
-                      '我的收藏夹',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                  ),
 
-                // 我的收藏夹列表
-                ...buildFavList(favList, true),
+                    // 我的收藏夹列表
+                    ...buildFavList(favList, true),
 
-                // 收藏的收藏夹标题
-                if (collectedFavList.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  const Padding(
-                    padding:
-                        EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
-                    child: Text(
-                      '收藏的收藏夹',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                    // 收藏的收藏夹标题
+                    if (collectedFavList.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                            horizontal: 24.0, vertical: 8.0),
+                        child: Text(
+                          '收藏的收藏夹',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
 
-                  // 收藏的收藏夹列表
-                  ...buildFavList(collectedFavList, false),
-                ],
+                      // 收藏的收藏夹列表
+                      ...buildFavList(collectedFavList, false),
+                    ],
 
-                // 显示空状态
-              ],
-            ),
+                    // 显示空状态
+                  ],
+                ),
     );
   }
 
   List<Widget> buildFavList(List<Fav> favs, bool isOwned) {
+    final elderMode = ThemeProvider.instance.elderMode;
     return favs
         .map((fav) => (hideFav != null && hideFav!.contains(fav.id))
             ? SizedBox()
@@ -465,6 +475,7 @@ class FavScreenState extends State<FavScreen> {
                   ListTile(
                       contentPadding: const EdgeInsets.symmetric(
                         horizontal: 24.0,
+                        vertical: 4.0,
                       ),
                       leading: Icon(
                         Icons.folder_outlined,
@@ -486,113 +497,120 @@ class FavScreenState extends State<FavScreen> {
                           ),
                         );
                       },
-                      trailing: IconButton(
-                        icon: const Icon(Icons.more_vert),
-                        onPressed: () => showDialog(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            content: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (isOwned) ...[
-                                  ListTile(
-                                    leading: const Icon(Icons.playlist_add),
-                                    title: const Text('添加到播放列表'),
-                                    onTap: () async {
-                                      Navigator.pop(context);
-                                      final bvids = await DatabaseManager
-                                          .getCachedFavBvids(fav.id);
-                                      if (!context.mounted) return;
-                                      if (bvids.isEmpty) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(
-                                              content:
-                                                  Text('本地缓存为空，请先打开收藏夹加载内容')),
-                                        );
-                                        return;
-                                      }
-                                      await AudioService.instance
-                                          .then((x) => x.playByBvids(bvids));
-                                    },
+                      trailing: elderMode
+                          ? null
+                          : IconButton(
+                              icon: const Icon(Icons.more_vert),
+                              onPressed: () => showDialog(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  content: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (isOwned) ...[
+                                        ListTile(
+                                          leading:
+                                              const Icon(Icons.playlist_add),
+                                          title: const Text('添加到播放列表'),
+                                          onTap: () async {
+                                            Navigator.pop(context);
+                                            final bvids = await DatabaseManager
+                                                .getCachedFavBvids(fav.id);
+                                            if (!context.mounted) return;
+                                            if (bvids.isEmpty) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                    content: Text(
+                                                        '本地缓存为空，请先打开收藏夹加载内容')),
+                                              );
+                                              return;
+                                            }
+                                            await AudioService.instance.then(
+                                                (x) => x.playByBvids(bvids));
+                                          },
+                                        ),
+                                        ListTile(
+                                          leading:
+                                              const Icon(Icons.star_outline),
+                                          title: const Text('设为默认收藏夹'),
+                                          onTap: () async {
+                                            Navigator.pop(context);
+                                            await SharedPreferencesService
+                                                .setDefaultFavFolder(
+                                                    fav.id, fav.title);
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                SnackBar(
+                                                  content: Text(
+                                                      '已将 ${fav.title} 设为默认收藏夹'),
+                                                ),
+                                              );
+                                            }
+                                          },
+                                        ),
+                                        ListTile(
+                                          leading: const Icon(Icons.edit),
+                                          title: const Text('编辑收藏夹'),
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _showEditFolderDialog(fav);
+                                          },
+                                        ),
+                                        ListTile(
+                                          leading: Icon(Icons.delete,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .error),
+                                          title: Text('删除收藏夹',
+                                              style: TextStyle(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .error)),
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _showDeleteConfirmation(fav);
+                                          },
+                                        ),
+                                      ],
+                                      ListTile(
+                                        leading:
+                                            const Icon(Icons.visibility_off),
+                                        title: const Text('隐藏收藏夹'),
+                                        onTap: () async {
+                                          Navigator.pop(context);
+                                          hideFav ??= <int>{};
+                                          hideFav!.add(fav.id);
+                                          final success =
+                                              await SharedPreferencesService
+                                                  .saveFavHideList(hideFav!);
+                                          if (success == true) {
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                    content: Text('隐藏成功')),
+                                              );
+                                              setState(() {});
+                                            }
+                                          } else {
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(
+                                                const SnackBar(
+                                                    content: Text('隐藏失败')),
+                                              );
+                                            }
+                                            hideFav!.remove(fav.id);
+                                          }
+                                        },
+                                      ),
+                                    ],
                                   ),
-                                  ListTile(
-                                    leading: const Icon(Icons.star_outline),
-                                    title: const Text('设为默认收藏夹'),
-                                    onTap: () async {
-                                      Navigator.pop(context);
-                                      await SharedPreferencesService
-                                          .setDefaultFavFolder(
-                                              fav.id, fav.title);
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          SnackBar(
-                                            content:
-                                                Text('已将 ${fav.title} 设为默认收藏夹'),
-                                          ),
-                                        );
-                                      }
-                                    },
-                                  ),
-                                  ListTile(
-                                    leading: const Icon(Icons.edit),
-                                    title: const Text('编辑收藏夹'),
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      _showEditFolderDialog(fav);
-                                    },
-                                  ),
-                                  ListTile(
-                                    leading: Icon(Icons.delete,
-                                        color: Theme.of(context)
-                                            .colorScheme
-                                            .error),
-                                    title: Text('删除收藏夹',
-                                        style: TextStyle(
-                                            color: Theme.of(context)
-                                                .colorScheme
-                                                .error)),
-                                    onTap: () {
-                                      Navigator.pop(context);
-                                      _showDeleteConfirmation(fav);
-                                    },
-                                  ),
-                                ],
-                                ListTile(
-                                  leading: const Icon(Icons.visibility_off),
-                                  title: const Text('隐藏收藏夹'),
-                                  onTap: () async {
-                                    Navigator.pop(context);
-                                    hideFav ??= <int>{};
-                                    hideFav!.add(fav.id);
-                                    final success =
-                                        await SharedPreferencesService
-                                            .saveFavHideList(hideFav!);
-                                    if (success == true) {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(content: Text('隐藏成功')),
-                                        );
-                                        setState(() {});
-                                      }
-                                    } else {
-                                      if (context.mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(
-                                          const SnackBar(content: Text('隐藏失败')),
-                                        );
-                                      }
-                                      hideFav!.remove(fav.id);
-                                    }
-                                  },
                                 ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      )),
+                              ),
+                            )),
                   const Divider(),
                 ],
               ))

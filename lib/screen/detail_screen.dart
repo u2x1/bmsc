@@ -12,6 +12,7 @@ import 'package:bmsc/screen/user_detail_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
@@ -169,7 +170,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _buildShareButton() {
-    if (_isAudioServiceLoading) {
+    if (_isAudioServiceLoading || ThemeProvider.instance.elderMode) {
       return const SizedBox.shrink();
     }
 
@@ -247,11 +248,15 @@ class _DetailScreenState extends State<DetailScreen> {
                         horizontal: isSmallScreen ? 8.0 : 16.0),
                     child: Column(
                       children: [
-                        _buildPlaybackControls(),
-                        SizedBox(height: isSmallScreen ? 8 : 16),
+                        if (!ThemeProvider.instance.elderMode) ...[
+                          _buildPlaybackControls(),
+                          SizedBox(height: isSmallScreen ? 8 : 16),
+                        ],
                         _buildTransportControls(),
-                        SizedBox(height: isSmallScreen ? 8 : 16),
-                        _buildAdditionalControls(context),
+                        if (!ThemeProvider.instance.elderMode) ...[
+                          SizedBox(height: isSmallScreen ? 8 : 16),
+                          _buildAdditionalControls(context),
+                        ],
                       ],
                     ),
                   ),
@@ -320,11 +325,15 @@ class _DetailScreenState extends State<DetailScreen> {
                   padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   child: Column(
                     children: [
-                      _buildPlaybackControls(),
-                      SizedBox(height: verticalSpacing),
+                      if (!ThemeProvider.instance.elderMode) ...[
+                        _buildPlaybackControls(),
+                        SizedBox(height: verticalSpacing),
+                      ],
                       _buildTransportControls(),
-                      SizedBox(height: verticalSpacing),
-                      _buildAdditionalControls(context),
+                      if (!ThemeProvider.instance.elderMode) ...[
+                        SizedBox(height: verticalSpacing),
+                        _buildAdditionalControls(context),
+                      ],
                     ],
                   ),
                 ),
@@ -348,7 +357,8 @@ class _DetailScreenState extends State<DetailScreen> {
     var imageSize = Size(width * factor, height * factor);
 
     return LayoutBuilder(builder: (context, constraints) {
-      if (constraints.hasBoundedWidth && imageSize.width > constraints.maxWidth) {
+      if (constraints.hasBoundedWidth &&
+          imageSize.width > constraints.maxWidth) {
         imageSize = imageSize * (constraints.maxWidth / imageSize.width);
       }
       return _buildCoverImageContent(src, imageSize, showTapHint);
@@ -476,6 +486,7 @@ class _DetailScreenState extends State<DetailScreen> {
     return _PositionProgressBar(
       player: _audioService!.player,
       isSmallScreen: isSmallScreen,
+      elderMode: ThemeProvider.instance.elderMode,
     );
   }
 
@@ -664,7 +675,8 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget _buildTransportControls() {
     // 使用辅助方法判断小屏幕
     final isSmallScreen = _isSmallScreen(context);
-    final iconSize = isSmallScreen ? 30.0 : 36.0;
+    final elderMode = ThemeProvider.instance.elderMode;
+    final iconSize = elderMode ? 48.0 : (isSmallScreen ? 30.0 : 36.0);
     final player = _audioService!.player;
     final hasPrevious = player.hasPrevious;
     final hasNext = player.hasNext;
@@ -684,7 +696,8 @@ class _DetailScreenState extends State<DetailScreen> {
             shape: BoxShape.circle,
           ),
           child: Padding(
-            padding: EdgeInsets.all(isSmallScreen ? 6.0 : 8.0),
+            padding:
+                EdgeInsets.all(elderMode ? 12.0 : (isSmallScreen ? 6.0 : 8.0)),
             child:
                 _playPauseButton(playerState, player, context, isSmallScreen),
           ),
@@ -700,7 +713,8 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget _playPauseButton(PlayerState? playerState, AudioPlayer player,
       BuildContext context, bool isSmallScreen) {
     final processingState = playerState?.processingState;
-    final iconSize = isSmallScreen ? 34.0 : 40.0;
+    final iconSize =
+        ThemeProvider.instance.elderMode ? 56.0 : (isSmallScreen ? 34.0 : 40.0);
 
     if (processingState == ProcessingState.loading ||
         processingState == ProcessingState.buffering) {
@@ -1625,10 +1639,12 @@ class _DetailScreenState extends State<DetailScreen> {
 class _PositionProgressBar extends StatelessWidget {
   final AudioPlayer player;
   final bool isSmallScreen;
+  final bool elderMode;
 
   const _PositionProgressBar({
     required this.player,
     required this.isSmallScreen,
+    this.elderMode = false,
   });
 
   @override
@@ -1651,12 +1667,13 @@ class _PositionProgressBar extends StatelessWidget {
             buffered: state.$2,
             total: state.$3 ?? Duration.zero,
             onSeek: player.seek,
+            barHeight: elderMode ? 8 : 5,
             timeLabelTextStyle: TextStyle(
               color: Theme.of(context).colorScheme.primary,
-              fontSize: 10,
+              fontSize: elderMode ? 14 : 10,
             ),
-            timeLabelPadding: 5,
-            thumbRadius: 5,
+            timeLabelPadding: elderMode ? 8 : 5,
+            thumbRadius: elderMode ? 10 : 5,
           );
         },
       ),
