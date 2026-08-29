@@ -11,6 +11,8 @@
 - fix 全局请求超时（connect/send/receive）
 - test 新增系统性测试套件：61 个单元测试 + 14 个真实接口集成测试（扫码登录一次，缓存复用零人工）
 - ci 新增单元测试 workflow（push/PR 自动执行）
+- build Flutter SDK 3.44.0 → 3.47.2，Dart 3.12 → 3.13.2（修复新 analyzer 抓出的空安全闭包问题；CI 固定版本与本地一致）
+- build Gradle 8.12 → 8.14.2、AGP 8.9.1 → 8.11.1、Kotlin 2.2.0 → 2.2.20（满足 Flutter 3.47.2 最低要求）
 
 # 1.12.1
 - fix WBI 签名算法适配，修复搜索、音频播放等接口

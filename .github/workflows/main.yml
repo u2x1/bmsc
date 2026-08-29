@@ -22,7 +22,7 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          flutter-version: '3.44.0' # 与本地开发环境一致
+          flutter-version: '3.47.2' # 与本地开发环境一致
 
       - run: flutter --version
 
