@@ -19,15 +19,33 @@ dart test test/unit          # 或 flutter test test/unit
 
 ## 2. 集成测试（真实接口、live tag、默认跳过）
 
-对真实 passport/api 接口做**只读**冒烟验证（不发短信、不写数据），跑在真实网络上：
+对真实 passport/api 接口做**只读**冒烟验证（不发短信、不写数据），跑在真实网络上。
+
+**日常用法（推荐，人工操作最少）：**
 
 ```bash
-# 未登录态
-BMSC_LIVE=1 dart test test/integration
-
-# 提供已登录 cookie（SESSDATA/bili_jct/DedeUserID/buvid3 分号拼接）
-BMSC_LIVE=1 BMSC_COOKIE="SESSDATA=...; bili_jct=..." dart test test/integration
+flutter test/test/run_live.sh
 ```
+
+- **首次**：自动进入扫码模式，终端打印二维码，用哔哩哔哩手机 App 扫一次
+- **之后**（SESSDATA 约 180 天有效）：缓存登录态自动复用，**全自动**，无需任何人工介入
+- 登录态缓存在 `test/credentials/live_session.json`（已在 .gitignore，含敏感凭据勿提交）
+- 扫码登录同时获得 access_token → App playurl 等高画质接口测试自动启用
+
+**高级用法：**
+
+| 环境变量 | 作用 |
+|---|---|
+| `BMSC_LIVE=1` | 启用 live 测试（不设则全部 skip） |
+| `BMSC_LOGIN=1` | 强制走扫码登录（换账号 / 缓存被删） |
+| `BMSC_COOKIE="SESSDATA=...; bili_jct=..."` | 手动提供 cookie（CI 或特殊场景，优先级高于缓存文件） |
+
+```bash
+BMSC_LIVE=1 flutter test test/integration          # 未登录态
+BMSC_LIVE=1 BMSC_COOKIE="..." flutter test test/integration
+```
+
+> CI（无终端）自动降级：不扫码、登录态用例记录行为；设 `BMSC_COOKIE` 可跑完整登录态。
 
 覆盖：WBI key 拉取、极验参数结构、TV/Web 二维码生成与轮询、排行榜→详情→分P→UP 主互证、热搜、安全中心预捕获、登录态接口（myinfo/历史/动态/收藏夹）、App playurl。
 

@@ -861,7 +861,7 @@ packages:
     source: hosted
     version: "2.2.0"
   qr:
-    dependency: transitive
+    dependency: "direct dev"
     description:
       name: qr
       sha256: "5a1d2586170e172b8a8c8470bbbffd5eb0cd38a66c0d77155ea138d3af3a4445"

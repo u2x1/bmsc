@@ -8,14 +8,24 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:test/test.dart';
 
 import '../helpers/live_env.dart';
+import '../helpers/live_session.dart';
 
-/// 真实 API 集成测试（只读、不发短信/不写数据）。
+/// 真实 API 集成测试（只读、不发短信/不写数据、不请求任何写接口）。
 ///
-/// 运行方式：
+/// 运行方式（推荐，登录态自动获取并缓存复用）：
 /// ```bash
-/// BMSC_LIVE=1 dart test test/integration          # 未登录态
-/// BMSC_LIVE=1 BMSC_COOKIE="SESSDATA=...; bili_jct=..." dart test test/integration
+/// flutter test/test/run_live.sh          # 首次会提示扫码（仅一次），之后全自动
 /// ```
+///
+/// 高级用法：
+/// ```bash
+/// BMSC_LIVE=1 flutter test test/integration                 # 未登录态
+/// BMSC_LIVE=1 BMSC_COOKIE="SESSDATA=..." flutter test ...   # 手动覆盖登录态
+/// BMSC_LIVE=1 BMSC_LOGIN=1 flutter test test/integration    # 强制扫码登录
+/// ```
+///
+/// 人工介入最小化：登录态缓存于 test/credentials/live_session.json（SESSDATA
+/// 约 180 天有效），只在失效时需手机扫码一次。
 ///
 /// 注意：会真实请求护照/B 站接口，注意频率限制与 IP 风控（412）。
 
@@ -26,17 +36,18 @@ DioException? _lastNetworkError;
 void main() {
   group('真实接口冒烟（BMSC_LIVE=1 启用）', () {
     late BilibiliAPI api;
-    final useCookie = liveCookie != null && liveCookie!.isNotEmpty;
+    LiveSession? session;
 
     setUpAll(() async {
       SharedPreferences.setMockInitialValues({});
       api = BilibiliAPI(enableConnectivity: false);
       api.noNetwork = false;
       await api.ensureBuvid3();
-      if (useCookie) {
-        await api.setCookie(liveCookie!);
+      session = await LiveSession.ensure(api);
+      if (session != null) {
+        await api.applyLoginCookies(session!.cookies, save: false);
       }
-      print('=== live 测试：${useCookie ? '已登录(提供 cookie)' : '未登录'} ===');
+      print('=== live 测试：${session != null ? '已登录(自动获取)' : '未登录'} ===');
     });
 
     tearDownAll(() {
@@ -152,11 +163,11 @@ void main() {
       print('  fallback: $fallback');
     }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 
-    group('登录态接口（提供 BMSC_COOKIE 时断言完整）', () {
+    group('登录态接口（自动获取登录态；未登录时降级为记录行为）', () {
       test('getMyInfo：未登录返回 null，已登录返回 mid>0', () async {
         final myInfo = await probe('getMyInfo', () => api.getMyInfo());
-        if (useCookie) {
-          expect(myInfo, isNotNull, reason: '提供了 cookie 但 myinfo 未返回');
+        if (session != null) {
+          expect(myInfo, isNotNull, reason: '已获取登录态但 myinfo 未返回');
           expect(myInfo!.mid, greaterThan(0));
           print('  当前账号: mid=${myInfo.mid} ${myInfo.name}');
         } else {
@@ -166,26 +177,27 @@ void main() {
 
       test('历史记录接口可达（空/未登录不视为失败）', () async {
         final history = await probe('getHistory', () => api.getHistory(null));
-        if (useCookie && history != null) {
+        if (session != null && history != null) {
           print('  历史条数: ${history.list.length}');
         } else {
-          print('  [NOTE] ${useCookie ? '空历史' : '未登录'} -> null 或空');
+          print('  [NOTE] ${session != null ? '空历史' : '未登录'} -> null 或空');
         }
       }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 
       test('动态接口可达', () async {
-        final dynamics = await probe('getDynamics', () => api.getDynamics(null));
-        if (useCookie && dynamics != null) {
+        final dynamics =
+            await probe('getDynamics', () => api.getDynamics(null));
+        if (session != null && dynamics != null) {
           print('  动态条数: ${dynamics.items.length}');
         } else {
-          print('  [NOTE] ${useCookie ? '无动态' : '未登录'} -> null');
+          print('  [NOTE] ${session != null ? '无动态' : '未登录'} -> null');
         }
       }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 
       test('收藏夹（已登录时核心场景）', () async {
         final myInfo = await api.getMyInfo();
         if (myInfo == null || myInfo.mid == 0) {
-          print('  [SKIP] 需要已登录（设置 BMSC_COOKIE）');
+          print('  [SKIP] 未获取到登录态（可 BMSC_LOGIN=1 扫码，或设 BMSC_COOKIE）');
           return;
         }
         final favs = await probe('getFavs', () => api.getFavs(myInfo.mid));
@@ -193,11 +205,11 @@ void main() {
         print('  收藏夹数: ${favs!.length}');
       }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 
-      test('App playurl（有 access_token 时；无则跳过）', () async {
-        final prefs = await SharedPreferences.getInstance();
-        final token = prefs.getString('access_token');
-        if (token == null || token.isEmpty) {
-          print('  [SKIP] 无 access_token（可在真实 App 登录后导出，或跳过）');
+      test('App playurl（扫码/TV 登录自动获得 access_token；自动回退仅记录）', () async {
+        final token = session?.accessToken ?? '';
+        if (token.isEmpty) {
+          print('  [SKIP] 无 access_token（BMSC_COOKIE 场景不提供 token；'
+              '扫码登录场景自动具备）');
           return;
         }
         final audios = await probe('getAudioApp',
