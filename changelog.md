@@ -34,6 +34,7 @@
 - build Gradle 8.12 → 8.14.2、AGP 8.9.1 → 8.11.1、Kotlin 2.2.0 → 2.2.20（满足 Flutter 3.47.2 最低要求）
 - fix 动态接口：修复 B 站字段类型漂移（update_num/offset/mid/pub_ts 时 int 时 String 硬转崩溃）导致动态永远为空；新增真实数据 fixture 回归测试
 - ci 修复 live 门控断言（不再解析终端进度输出，改静态检查源码门控）
+- fix 音乐源播放失败：缓存/过期播放 URL 返回 404 时不重试（原仅处理 403），现 403/404 都重新解析音频源并对 backupUrl 兜底；新增播放链路 live 测试（service 层真实全链路）
 
 # 1.12.1
 - fix WBI 签名算法适配，修复搜索、音频播放等接口

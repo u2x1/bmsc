@@ -132,12 +132,42 @@ class LazyAudioSource extends StreamAudioSource {
     final httpClient = HttpClient();
     var httpRequest = await _getUrl(httpClient, uri, headers: headers);
     var response = await httpRequest.close();
-    if (response.statusCode == 403) {
+    // B 站 playurl 的 baseUrl/backup 均有有效期（TTL 几小时），过期后可能返回
+    // 403（防盗链）或 404（URL 失效）。二者都需重新解析音频源重试，并对
+    // backupUrl 兜底——否则「播放中切歌/缓存后播放」会直接 HTTP 错误失败。
+    if (response.statusCode == 403 || response.statusCode == 404) {
+      await response.drain<void>();
       final service = await BilibiliService.instance;
       final audio = await service.getAudio(bvid, cid);
-      uri = Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
-      httpRequest = await _getUrl(httpClient, uri, headers: headers);
-      response = await httpRequest.close();
+      final candidates = audio ?? <dynamic>[];
+      // 新解析结果的 baseUrl 优先，其次 backupUrl 列表
+      final retryUrls = <Uri>[
+        for (final a in candidates)
+          if (a.baseUrl.isNotEmpty) Uri.parse(a.baseUrl),
+        for (final a in candidates)
+          ...?a.backupUrl?.map((u) => Uri.parse(u)),
+      ];
+      Uri? retried;
+      for (final u in retryUrls) {
+        if (u == uri) continue;
+        httpRequest = await _getUrl(httpClient, u, headers: headers);
+        response = await httpRequest.close();
+        if (response.statusCode == 200 || response.statusCode == 206) {
+          retried = u;
+          uri = u;
+          break;
+        }
+        await response.drain<void>();
+      }
+      if (retried == null && retryUrls.isNotEmpty) {
+        // 所有候选取不到 200：最后一次响应留给下方统一报错
+        uri = retryUrls.first;
+        httpRequest = await _getUrl(httpClient, uri, headers: headers);
+        response = await httpRequest.close();
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          await response.drain<void>();
+        }
+      }
     }
     if (response.statusCode != 200) {
       httpClient.close();
