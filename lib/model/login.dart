@@ -228,19 +228,22 @@ class RiskVerifyParams {
 
 /// 解析 -105 / status=2 返回的验证 URL。
 /// 形如 https://passport.bilibili.com/register2/risk?source=risk&request_id=xxx&tmp_code=xxx
+/// tmp_code 与 request_id 缺任一返回 null（对齐 BiliPai LoginRiskPolicy）
 RiskVerifyParams? parseRiskVerifyUrl(String url) {
   final uri = Uri.tryParse(url);
   if (uri == null) return null;
   final params = uri.queryParameters;
-  final tmpCode = params['tmp_code'] ?? params['tmpToken'] ?? '';
-  final requestId = params['request_id'] ?? '';
-  final source = params['source'] ?? 'risk';
-  final refererUrl = url;
+  final tmpCode = (params['tmp_code'] ?? params['tmpToken'] ?? '').trim();
+  final requestId = (params['request_id'] ?? '').trim();
+  if (tmpCode.isEmpty || requestId.isEmpty) return null;
+  final source = (params['source'] ?? 'risk').trim().isEmpty
+      ? 'risk'
+      : params['source']!.trim();
   return RiskVerifyParams(
     tmpCode: tmpCode,
     requestId: requestId,
     source: source,
-    refererUrl: refererUrl,
+    refererUrl: url,
   );
 }
 

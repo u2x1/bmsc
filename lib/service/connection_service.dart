@@ -17,7 +17,11 @@ class ConnectionService {
   final Connectivity _connectivity = Connectivity();
 
   void initialize() {
-    _connectivity.onConnectivityChanged.listen(_connectionChange);
+    try {
+      _connectivity.onConnectivityChanged.listen(_connectionChange);
+    } catch (e) {
+      // 测试环境/无插件时忽略，直接依赖 DNS 探活
+    }
     checkConnection();
   }
 

@@ -41,11 +41,13 @@ class BilibiliAPI {
 
   String _buvid3 = '';
 
-  BilibiliAPI() {
-    connectionService.initialize();
-    connectionService.connectionChange.listen((result) {
-      noNetwork = !result;
-    });
+  BilibiliAPI({bool enableConnectivity = true}) {
+    if (enableConnectivity) {
+      connectionService.initialize();
+      connectionService.connectionChange.listen((result) {
+        noNetwork = !result;
+      });
+    }
     noNetwork = !connectionService.hasConnection;
   }
 
@@ -1071,7 +1073,7 @@ class BilibiliAPI {
     }
   }
 
-  /// 风控短信发送
+  /// 风控短信发送（参数精确对齐 BiliPai buildSafeCenterSmsSendParams）
   Future<(String, String?)> sendSafeCenterSms({
     required String tmpCode,
     required String recaptchaToken,
@@ -1080,14 +1082,14 @@ class BilibiliAPI {
     required String seccode,
     required String referer,
   }) async {
-    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final params = <String, String>{
-      ..._androidLoginBaseParams(ts),
+      'disable_rcmd': '0',
+      'sms_type': 'loginTelCheck',
       'tmp_code': tmpCode,
-      'recaptcha_token': recaptchaToken,
       'gee_challenge': challenge,
       'gee_validate': validate,
       'gee_seccode': seccode,
+      'recaptcha_token': recaptchaToken,
     };
     final signed = BiliSign.signForAndroidHdLogin(params);
     try {
@@ -1108,7 +1110,7 @@ class BilibiliAPI {
     }
   }
 
-  /// 风控短信校验，成功后返回 exchange code
+  /// 风控短信校验（参数精确对齐 BiliPai buildSafeCenterSmsVerifyParams），成功后返回 exchange code
   Future<(String, String?)> verifySafeCenterSms({
     required String code,
     required String tmpCode,
@@ -1117,9 +1119,8 @@ class BilibiliAPI {
     required String captchaKey,
     required String referer,
   }) async {
-    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final params = <String, String>{
-      ..._androidLoginBaseParams(ts),
+      'type': 'loginTelCheck',
       'code': code,
       'tmp_code': tmpCode,
       'request_id': requestId,
@@ -1145,14 +1146,21 @@ class BilibiliAPI {
     }
   }
 
-  /// 用 exchange code 换 access_token（oauth2/access_token）
+  /// 用 exchange code 换 access_token（参数精确对齐 BiliPai buildOauth2AccessTokenParams）
   Future<AppLoginResult> oauth2AccessToken(
       {required String code, required String buvid}) async {
     final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
     final params = <String, String>{
-      ..._androidLoginBaseParams(ts),
-      'code': code,
+      'appkey': BiliSign.androidHdAppKey,
+      'build': '2001100',
       'buvid': buvid,
+      'code': code,
+      'disable_rcmd': '0',
+      'grant_type': 'authorization_code',
+      'local_id': buvid,
+      'mobi_app': 'android_hd',
+      'platform': 'android',
+      'ts': ts.toString(),
     };
     final signed = BiliSign.signForAndroidHdLogin(params);
     try {

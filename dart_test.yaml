@@ -1,0 +1,5 @@
+# 测试配置（https://pub.dev/packages/test)
+# live 标签：真实网络集成测试，受 BMSC_LIVE 环境变量门控
+#   BMSC_LIVE=1 flutter test test/integration
+tags:
+  live:

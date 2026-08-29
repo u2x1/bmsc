@@ -26,7 +26,8 @@ String extractCSRF(String cookies) {
   return csrfMatch?.group(1) ?? '';
 }
 
-String _getMixinKey(String rawWbiKey) {
+/// WBI mixin key 计算（公开以便测试；算法与 bilibili-API-collect 一致）
+String getMixinKey(String rawWbiKey) {
   const mixinKeyEncTab = [
     46,
     47,
@@ -100,7 +101,7 @@ String _getMixinKey(String rawWbiKey) {
 Future<Map<String, dynamic>?> encodeParams(Map<String, dynamic> params) async {
   final rawWbiKey = await (await BilibiliService.instance).getRawWbiKey();
   if (rawWbiKey == null) return null;
-  final mixinKey = _getMixinKey(rawWbiKey);
+  final mixinKey = getMixinKey(rawWbiKey);
   final wts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
   params['wts'] = wts.toString();
   final chrFilter = RegExp(r"[!'()*]");
