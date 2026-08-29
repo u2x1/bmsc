@@ -24,7 +24,11 @@ class BilibiliAPI {
 
   late String cookies;
   late Map<String, String> headers;
-  Dio dio = Dio();
+  Dio dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 10),
+    sendTimeout: const Duration(seconds: 10),
+    receiveTimeout: const Duration(seconds: 15),
+  ));
   bool noNetwork = false;
   ConnectionService connectionService = ConnectionService.getInstance();
 

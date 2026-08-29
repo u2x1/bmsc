@@ -65,7 +65,14 @@ class _LoginScreenState extends State<LoginScreen> {
       }, onResult: (Map<String, dynamic> result) async {
         try {
           logger.info('Geetest verification result: $result');
-          result = Map<String, dynamic>.from(result['result']);
+          final geetestResult = result['result'];
+          if (geetestResult == null) {
+            setState(() {
+              _errorMessage = '人机验证失败，请重试';
+            });
+            return;
+          }
+          result = Map<String, dynamic>.from(geetestResult);
           final (loginSuccess, loginError) =
               await BilibiliService.instance.then((x) => x.passwordLogin(
                     _usernameController.text,
@@ -89,11 +96,19 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         } catch (e) {
           logger.severe('Geetest onResult error: $e');
-          throw Exception('Geetest onResult error: $e');
+          if (context.mounted) {
+            setState(() {
+              _errorMessage = '登录失败: $e';
+            });
+          }
         }
       }, onError: (error) {
         logger.severe('Geetest error: $error');
-        throw Exception('Geetest error: $error');
+        if (context.mounted) {
+          setState(() {
+            _errorMessage = '人机验证失败: $error';
+          });
+        }
       });
 
       geetest.startCaptcha(registerData);
@@ -133,10 +148,24 @@ class _LoginScreenState extends State<LoginScreen> {
         onResult: (Map<String, dynamic> result) async {
           try {
             logger.info('Geetest verification result: $result');
-            result = Map<String, dynamic>.from(result['result']);
+            final geetestResult = result['result'];
+            if (geetestResult == null) {
+              setState(() {
+                _errorMessage = '人机验证失败，请重试';
+              });
+              return;
+            }
+            result = Map<String, dynamic>.from(geetestResult);
+            final phone = int.tryParse(_phoneController.text);
+            if (phone == null) {
+              setState(() {
+                _errorMessage = '手机号格式不正确';
+              });
+              return;
+            }
             final (captchaKey, error) =
                 await BilibiliService.instance.then((x) => x.getSmsLoginCaptcha(
-                      int.parse(_phoneController.text),
+                      phone,
                       {
                         'token': captcha['token']!,
                         'challenge': result['geetest_challenge'],
@@ -157,12 +186,20 @@ class _LoginScreenState extends State<LoginScreen> {
             }
           } catch (e) {
             logger.severe('Geetest onResult error: $e');
-            throw Exception('Geetest onResult error: $e');
+            if (context.mounted) {
+              setState(() {
+                _errorMessage = '获取验证码失败: $e';
+              });
+            }
           }
         },
         onError: (error) {
           logger.severe('Geetest error: $error');
-          throw Exception('Geetest error: $error');
+          if (context.mounted) {
+            setState(() {
+              _errorMessage = '人机验证失败: $error';
+            });
+          }
         },
       );
 
@@ -241,45 +278,67 @@ class _LoginScreenState extends State<LoginScreen> {
 
       _qrcodeTimer?.cancel();
       _qrcodeTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
-        if (_qrcodeKey == null) {
-          timer.cancel();
-          return;
-        }
-
-        final status = await BilibiliService.instance
-            .then((x) => x.checkQrcodeLoginStatus(_qrcodeKey!));
-
-        if (status == null) {
-          timer.cancel();
-          setState(() {
-            _errorMessage = '二维码已过期，请重新获取';
-            _qrcodeUrl = null;
-            _qrcodeKey = null;
-          });
-          return;
-        }
-
-        switch (status) {
-          case 0:
+        try {
+          if (!mounted || _qrcodeKey == null) {
             timer.cancel();
-            await BilibiliService.instance.then((x) => x.refreshMyInfo());
-            if (mounted) {
-              Navigator.pop(context, true);
-            }
-            break;
-          case 86090:
-            setState(() {
-              _infoMessage = '已扫码，请在手机端确认';
-            });
-            break;
-          case 86038:
+            return;
+          }
+
+          final status = await BilibiliService.instance
+              .then((x) => x.checkQrcodeLoginStatus(_qrcodeKey!));
+
+          if (!mounted) {
             timer.cancel();
-            setState(() {
-              _errorMessage = '二维码已过期，请重新获取';
-              _qrcodeUrl = null;
-              _qrcodeKey = null;
-            });
-            break;
+            return;
+          }
+
+          if (status == null) {
+            // 单次轮询失败（网络抖动/接口异常），不取消轮询，下轮重试
+            logger.warning('QR poll failed, will retry');
+            return;
+          }
+
+          switch (status) {
+            case 0:
+              timer.cancel();
+              try {
+                await BilibiliService.instance
+                    .then((x) => x.refreshMyInfo());
+              } catch (e) {
+                logger.severe('QR login refreshMyInfo error: $e');
+              }
+              if (mounted) {
+                Navigator.pop(context, true);
+              }
+              break;
+            case 86090:
+              setState(() {
+                _infoMessage = '已扫码，请在手机端确认';
+              });
+              break;
+            case 86038:
+              timer.cancel();
+              setState(() {
+                _errorMessage = '二维码已过期，请重新获取';
+                _qrcodeUrl = null;
+                _qrcodeKey = null;
+              });
+              break;
+            default:
+              // B 站返回其他状态码（如 -400 风控校验、86103 等）时给出提示，避免静默无反应
+              logger.warning('QR poll unknown status: $status');
+              if (status == -400 || status == 86103) {
+                timer.cancel();
+                setState(() {
+                  _errorMessage = '扫码登录失败（$status），请重新获取二维码';
+                  _qrcodeUrl = null;
+                  _qrcodeKey = null;
+                });
+              }
+              break;
+          }
+        } catch (e) {
+          logger.severe('QR poll error: $e');
         }
       });
     } catch (e) {
