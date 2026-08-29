@@ -1,3 +1,17 @@
+# 1.13.0
+- feat 登录全面重做（对齐 BiliPai）：
+  - 二维码登录改用 TV 端（appkey 签名），登录态自动获得 access_token，支持高画质；Web 二维码保留为备用
+  - 密码/短信登录迁移至 App 端接口（android_hd 签名 + 持久化 buvid/deviceId 身份）
+  - 新增风控流程：密码登录触发风控时走安全中心绑定手机验证；-105 自动重新人机验证
+  - 移除伪造设备请求头（env/app-key/x-bili-aurora-*），改为 CookieJar 自动注入完整 cookie 组（SESSDATA/bili_jct/DedeUserID/buvid3）
+  - 音频播放优先走 App 端 playurl（access_key + 签名），失败自动回退 Web
+- fix 登录闪退：极验 sensebot SDK 增加 R8 keep 规则（官方要求，二次混淆导致 ClassNotFoundException）
+- fix 二维码登录无反应：改用 TV 端（cookie 在响应 body 返回，不再依赖 Set-Cookie 头）；轮询状态码全面处理；单次网络抖动不再误判过期
+- fix 极验回调不再抛出未捕获异常；手机号解析容错
+- fix 全局请求超时（connect/send/receive）
+- test 新增系统性测试套件：61 个单元测试 + 14 个真实接口集成测试（扫码登录一次，缓存复用零人工）
+- ci 新增单元测试 workflow（push/PR 自动执行）
+
 # 1.12.1
 - fix WBI 签名算法适配，修复搜索、音频播放等接口
 - fix 动态页/历史页白屏（处理非视频类型动态 & null 安全）
