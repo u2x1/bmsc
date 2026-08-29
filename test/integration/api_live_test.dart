@@ -1,5 +1,5 @@
-// ignore_for_file: avoid_print（集成测试诊断输出为刻意设计）
-@Tags(['live'])
+// ignore_for_file: avoid_print
+// 集成测试的诊断输出使用 print 是刻意设计
 library;
 
 import 'package:bmsc/api/bilibili.dart';
