@@ -45,4 +45,24 @@ const String apiGetQrcodeLoginUrl =
     '$_passportUrl/x/passport-login/web/qrcode/generate';
 const String apiCheckQrcodeLoginStatusUrl =
     '$_passportUrl/x/passport-login/web/qrcode/poll';
+const String apiGetTvQrcodeLoginUrl =
+    '$_passportUrl/x/passport-tv-login/qrcode/auth_code';
+const String apiCheckTvQrcodeStatusUrl =
+    '$_passportUrl/x/passport-tv-login/qrcode/poll';
+const String apiTvTokenRefreshUrl =
+    '$_passportUrl/x/passport-tv-login/h5/refresh';
+const String apiAppPasswordLoginUrl =
+    '$_baseUrl/x/passport-login/oauth2/login';
+const String apiAppSmsCaptchaUrl = '$_baseUrl/x/passport-login/sms/send';
+const String apiAppSmsLoginUrl = '$_baseUrl/x/passport-login/login/sms';
+const String apiAppPlayUrlUrl = '$_baseUrl/x/player/playurl';
+const String apiOauth2AccessTokenUrl =
+    '$_passportUrl/x/passport-login/oauth2/access_token';
+const String apiSafeCenterUserInfoUrl = '$_passportUrl/x/safecenter/user/info';
+const String apiSafeCenterCaptchaPreUrl =
+    '$_passportUrl/x/safecenter/captcha/pre';
+const String apiSafeCenterSmsSendUrl =
+    '$_passportUrl/x/safecenter/common/sms/send';
+const String apiSafeCenterSmsVerifyUrl =
+    '$_passportUrl/x/safecenter/login/tel/verify';
 const String apiPlayer = '$_baseUrl/x/player/wbi/v2';

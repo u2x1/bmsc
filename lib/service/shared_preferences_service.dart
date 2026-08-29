@@ -84,6 +84,9 @@ class SharedPreferencesService {
     return prefs.getInt('uid');
   }
 
+  // ===== 登录会话（对齐 BiliPai TokenManager） =====
+
+  /// 完整 cookie 串（持久化）
   static Future<void> setCookie(String cookie) async {
     final prefs = await instance;
     await prefs.setString('cookie', cookie);
@@ -92,6 +95,66 @@ class SharedPreferencesService {
   static Future<String?> getCookie() async {
     final prefs = await instance;
     return prefs.getString('cookie');
+  }
+
+  static Future<void> setAccessToken(String token) async {
+    final prefs = await instance;
+    await prefs.setString('access_token', token);
+  }
+
+  static Future<String?> getAccessToken() async {
+    final prefs = await instance;
+    return prefs.getString('access_token');
+  }
+
+  static Future<void> setRefreshToken(String token) async {
+    final prefs = await instance;
+    await prefs.setString('refresh_token', token);
+  }
+
+  static Future<String?> getRefreshToken() async {
+    final prefs = await instance;
+    return prefs.getString('refresh_token');
+  }
+
+  /// 登录时是否携带 TV / Android 的 access_token
+  static Future<void> setAccessTokenPlatform(String platform) async {
+    final prefs = await instance;
+    await prefs.setString('access_token_platform', platform);
+  }
+
+  static Future<String?> getAccessTokenPlatform() async {
+    final prefs = await instance;
+    return prefs.getString('access_token_platform');
+  }
+
+  /// Android-HD 登录身份 buvid（XY 开头，生成一次后持久化）
+  static Future<void> setLoginBuvid(String buvid) async {
+    final prefs = await instance;
+    await prefs.setString('login_buvid', buvid);
+  }
+
+  static Future<String?> getLoginBuvid() async {
+    final prefs = await instance;
+    return prefs.getString('login_buvid');
+  }
+
+  /// 匿名 web 身份 buvid3（UUID + infoc）
+  static Future<void> setBuvid3(String buvid3) async {
+    final prefs = await instance;
+    await prefs.setString('buvid3', buvid3);
+  }
+
+  static Future<String?> getBuvid3() async {
+    final prefs = await instance;
+    return prefs.getString('buvid3');
+  }
+
+  /// 登录后获取到的 access_key 是否可用（App 接口签名用）
+  static Future<bool> hasAccessToken() async {
+    final prefs = await instance;
+    final token = prefs.getString('access_token');
+    return token != null && token.isNotEmpty;
   }
 
   static Future<(int, String)?> getDefaultFavFolder() async {

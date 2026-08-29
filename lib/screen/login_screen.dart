@@ -1,3 +1,4 @@
+import 'package:bmsc/model/login.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
 import 'package:bmsc/util/logger.dart';
@@ -35,6 +36,18 @@ class _LoginScreenState extends State<LoginScreen> {
   Timer? _qrcodeTimer;
   String? _qrcodeKey;
   String? _qrcodeUrl;
+  String? _qrcodeAuthCode;
+  bool _qrcodeIsTv = true;
+
+  /// 当前极验参数（App 登录接口用）
+  CaptchaData? _captchaData;
+
+  // ===== 密码登录风控（安全中心，对齐 BiliPai） =====
+  RiskVerifyParams? _riskParams;
+  String _riskHideTel = '';
+  SafeCenterCaptchaPre? _riskCaptchaPre;
+  String _riskCaptchaKey = '';
+  bool _riskSmsSent = false;
 
   @override
   void initState() {
@@ -53,12 +66,22 @@ class _LoginScreenState extends State<LoginScreen> {
       if (captcha == null) {
         throw Exception('Failed to get login captcha');
       }
+      _captchaData = CaptchaData(
+        token: captcha['token'] ?? '',
+        gt: captcha['gt'],
+        challenge: captcha['challenge'],
+      );
+      if (_captchaData!.gt == null || _captchaData!.challenge == null) {
+        throw Exception('缺少验证码参数');
+      }
 
-      logger.info('Geetest gt: ${captcha['gt']}');
+      logger.info('Geetest gt: ${_captchaData!.gt}');
       final geetest = Gt3FlutterPlugin();
 
       Gt3RegisterData registerData = Gt3RegisterData(
-          gt: captcha['gt']!, challenge: captcha['challenge']!, success: true);
+          gt: _captchaData!.gt!,
+          challenge: _captchaData!.challenge!,
+          success: true);
 
       geetest.addEventHandler(onShow: (message) {
         logger.info('Geetest challenge dialog shown: $message');
@@ -73,26 +96,50 @@ class _LoginScreenState extends State<LoginScreen> {
             return;
           }
           result = Map<String, dynamic>.from(geetestResult);
-          final (loginSuccess, loginError) =
-              await BilibiliService.instance.then((x) => x.passwordLogin(
+          final loginResult = await BilibiliService.instance.then(
+              (x) => x.passwordLoginApp(
                     _usernameController.text,
                     _passwordController.text,
-                    {
-                      'token': captcha['token']!,
-                      'challenge': result['geetest_challenge'],
-                      'validate': result['geetest_validate'],
-                      'seccode': result['geetest_seccode'],
-                    },
+                    _captchaData,
+                    validate: result['geetest_validate'],
+                    seccode: result['geetest_seccode'],
                   ));
 
-          if (loginSuccess) {
-            await BilibiliService.instance.then((x) => x.refreshMyInfo());
+          if (loginResult.isSuccess) {
+            await BilibiliService.instance
+                .then((x) => x.applyLoginSession(loginResult));
             if (context.mounted) {
               Navigator.pop(context, true);
             }
+          } else if (loginResult.needRiskVerification) {
+            // status=2 风控：走安全中心手机号验证
+            await _beginRiskVerification(loginResult);
+          } else if (loginResult.needRecaptcha) {
+            // -105：URL 里带新的极验参数，重新验证
+            final newCaptcha = parseLoginRecaptchaUrl(loginResult.url);
+            if (newCaptcha != null) {
+              _captchaData = newCaptcha;
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('请重新完成人机验证')),
+                );
+              }
+            } else {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(loginResult.message.isEmpty
+                      ? '登录失败，请重试'
+                      : loginResult.message)),
+                );
+              }
+            }
           } else {
-            ScaffoldMessenger.of(context)
-                .showSnackBar(SnackBar(content: Text(loginError ?? '登录失败')));
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(loginResult.message.isEmpty
+                      ? '登录失败'
+                      : loginResult.message)));
+            }
           }
         } catch (e) {
           logger.severe('Geetest onResult error: $e');
@@ -124,6 +171,178 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // ===== 风控流程（对齐 BiliPai：status=2 → 安全中心手机号验证） =====
+
+  Future<void> _beginRiskVerification(AppLoginResult result) async {
+    final params = parseRiskVerifyUrl(result.url);
+    if (params == null) {
+      setState(() {
+        _errorMessage = '登录环境存在风险，但验证参数缺失，请改用扫码登录';
+      });
+      return;
+    }
+    _riskParams = params;
+    _riskSmsSent = false;
+    _riskCaptchaKey = '';
+    try {
+      final info = await BilibiliService.instance
+          .then((x) => x.getSafeCenterInfo(params.tmpCode));
+      if (info == null || !info.telVerify) {
+        _riskParams = null;
+        setState(() {
+          _errorMessage = '当前账号不支持手机号风控验证，请改用扫码登录';
+        });
+        return;
+      }
+      _riskHideTel = info.hideTel;
+      setState(() {
+        _infoMessage =
+            '本次登录环境存在风险，需使用绑定手机号 ${info.hideTel} 完成验证';
+        _errorMessage = null;
+      });
+    } catch (e) {
+      _riskParams = null;
+      setState(() {
+        _errorMessage = '安全验证准备失败: $e';
+      });
+    }
+  }
+
+  Future<void> _riskSendSmsCode() async {
+    if (_riskParams == null) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final pre = await BilibiliService.instance
+          .then((x) => x.getSafeCenterCaptchaPre());
+      if (pre == null || !pre.isReady) {
+        setState(() {
+          _errorMessage = '获取风控验证码失败，请改用扫码登录';
+        });
+        return;
+      }
+      _riskCaptchaPre = pre;
+      final geetest = Gt3FlutterPlugin();
+      final registerData = Gt3RegisterData(
+          gt: pre.geeGt, challenge: pre.geeChallenge, success: true);
+      geetest.addEventHandler(
+        onShow: (message) {
+          logger.info('Geetest challenge dialog shown: $message');
+        },
+        onResult: (Map<String, dynamic> result) async {
+          try {
+            final geetestResult = result['result'];
+            if (geetestResult == null) {
+              setState(() {
+                _errorMessage = '人机验证失败，请重试';
+              });
+              return;
+            }
+            final map = Map<String, dynamic>.from(geetestResult);
+            final (captchaKey, error) = await BilibiliService.instance.then(
+                (x) => x.sendSafeCenterSms(
+                      tmpCode: _riskParams!.tmpCode,
+                      recaptchaToken: _riskCaptchaPre!.recaptchaToken,
+                      challenge: map['geetest_challenge'],
+                      validate: map['geetest_validate'],
+                      seccode: map['geetest_seccode'],
+                      referer: _riskParams!.refererUrl,
+                    ));
+            if (error != null) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(error)),
+                );
+              }
+            } else {
+              _riskCaptchaKey = captchaKey;
+              setState(() {
+                _riskSmsSent = true;
+                _infoMessage = '验证码已发送至绑定手机号';
+              });
+            }
+          } catch (e) {
+            logger.severe('Risk geetest onResult error: $e');
+            if (mounted) {
+              setState(() {
+                _errorMessage = '获取验证码失败: $e';
+              });
+            }
+          }
+        },
+        onError: (error) {
+          logger.severe('Risk geetest error: $error');
+          if (mounted) {
+            setState(() {
+              _errorMessage = '人机验证失败: $error';
+            });
+          }
+        },
+      );
+      geetest.startCaptcha(registerData);
+    } catch (e) {
+      setState(() {
+        _errorMessage = '风控验证失败: $e';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _riskVerify(BuildContext context) async {
+    if (_riskParams == null || !_riskSmsSent) return;
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      final (exchangeCode, error) = await BilibiliService.instance
+          .then((x) => x.verifySafeCenterSms(
+                code: _smsCodeController.text,
+                tmpCode: _riskParams!.tmpCode,
+                requestId: _riskParams!.requestId,
+                source: _riskParams!.source,
+                captchaKey: _riskCaptchaKey,
+                referer: _riskParams!.refererUrl,
+              ));
+      if (error != null || exchangeCode.isEmpty) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(error ?? '验证失败')));
+        }
+        return;
+      }
+      final tokenResult =
+          await BilibiliService.instance.then((x) => x.oauth2AccessToken(exchangeCode));
+      if (!tokenResult.isSuccess) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(tokenResult.message.isEmpty
+                  ? '换取登录态失败，请改用扫码登录'
+                  : tokenResult.message)));
+        }
+        return;
+      }
+      await BilibiliService.instance
+          .then((x) => x.applyLoginSession(tokenResult));
+      if (context.mounted) {
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      setState(() {
+        _errorMessage = '风控验证失败: $e';
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
   Future<void> _getSmsCode(BuildContext context) async {
     setState(() {
       _isLoading = true;
@@ -136,10 +355,20 @@ class _LoginScreenState extends State<LoginScreen> {
       if (captcha == null) {
         throw Exception('Failed to get login captcha');
       }
+      _captchaData = CaptchaData(
+        token: captcha['token'] ?? '',
+        gt: captcha['gt'],
+        challenge: captcha['challenge'],
+      );
+      if (_captchaData!.gt == null || _captchaData!.challenge == null) {
+        throw Exception('缺少验证码参数');
+      }
 
       final geetest = Gt3FlutterPlugin();
       Gt3RegisterData registerData = Gt3RegisterData(
-          gt: captcha['gt']!, challenge: captcha['challenge']!, success: true);
+          gt: _captchaData!.gt!,
+          challenge: _captchaData!.challenge!,
+          success: true);
 
       geetest.addEventHandler(
         onShow: (message) {
@@ -156,33 +385,34 @@ class _LoginScreenState extends State<LoginScreen> {
               return;
             }
             result = Map<String, dynamic>.from(geetestResult);
-            final phone = int.tryParse(_phoneController.text);
-            if (phone == null) {
+            final phone = _phoneController.text.trim();
+            if (phone.isEmpty) {
               setState(() {
                 _errorMessage = '手机号格式不正确';
               });
               return;
             }
             final (captchaKey, error) =
-                await BilibiliService.instance.then((x) => x.getSmsLoginCaptcha(
+                await BilibiliService.instance.then((x) => x.sendSmsCaptchaApp(
                       phone,
-                      {
-                        'token': captcha['token']!,
-                        'challenge': result['geetest_challenge'],
-                        'validate': result['geetest_validate'],
-                        'seccode': result['geetest_seccode'],
-                      },
+                      _captchaData,
+                      validate: result['geetest_validate'],
+                      seccode: result['geetest_seccode'],
                     ));
 
             if (error != null) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text(error)),
-              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text(error)),
+                );
+              }
             } else {
               _captchaKey = captchaKey;
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('验证码已发送')),
-              );
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('验证码已发送')),
+                );
+              }
             }
           } catch (e) {
             logger.severe('Geetest onResult error: $e');
@@ -217,6 +447,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _smsLogin(BuildContext context) async {
+    final phone = _phoneController.text.trim();
     if (_captchaKey == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('请先获取验证码')),
@@ -230,21 +461,22 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final (loginSuccess, loginError) =
-          await BilibiliService.instance.then((x) => x.smsLogin(
-                int.parse(_phoneController.text),
-                _smsCodeController.text,
-                _captchaKey!,
-              ));
+      final loginResult = await BilibiliService.instance
+          .then((x) => x.smsLoginApp(phone, _smsCodeController.text, _captchaKey!));
 
-      if (loginSuccess) {
-        await BilibiliService.instance.then((x) => x.refreshMyInfo());
+      if (loginResult.isSuccess) {
+        await BilibiliService.instance
+            .then((x) => x.applyLoginSession(loginResult));
         if (context.mounted) {
           Navigator.pop(context, true);
         }
       } else {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(loginError ?? '登录失败')));
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text(loginResult.message.isEmpty
+                  ? '登录失败'
+                  : loginResult.message)));
+        }
       }
     } catch (e) {
       setState(() {
@@ -258,59 +490,98 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
-  Future<void> _initQrcodeLogin() async {
+  Future<void> _initQrcodeLogin({bool useTv = true}) async {
     setState(() {
       _isLoading = true;
       _errorMessage = null;
     });
 
     try {
-      final qrcodeInfo =
-          await BilibiliService.instance.then((x) => x.getQrcodeLoginInfo());
-      if (qrcodeInfo == null) {
-        throw Exception('Failed to get QR code');
+      String? url;
+      if (useTv) {
+        // TV 端二维码优先（登录态含 access_token，对齐 BiliPai）
+        final qrcodeInfo = await BilibiliService.instance
+            .then((x) => x.getTvQrcodeLoginInfo());
+        if (qrcodeInfo == null || qrcodeInfo.url.isEmpty) {
+          throw Exception('获取二维码失败，请重试或使用 Web 二维码');
+        }
+        url = qrcodeInfo.url;
+        _qrcodeAuthCode = qrcodeInfo.authCode;
+        _qrcodeIsTv = true;
+      } else {
+        // Web 端二维码备用
+        final qrcodeInfo =
+            await BilibiliService.instance.then((x) => x.getQrcodeLoginInfo());
+        if (qrcodeInfo == null) {
+          throw Exception('Failed to get QR code');
+        }
+        url = qrcodeInfo.$1;
+        _qrcodeKey = qrcodeInfo.$2;
+        _qrcodeIsTv = false;
       }
 
       setState(() {
-        _qrcodeUrl = qrcodeInfo.$1;
-        _qrcodeKey = qrcodeInfo.$2;
+        _qrcodeUrl = url;
       });
 
       _qrcodeTimer?.cancel();
-      _qrcodeTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+      _qrcodeTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
         try {
-          if (!mounted || _qrcodeKey == null) {
+          if (!mounted || _qrcodeUrl == null) {
             timer.cancel();
             return;
           }
 
-          final status = await BilibiliService.instance
-              .then((x) => x.checkQrcodeLoginStatus(_qrcodeKey!));
+          int status;
+          if (_qrcodeIsTv) {
+            final result = await BilibiliService.instance.then(
+                (x) => x.checkTvQrcodeLoginStatus(_qrcodeAuthCode!));
+            if (result == null) {
+              logger.warning('TV QR poll failed, will retry');
+              return;
+            }
+            if (result.code == 0) {
+              timer.cancel();
+              try {
+                await BilibiliService.instance
+                    .then((x) => x.applyTvLoginSession(result));
+              } catch (e) {
+                logger.severe('TV QR login session error: $e');
+              }
+              if (mounted) {
+                Navigator.pop(context, true);
+              }
+              return;
+            }
+            status = result.code;
+          } else {
+            final result = await BilibiliService.instance
+                .then((x) => x.checkQrcodeLoginStatus(_qrcodeKey!));
+            if (result == null) {
+              logger.warning('Web QR poll failed, will retry');
+              return;
+            }
+            if (result == 0) {
+              timer.cancel();
+              try {
+                await BilibiliService.instance.then((x) => x.refreshMyInfo());
+              } catch (e) {
+                logger.severe('Web QR login refreshMyInfo error: $e');
+              }
+              if (mounted) {
+                Navigator.pop(context, true);
+              }
+              return;
+            }
+            status = result;
+          }
 
           if (!mounted) {
             timer.cancel();
             return;
           }
 
-          if (status == null) {
-            // 单次轮询失败（网络抖动/接口异常），不取消轮询，下轮重试
-            logger.warning('QR poll failed, will retry');
-            return;
-          }
-
           switch (status) {
-            case 0:
-              timer.cancel();
-              try {
-                await BilibiliService.instance
-                    .then((x) => x.refreshMyInfo());
-              } catch (e) {
-                logger.severe('QR login refreshMyInfo error: $e');
-              }
-              if (mounted) {
-                Navigator.pop(context, true);
-              }
-              break;
             case 86090:
               setState(() {
                 _infoMessage = '已扫码，请在手机端确认';
@@ -322,19 +593,21 @@ class _LoginScreenState extends State<LoginScreen> {
                 _errorMessage = '二维码已过期，请重新获取';
                 _qrcodeUrl = null;
                 _qrcodeKey = null;
+                _qrcodeAuthCode = null;
+              });
+              break;
+            case -400:
+            case 86103:
+              timer.cancel();
+              setState(() {
+                _errorMessage = '扫码登录失败（$status），请重新获取二维码';
+                _qrcodeUrl = null;
+                _qrcodeKey = null;
+                _qrcodeAuthCode = null;
               });
               break;
             default:
-              // B 站返回其他状态码（如 -400 风控校验、86103 等）时给出提示，避免静默无反应
-              logger.warning('QR poll unknown status: $status');
-              if (status == -400 || status == 86103) {
-                timer.cancel();
-                setState(() {
-                  _errorMessage = '扫码登录失败（$status），请重新获取二维码';
-                  _qrcodeUrl = null;
-                  _qrcodeKey = null;
-                });
-              }
+              // 未扫码 / 未确认等状态，继续轮询
               break;
           }
         } catch (e) {
@@ -419,47 +692,112 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 32),
                 if (_loginType == LoginType.password) ...[
-                  TextFormField(
-                    controller: _usernameController,
-                    decoration: InputDecoration(
-                      labelText: '账号',
-                      hintText: '请输入手机号或邮箱',
-                      prefixIcon: const Icon(Icons.person_outline),
-                      border: OutlineInputBorder(
+                  if (_riskParams != null) ...[
+                    // ===== 风控验证面板（对齐 BiliPai 安全中心流程） =====
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .error
+                            .withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                    ),
-                    enabled: !_isLoading,
-                    validator: (value) {
-                      if (value?.isEmpty ?? true) return '请输入账号';
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    controller: _passwordController,
-                    decoration: InputDecoration(
-                      labelText: '密码',
-                      hintText: '请输入密码',
-                      prefixIcon: const Icon(Icons.lock_outline),
-                      suffixIcon: IconButton(
-                        icon: Icon(_obscurePassword
-                            ? Icons.visibility_off
-                            : Icons.visibility),
-                        onPressed: () => setState(
-                            () => _obscurePassword = !_obscurePassword),
-                      ),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.verified_user_outlined,
+                            color: Theme.of(context).colorScheme.error,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '本次登录环境存在风险，需使用绑定手机号 $_riskHideTel 完成验证',
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    obscureText: _obscurePassword,
-                    enabled: !_isLoading,
-                    validator: (value) {
-                      if (value?.isEmpty ?? true) return '请输入密码';
-                      return null;
-                    },
-                  ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextFormField(
+                            controller: _smsCodeController,
+                            decoration: InputDecoration(
+                              labelText: '验证码',
+                              hintText: '请输入验证码',
+                              prefixIcon: const Icon(Icons.security),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                            ),
+                            keyboardType: TextInputType.number,
+                            enabled: !_isLoading,
+                            validator: (value) {
+                              if (value?.isEmpty ?? true) return '请输入验证码';
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        ElevatedButton(
+                          onPressed: _isLoading
+                              ? null
+                              : () => _riskSendSmsCode(),
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          child: Text(_riskSmsSent ? '重发' : '获取'),
+                        ),
+                      ],
+                    ),
+                  ] else ...[
+                    TextFormField(
+                      controller: _usernameController,
+                      decoration: InputDecoration(
+                        labelText: '账号',
+                        hintText: '请输入手机号或邮箱',
+                        prefixIcon: const Icon(Icons.person_outline),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      enabled: !_isLoading,
+                      validator: (value) {
+                        if (value?.isEmpty ?? true) return '请输入账号';
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: _passwordController,
+                      decoration: InputDecoration(
+                        labelText: '密码',
+                        hintText: '请输入密码',
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          icon: Icon(_obscurePassword
+                              ? Icons.visibility_off
+                              : Icons.visibility),
+                          onPressed: () => setState(
+                              () => _obscurePassword = !_obscurePassword),
+                        ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      obscureText: _obscurePassword,
+                      enabled: !_isLoading,
+                      validator: (value) {
+                        if (value?.isEmpty ?? true) return '请输入密码';
+                        return null;
+                      },
+                    ),
+                  ],
                 ] else if (_loginType == LoginType.sms) ...[
                   TextFormField(
                     controller: _phoneController,
@@ -529,8 +867,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           const Text('请使用哔哩哔哩手机客户端扫描二维码登录'),
                           const SizedBox(height: 8),
                           TextButton(
-                            onPressed: _initQrcodeLogin,
+                            onPressed: () => _initQrcodeLogin(),
                             child: const Text('刷新二维码'),
+                          ),
+                          const SizedBox(height: 4),
+                          TextButton(
+                            onPressed: () => _initQrcodeLogin(useTv: false),
+                            child: const Text('使用 Web 版二维码'),
                           ),
                         ],
                       ),
@@ -539,9 +882,20 @@ class _LoginScreenState extends State<LoginScreen> {
                     Center(
                       child: _isLoading
                           ? const CircularProgressIndicator()
-                          : ElevatedButton(
-                              onPressed: _initQrcodeLogin,
-                              child: const Text('获取二维码'),
+                          : Column(
+                              children: [
+                                ElevatedButton(
+                                  onPressed: _initQrcodeLogin,
+                                  child: const Text('获取二维码'),
+                                ),
+                                const SizedBox(height: 8),
+                                TextButton(
+                                  onPressed: _isLoading
+                                      ? null
+                                      : () => _initQrcodeLogin(useTv: false),
+                                  child: const Text('使用 Web 版二维码'),
+                                ),
+                              ],
                             ),
                     ),
                 ],
@@ -608,6 +962,11 @@ class _LoginScreenState extends State<LoginScreen> {
                     onPressed: _isLoading
                         ? null
                         : () {
+                            if (_loginType == LoginType.password &&
+                                _riskParams != null) {
+                              _riskVerify(context);
+                              return;
+                            }
                             if (_formKey.currentState?.validate() ?? false) {
                               _loginType == LoginType.sms
                                   ? _smsLogin(context)

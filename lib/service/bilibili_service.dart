@@ -8,6 +8,7 @@ import 'package:bmsc/model/dynamic.dart';
 import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/model/fav.dart';
 import 'package:bmsc/model/history.dart';
+import 'package:bmsc/model/login.dart';
 import 'package:bmsc/model/myinfo.dart';
 import 'package:bmsc/model/search.dart';
 import 'package:bmsc/model/subtitle.dart';
@@ -15,6 +16,8 @@ import 'package:bmsc/model/track.dart';
 import 'package:bmsc/model/user_card.dart' show UserInfoResult;
 import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/util/bili_sign.dart';
+import 'package:bmsc/util/crypto.dart' as crypto;
 import 'package:bmsc/util/logger.dart';
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -27,6 +30,12 @@ class BilibiliService {
 
   static Future<BilibiliService> _init() async {
     final service = BilibiliService();
+    // 登录身份：Android-HD buvid（持久化）/ deviceId（进程级）
+    await service._loadLoginIdentity();
+
+    // CookieJar 匿名身份 buvid3
+    await service._bilibiliAPI.ensureBuvid3();
+
     final cookie = await SharedPreferencesService.getCookie();
 
     if (cookie != null) {
@@ -47,6 +56,29 @@ class BilibiliService {
     return service;
   }
 
+  // ===== Android-HD 登录身份（对齐 BiliPai PiliPlusLoginIdentity） =====
+  String _loginBuvid = '';
+  String _deviceId = '';
+
+  Future<void> _loadLoginIdentity() async {
+    var buvid = await SharedPreferencesService.getLoginBuvid();
+    if (buvid == null || !buvid.startsWith('XY')) {
+      buvid = BiliSign.createBuvid();
+      await SharedPreferencesService.setLoginBuvid(buvid);
+    }
+    _loginBuvid = buvid;
+    _deviceId = BiliSign.createDeviceId();
+    _logger.info(
+        'login identity loaded: buvid=$_loginBuvid deviceId=$_deviceId');
+  }
+
+  Future<(String, String)> getLoginIdentity() async {
+    while (_loginBuvid.isEmpty) {
+      await Future.delayed(const Duration(milliseconds: 10));
+    }
+    return (_loginBuvid, _deviceId);
+  }
+
   final BilibiliAPI _bilibiliAPI = BilibiliAPI();
   Map<String, String>? get headers => _bilibiliAPI.headers;
   MyInfo? myInfo;
@@ -61,14 +93,52 @@ class BilibiliService {
 
   Future<void> logout() async {
     await _bilibiliAPI.resetCookies();
+    _bilibiliAPI.clearCookies();
     myInfo = null;
     await SharedPreferencesService.setMyInfo(MyInfo(0, "", "", ""));
+    await SharedPreferencesService.setCookie('');
+    await SharedPreferencesService.setAccessToken('');
+    await SharedPreferencesService.setRefreshToken('');
+    await SharedPreferencesService.setAccessTokenPlatform('');
     _updateHeadersFromMyInfo();
   }
 
   void _updateHeadersFromMyInfo() {
     final mid = myInfo?.mid ?? 0;
-    _bilibiliAPI.updateBiliHeaders(mid);
+    // CookieJar 模式：DedeUserID 直接注入 cookie（对齐 BiliPai）
+    _bilibiliAPI.setCookieValue('DedeUserID', mid > 0 ? mid.toString() : '');
+    // 持久化 cookie 串，保证重启后 DedeUserID 还在
+    if (mid > 0) {
+      SharedPreferencesService.setCookie(_bilibiliAPI.cookies).then((_) {});
+    }
+  }
+
+  /// 登录成功后应用会话（cookie + token + 刷新用户信息）
+  Future<void> applyLoginSession(
+    AppLoginResult result, {
+    String platform = 'android',
+  }) async {
+    if (result.cookies.isNotEmpty) {
+      await _bilibiliAPI.applyLoginCookies(result.cookies, save: true);
+    }
+    if (result.accessToken.isNotEmpty) {
+      await SharedPreferencesService.setAccessToken(result.accessToken);
+      await SharedPreferencesService.setRefreshToken(result.refreshToken);
+      await SharedPreferencesService.setAccessTokenPlatform(platform);
+    }
+    await refreshMyInfo();
+  }
+
+  /// TV 二维码登录成功后应用会话
+  Future<void> applyTvLoginSession(TvQrPollResult result) async {
+    await _bilibiliAPI
+        .applyLoginCookies(result.cookies, save: true);
+    if (result.accessToken.isNotEmpty) {
+      await SharedPreferencesService.setAccessToken(result.accessToken);
+      await SharedPreferencesService.setRefreshToken(result.refreshToken);
+      await SharedPreferencesService.setAccessTokenPlatform('tv');
+    }
+    await refreshMyInfo();
   }
 
   Future<List<Fav>?> getFavs(int mid, {int? rid}) async {
@@ -164,7 +234,14 @@ class BilibiliService {
     return ret;
   }
 
-  Future<List<Audio>?> getAudio(String bvid, int cid) {
+  Future<List<Audio>?> getAudio(String bvid, int cid) async {
+    // App 端 playurl 优先（appkey 签名 + access_key，对齐 BiliPai）；失败回退 web WBI
+    final accessToken = await SharedPreferencesService.getAccessToken();
+    final appResult =
+        await _bilibiliAPI.getAudioApp(bvid, cid, accessToken: accessToken);
+    if (appResult != null && appResult.isNotEmpty) {
+      return appResult;
+    }
     return _bilibiliAPI.getAudio(bvid, cid);
   }
 
@@ -258,6 +335,147 @@ class BilibiliService {
       String username, String password, Map<String, dynamic> geetestResult) {
     return _bilibiliAPI.passwordLogin(
         username: username, password: password, geetestResult: geetestResult);
+  }
+
+  /// App 端密码登录（对齐 BiliPai）
+  Future<AppLoginResult> passwordLoginApp(
+      String username, String password, CaptchaData? captcha,
+      {String? validate, String? seccode}) async {
+    final (buvid, deviceId) = await getLoginIdentity();
+    // 1. 获取 RSA 公钥
+    final loginKey = await _bilibiliAPI.getLoginKey();
+    if (loginKey == null) {
+      return AppLoginResult(code: -1, message: '获取登录密钥失败');
+    }
+    final encryptedPassword =
+        crypto.encryptPassword(password, loginKey['key']!, loginKey['hash']!);
+    final encryptedDeviceToken = crypto.encryptDeviceToken(
+        loginKey['key']!, BiliSign.createRandomString(16));
+    // 2. 发起 App 登录
+    return _bilibiliAPI.passwordLoginApp(
+      username: username,
+      encryptedPassword: encryptedPassword,
+      captcha: captcha,
+      validate: validate,
+      seccode: seccode,
+      buvid: buvid,
+      deviceId: deviceId,
+      encryptedDeviceToken: encryptedDeviceToken,
+    );
+  }
+
+  /// App 端发送短信验证码（对齐 BiliPai）
+  Future<(String, String?)> sendSmsCaptchaApp(
+    String phone,
+    CaptchaData? captcha, {
+    String? validate,
+    String? seccode,
+  }) async {
+    final (buvid, _) = await getLoginIdentity();
+    return _bilibiliAPI.sendSmsCaptchaApp(
+      phone: phone,
+      captcha: captcha,
+      validate: validate,
+      seccode: seccode,
+      buvid: buvid,
+    );
+  }
+
+  /// App 端短信登录（对齐 BiliPai）
+  Future<AppLoginResult> smsLoginApp(
+      String phone, String code, String captchaKey) async {
+    final (buvid, deviceId) = await getLoginIdentity();
+    final loginKey = await _bilibiliAPI.getLoginKey();
+    if (loginKey == null) {
+      return AppLoginResult(code: -1, message: '获取登录密钥失败');
+    }
+    final encryptedDeviceToken = crypto.encryptDeviceToken(
+        loginKey['key']!, BiliSign.createRandomString(16));
+    return _bilibiliAPI.smsLoginApp(
+      phone: phone,
+      code: code,
+      captchaKey: captchaKey,
+      buvid: buvid,
+      deviceId: deviceId,
+      encryptedDeviceToken: encryptedDeviceToken,
+    );
+  }
+
+  /// TV 二维码登录（首选，登录态含 access_token）
+  Future<TvQrLoginInfo?> getTvQrcodeLoginInfo() {
+    return _bilibiliAPI.getTvQrcodeLoginInfo();
+  }
+
+  Future<TvQrPollResult?> checkTvQrcodeLoginStatus(String authCode) {
+    return _bilibiliAPI.checkTvQrcodeLoginStatus(authCode);
+  }
+
+  Future<bool> refreshTvToken() async {
+    final accessToken = await SharedPreferencesService.getAccessToken();
+    final refreshToken = await SharedPreferencesService.getRefreshToken();
+    if (accessToken == null || refreshToken == null ||
+        accessToken.isEmpty || refreshToken.isEmpty) {
+      return false;
+    }
+    final result =
+        await _bilibiliAPI.refreshTvToken(accessToken, refreshToken);
+    if (result == null) return false;
+    await SharedPreferencesService.setAccessToken(result.accessToken);
+    await SharedPreferencesService.setRefreshToken(result.refreshToken);
+    if (result.cookies.isNotEmpty) {
+      await _bilibiliAPI.applyLoginCookies(result.cookies, save: true);
+    }
+    return true;
+  }
+
+  // ===== 密码登录风控（安全中心，对齐 BiliPai） =====
+  Future<SafeCenterInfo?> getSafeCenterInfo(String tmpCode) {
+    return _bilibiliAPI.getSafeCenterInfo(tmpCode);
+  }
+
+  Future<SafeCenterCaptchaPre?> getSafeCenterCaptchaPre() {
+    return _bilibiliAPI.getSafeCenterCaptchaPre();
+  }
+
+  Future<(String, String?)> sendSafeCenterSms({
+    required String tmpCode,
+    required String recaptchaToken,
+    required String challenge,
+    required String validate,
+    required String seccode,
+    required String referer,
+  }) {
+    return _bilibiliAPI.sendSafeCenterSms(
+      tmpCode: tmpCode,
+      recaptchaToken: recaptchaToken,
+      challenge: challenge,
+      validate: validate,
+      seccode: seccode,
+      referer: referer,
+    );
+  }
+
+  Future<(String, String?)> verifySafeCenterSms({
+    required String code,
+    required String tmpCode,
+    required String requestId,
+    required String source,
+    required String captchaKey,
+    required String referer,
+  }) {
+    return _bilibiliAPI.verifySafeCenterSms(
+      code: code,
+      tmpCode: tmpCode,
+      requestId: requestId,
+      source: source,
+      captchaKey: captchaKey,
+      referer: referer,
+    );
+  }
+
+  Future<AppLoginResult> oauth2AccessToken(String exchangeCode) async {
+    final (buvid, _) = await getLoginIdentity();
+    return _bilibiliAPI.oauth2AccessToken(code: exchangeCode, buvid: buvid);
   }
 
   Future<(bool, String?)> smsLogin(int tel, String code, String captchaKey) {

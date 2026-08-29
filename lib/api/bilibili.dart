@@ -1,10 +1,12 @@
 import 'dart:convert' as convert;
+import 'dart:math';
 
 import 'package:bmsc/api/bilibili_api_constant.dart';
 import 'package:bmsc/model/comment.dart';
 import 'package:bmsc/model/dynamic.dart';
 import 'package:bmsc/model/fav.dart';
 import 'package:bmsc/model/history.dart';
+import 'package:bmsc/model/login.dart';
 import 'package:bmsc/model/meta.dart';
 import 'package:bmsc/model/myinfo.dart';
 import 'package:bmsc/model/search.dart';
@@ -14,6 +16,7 @@ import 'package:bmsc/model/user_card.dart';
 import 'package:bmsc/model/user_upload.dart' show UserUploadResult;
 import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/service/connection_service.dart';
+import 'package:bmsc/util/bili_sign.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/util/crypto.dart' as crypto;
@@ -22,6 +25,7 @@ import 'package:dio/dio.dart';
 class BilibiliAPI {
   static final _logger = LoggerUtils.getLogger('BilibiliAPI');
 
+  /// 完整 cookie 串（buvid3;SESSDATA;bili_jct;DedeUserID;...）
   late String cookies;
   late Map<String, String> headers;
   Dio dio = Dio(BaseOptions(
@@ -32,6 +36,11 @@ class BilibiliAPI {
   bool noNetwork = false;
   ConnectionService connectionService = ConnectionService.getInstance();
 
+  /// cookie 组件（CookieJar 模式，对齐 BiliPai：自动注入完整 cookie 组）
+  final Map<String, String> _cookieMap = {};
+
+  String _buvid3 = '';
+
   BilibiliAPI() {
     connectionService.initialize();
     connectionService.connectionChange.listen((result) {
@@ -40,39 +49,83 @@ class BilibiliAPI {
     noNetwork = !connectionService.hasConnection;
   }
 
+  String _buildCookieString() {
+    // 按 cookie 名排序拼接，保证稳定
+    final entries = _cookieMap.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+    return entries.map((e) => '${e.key}=${e.value}').join('; ');
+  }
+
   Future<void> setCookie(String cookie, {bool save = false}) async {
     if (save) {
       await SharedPreferencesService.setCookie(cookie);
     }
-    cookies = cookie;
+    // 解析 k=v 对合并进 cookie 组
+    for (final part in cookie.split(';')) {
+      final idx = part.indexOf('=');
+      if (idx > 0) {
+        _cookieMap[part.substring(0, idx).trim()] = part.substring(idx + 1).trim();
+      }
+    }
+    cookies = _buildCookieString();
+    _setupHeaders();
+    _logger.info('setCookies: $cookie');
+  }
+
+  /// 直接设置单个 cookie 值（不持久化）
+  void setCookieValue(String name, String value) {
+    if (value.isEmpty) {
+      _cookieMap.remove(name);
+    } else {
+      _cookieMap[name] = value;
+    }
+    cookies = _buildCookieString();
+  }
+
+  /// 登录成功后应用完整会话（cookie 合并 + buvid3/DedeUserID），可选持久化
+  Future<void> applyLoginCookies(Map<String, String> sessionCookies,
+      {bool save = false}) async {
+    final buvid3 = sessionCookies['buvid3'] ?? sessionCookies['buvid'];
+    if (buvid3 != null && buvid3.isNotEmpty) {
+      _buvid3 = buvid3;
+      await SharedPreferencesService.setBuvid3(buvid3);
+    }
+    _cookieMap.addAll(sessionCookies);
+    cookies = _buildCookieString();
+    if (save) {
+      await SharedPreferencesService.setCookie(cookies);
+    }
+    _setupHeaders();
+  }
+
+  void clearCookies() {
+    _cookieMap.clear();
+    cookies = '';
+    _setupHeaders();
+  }
+
+  void _setupHeaders() {
     final ua =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0";
+    // 只保留正常 Web 端请求头（对齐 BiliPai：不携带伪造的 app-key / x-bili-* 设备指纹头）
     headers = {
-      'cookie': cookie,
+      if (cookies.isNotEmpty) 'cookie': cookies,
       'User-Agent': ua,
       'referer': "https://www.bilibili.com",
-      'env': 'prod',
-      'app-key': 'android64',
-      'x-bili-aurora-zone': 'sh001',
-      'x-bili-aurora-eid': '',
-      'x-bili-mid': '',
+      'Origin': "https://www.bilibili.com",
     };
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        final merged = Map<String, dynamic>.from(headers)
-          ..addAll(options.headers);
+        final merged = <String, dynamic>{...headers}..addAll(options.headers);
         options.headers = merged;
         return handler.next(options);
       },
+      onError: (e, handler) {
+        invalidateAccessKeyIfInvalid(e.response);
+        return handler.next(e);
+      },
     ));
-    _logger.info('setCookies: $cookie');
-  }
-
-  void updateBiliHeaders(int mid) {
-    headers['x-bili-mid'] = mid > 0 ? mid.toString() : '';
-    headers['x-bili-aurora-eid'] = mid > 0 ? crypto.genAuroraEid(mid) : '';
-    _logger.info('updateBiliHeaders: mid=$mid');
   }
 
   Future<void> resetCookies() async {
@@ -88,6 +141,32 @@ class BilibiliAPI {
       if (cookies.isNotEmpty) {
         setCookie(cookies, save: true);
       }
+    }
+  }
+
+  /// 确保 buvid3 匿名身份存在（对齐 BiliPai CookieJar，UUID+infoc）
+  Future<void> ensureBuvid3() async {
+    if (_buvid3.isNotEmpty) return;
+    var buvid3 = await SharedPreferencesService.getBuvid3();
+    if (buvid3 == null || buvid3.isEmpty) {
+      buvid3 =
+          '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}${Random().nextInt(1 << 30).toRadixString(16)}infoc';
+      await SharedPreferencesService.setBuvid3(buvid3);
+    }
+    _buvid3 = buvid3;
+    _cookieMap['buvid3'] = buvid3;
+    cookies = _buildCookieString();
+    _setupHeaders();
+  }
+
+  /// access_key 失效（-101）时清除，下次自动回退 web 接口
+  void invalidateAccessKeyIfInvalid(Response? response) {
+    if (response == null) return;
+    final body = response.data;
+    if (body is Map && body['code'] == -101) {
+      _logger.warning('access_key invalid (-101), clearing token');
+      SharedPreferencesService.setAccessToken('')
+          .catchError((_) {});
     }
   }
 
@@ -365,6 +444,52 @@ class BilibiliAPI {
     });
   }
 
+  /// App 端 playurl（appkey 签名 + access_key，对齐 BiliPai）。
+  /// 需要 access_token；拿不到（未登录/-101）时返回 null，调用方回退 web 接口。
+  Future<List<Audio>?> getAudioApp(String bvid, int cid,
+      {String? accessToken}) async {
+    if (accessToken == null || accessToken.isEmpty) return null;
+    final hires = await SharedPreferencesService.getHiResFirst();
+    final usesTv = await SharedPreferencesService.getAccessTokenPlatform() ==
+        'tv';
+    final params = <String, String>{
+      'bvid': bvid,
+      'cid': cid.toString(),
+      'qn': hires ? '127' : '64',
+      'fnval': '20432',
+      'fnver': '0',
+      'fourk': '1',
+      'access_key': accessToken,
+      'appkey': usesTv ? BiliSign.tvAppKey : BiliSign.androidAppKey,
+      'ts': BiliSign.getTimestamp(),
+      'platform': 'android',
+      'mobi_app': usesTv ? 'android_tv_yst' : 'android',
+      'device': 'android',
+    };
+    final signed = usesTv
+        ? BiliSign.signForTv(params)
+        : BiliSign.signForAndroidApi(params);
+    try {
+      final resp = await dio.get(apiAppPlayUrlUrl, queryParameters: signed);
+      final body = resp.data;
+      if (body['code'] != 0) {
+        _logger.info('getAudioApp failed: code=${body['code']} ${body['message']}');
+        if (body['code'] == -101) {
+          await SharedPreferencesService.setAccessToken('');
+        }
+        return null;
+      }
+      final dash = TrackResult.fromJson(body).dash;
+      if (hires && dash.flac?.audio != null) {
+        return [dash.flac!.audio!] + dash.audio;
+      }
+      return dash.audio;
+    } catch (e) {
+      _logger.severe('getAudioApp error: $e');
+      return null;
+    }
+  }
+
   Future<bool?> favoriteVideo(int avid, List<int> adds, List<int> dels) {
     return _callAPI(
       apiDoFavVideoUrl,
@@ -535,6 +660,9 @@ class BilibiliAPI {
     return _callAPI(apiLoginKeyUrl);
   }
 
+  /// 供登录流程使用的 RSA 公钥（key/hash）
+  Future<Map<String, dynamic>?> getLoginKey() => _getLoginKey();
+
   Future<(bool, String?)> passwordLogin({
     required String username,
     required String password,
@@ -661,6 +789,382 @@ class BilibiliAPI {
     return _callAPI(apiGetQrcodeLoginUrl,
         callback: (data) =>
             (data['url'] as String, data['qrcode_key'] as String));
+  }
+
+  // ==================== TV 端二维码登录（首选，对齐 BiliPai） ====================
+
+  /// 申请 TV 端二维码（带 appkey 签名）；成功后登录态含 access_token，支持高画质
+  Future<TvQrLoginInfo?> getTvQrcodeLoginInfo() async {
+    if (noNetwork) return null;
+    final params = BiliSign.signForTv({
+      'appkey': BiliSign.tvAppKey,
+      'local_id': '0',
+      'ts': BiliSign.getTimestamp(),
+    });
+    try {
+      final resp = await dio.post(apiGetTvQrcodeLoginUrl,
+          data: params,
+          options: Options(contentType: Headers.formUrlEncodedContentType));
+      final body = resp.data;
+      if (body['code'] != 0) {
+        _logger.severe('getTvQrcodeLoginInfo failed: ${body['message']}');
+        return null;
+      }
+      return TvQrLoginInfo.fromJson(body['data']);
+    } catch (e) {
+      _logger.severe('getTvQrcodeLoginInfo error: $e');
+      return null;
+    }
+  }
+
+  /// 轮询 TV 二维码登录状态；成功后 cookies 在 body 的 cookie_info 里返回
+  Future<TvQrPollResult?> checkTvQrcodeLoginStatus(String authCode) async {
+    final params = BiliSign.signForTv({
+      'appkey': BiliSign.tvAppKey,
+      'auth_code': authCode,
+      'local_id': '0',
+      'ts': BiliSign.getTimestamp(),
+    });
+    try {
+      final resp = await dio.post(apiCheckTvQrcodeStatusUrl,
+          data: params,
+          options: Options(contentType: Headers.formUrlEncodedContentType));
+      final body = resp.data;
+      final result = TvQrPollResult.fromJson(body);
+      if (result.code == 0) {
+        _logger.info('TV QR login success, mid=${result.mid}');
+      }
+      return result;
+    } catch (e) {
+      _logger.severe('checkTvQrcodeLoginStatus error: $e');
+      return null;
+    }
+  }
+
+  /// TV 端 token 刷新（h5/refresh），返回新 access_token/refresh_token
+  Future<TvQrPollResult?> refreshTvToken(
+      String accessToken, String refreshToken) async {
+    final params = BiliSign.signForTv({
+      'appkey': BiliSign.tvAppKey,
+      'access_key': accessToken,
+      'refresh_token': refreshToken,
+      'ts': BiliSign.getTimestamp(),
+    });
+    try {
+      final resp = await dio.post(apiTvTokenRefreshUrl,
+          data: params,
+          options: Options(contentType: Headers.formUrlEncodedContentType));
+      final body = resp.data;
+      if (body['code'] != 0) {
+        _logger.warning('refreshTvToken failed: ${body['message']}');
+        return null;
+      }
+      final data = body['data'];
+      final cookies = <String, String>{};
+      final cookieInfo = data?['cookie_info'];
+      if (cookieInfo is Map && cookieInfo['cookies'] is List) {
+        for (final c in cookieInfo['cookies'] as List) {
+          if (c is Map && c['name'] != null) {
+            cookies[c['name'] as String] = c['value'] ?? '';
+          }
+        }
+      }
+      return TvQrPollResult(
+        code: 0,
+        mid: data?['mid'] ?? 0,
+        accessToken: data?['access_token'] ?? '',
+        refreshToken: data?['refresh_token'] ?? '',
+        cookies: cookies,
+      );
+    } catch (e) {
+      _logger.severe('refreshTvToken error: $e');
+      return null;
+    }
+  }
+
+  // ==================== App 端密码/短信登录（对齐 BiliPai Android-HD） ====================
+
+  Map<String, String> _androidLoginBaseParams(int ts) => {
+        'appkey': BiliSign.androidHdAppKey,
+        'build': '2001100',
+        'c_locale': 'zh_CN',
+        'channel': 'master',
+        'disable_rcmd': '0',
+        'mobi_app': 'android_hd',
+        'platform': 'android',
+        's_locale': 'zh_CN',
+        'statistics':
+            '{"appId":5,"platform":3,"version":"2.0.1","abtest":""}',
+        'ts': ts.toString(),
+      };
+
+  Map<String, String> _androidLoginDeviceParams(
+          String buvid, String deviceId, String encryptedDeviceToken) =>
+      {
+        'bili_local_id': deviceId,
+        'buvid': buvid,
+        'device': 'phone',
+        'device_id': deviceId,
+        'device_name': 'vivo',
+        'device_platform': 'Android14vivo',
+        'dt': BiliSign.percentEncode(encryptedDeviceToken),
+        'local_id': buvid,
+      };
+
+  Map<String, String> _geetestParams(CaptchaData? captcha,
+          {String? validate, String? seccode}) =>
+      {
+        if (captcha != null && captcha.token.isNotEmpty)
+          'recaptcha_token': captcha.token,
+        if (captcha?.challenge != null && captcha!.challenge!.isNotEmpty)
+          'gee_challenge': captcha.challenge!,
+        if (validate != null && validate.isNotEmpty) 'gee_validate': validate,
+        if (seccode != null && seccode.isNotEmpty) 'gee_seccode': seccode,
+      };
+
+  /// App 端密码登录（oauth2/login）
+  Future<AppLoginResult> passwordLoginApp({
+    required String username,
+    required String encryptedPassword,
+    CaptchaData? captcha,
+    String? validate,
+    String? seccode,
+    required String buvid,
+    required String deviceId,
+    required String encryptedDeviceToken,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts),
+      ..._androidLoginDeviceParams(buvid, deviceId, encryptedDeviceToken),
+      ..._geetestParams(captcha, validate: validate, seccode: seccode),
+      'username': username,
+      'password': encryptedPassword,
+      'permission': 'ALL',
+      'from_pv': 'main.homepage.avatar-nologin.all.click',
+      'from_url': BiliSign.percentEncode('bilibili://pegasus/promo'),
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiAppPasswordLoginUrl,
+          data: signed,
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            headers: {'X-BiliPai-Login-Buvid': buvid},
+          ));
+      return AppLoginResult.fromResponse(
+          resp.data, resp.headers['set-cookie'] ?? []);
+    } catch (e) {
+      _logger.severe('passwordLoginApp error: $e');
+      return AppLoginResult(code: -1, message: e.toString());
+    }
+  }
+
+  /// App 端发送短信验证码（sms/send）
+  Future<(String, String?)> sendSmsCaptchaApp({
+    required String phone,
+    CaptchaData? captcha,
+    String? validate,
+    String? seccode,
+    required String buvid,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts ~/ 1000),
+      ..._geetestParams(captcha, validate: validate, seccode: seccode),
+      'buvid': buvid,
+      'local_id': buvid,
+      'login_session_id':
+          BiliSign.createLoginSessionId(buvid, ts),
+      'cid': '86',
+      'tel': phone,
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiAppSmsCaptchaUrl,
+          data: signed,
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            headers: {'X-BiliPai-Login-Buvid': buvid},
+          ));
+      final body = resp.data;
+      if (body['code'] != 0) {
+        return ("", body['message']?.toString() ?? '发送失败');
+      }
+      final data = body['data'];
+      final captchaKey = data?['captcha_key']?.toString() ?? '';
+      final recaptchaUrl = data?['recaptcha_url']?.toString() ?? '';
+      if (captchaKey.isEmpty && recaptchaUrl.isNotEmpty) {
+        // 要求重新完成人机验证
+        return ("", _formatRecaptchaRequired(recaptchaUrl));
+      }
+      return (captchaKey, null);
+    } catch (e) {
+      _logger.severe('sendSmsCaptchaApp error: $e');
+      return ("", e.toString());
+    }
+  }
+
+  String _formatRecaptchaRequired(String url) =>
+      '需要重新完成人机验证$_formatRecaptchaUrl(url)';
+
+  String _formatRecaptchaUrl(String url) => ': $url';
+
+  /// App 端短信登录（login/sms）
+  Future<AppLoginResult> smsLoginApp({
+    required String phone,
+    required String code,
+    required String captchaKey,
+    required String buvid,
+    required String deviceId,
+    required String encryptedDeviceToken,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts),
+      ..._androidLoginDeviceParams(buvid, deviceId, encryptedDeviceToken),
+      'cid': '86',
+      'tel': phone,
+      'code': code,
+      'captcha_key': captchaKey,
+      'from_pv': 'main.my-information.my-login.0.click',
+      'from_url': BiliSign.percentEncode('bilibili://user_center/mine'),
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiAppSmsLoginUrl,
+          data: signed,
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            headers: {'X-BiliPai-Login-Buvid': buvid},
+          ));
+      return AppLoginResult.fromResponse(
+          resp.data, resp.headers['set-cookie'] ?? []);
+    } catch (e) {
+      _logger.severe('smsLoginApp error: $e');
+      return AppLoginResult(code: -1, message: e.toString());
+    }
+  }
+
+  // ==================== 密码登录风控（安全中心，对齐 BiliPai） ====================
+
+  /// 获取绑定手机号信息（tmp_code 来自密码登录 status=2 的 url）
+  Future<SafeCenterInfo?> getSafeCenterInfo(String tmpCode) async {
+    return _callAPI(apiSafeCenterUserInfoUrl,
+        queryParameters: {'tmp_code': tmpCode},
+        callback: (data) => SafeCenterInfo.fromJson(data));
+  }
+
+  /// 获取安全中心极验预捕获参数
+  Future<SafeCenterCaptchaPre?> getSafeCenterCaptchaPre() async {
+    final options =
+        Options(contentType: Headers.formUrlEncodedContentType);
+    try {
+      final resp = await dio.post(apiSafeCenterCaptchaPreUrl,
+          options: options);
+      final body = resp.data;
+      if (body['code'] != 0) return null;
+      return SafeCenterCaptchaPre.fromJson(body['data']);
+    } catch (e) {
+      _logger.severe('getSafeCenterCaptchaPre error: $e');
+      return null;
+    }
+  }
+
+  /// 风控短信发送
+  Future<(String, String?)> sendSafeCenterSms({
+    required String tmpCode,
+    required String recaptchaToken,
+    required String challenge,
+    required String validate,
+    required String seccode,
+    required String referer,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts),
+      'tmp_code': tmpCode,
+      'recaptcha_token': recaptchaToken,
+      'gee_challenge': challenge,
+      'gee_validate': validate,
+      'gee_seccode': seccode,
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiSafeCenterSmsSendUrl,
+          data: signed,
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            headers: {'Referer': referer},
+          ));
+      final body = resp.data;
+      if (body['code'] != 0) {
+        return ("", body['message']?.toString() ?? '发送失败');
+      }
+      return (body['data']?['captcha_key']?.toString() ?? "", null);
+    } catch (e) {
+      _logger.severe('sendSafeCenterSms error: $e');
+      return ("", e.toString());
+    }
+  }
+
+  /// 风控短信校验，成功后返回 exchange code
+  Future<(String, String?)> verifySafeCenterSms({
+    required String code,
+    required String tmpCode,
+    required String requestId,
+    required String source,
+    required String captchaKey,
+    required String referer,
+  }) async {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts),
+      'code': code,
+      'tmp_code': tmpCode,
+      'request_id': requestId,
+      'source': source,
+      'captcha_key': captchaKey,
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiSafeCenterSmsVerifyUrl,
+          data: signed,
+          options: Options(
+            contentType: Headers.formUrlEncodedContentType,
+            headers: {'Referer': referer},
+          ));
+      final body = resp.data;
+      if (body['code'] != 0) {
+        return ("", body['message']?.toString() ?? '验证失败');
+      }
+      return (body['data']?['code']?.toString() ?? "", null);
+    } catch (e) {
+      _logger.severe('verifySafeCenterSms error: $e');
+      return ("", e.toString());
+    }
+  }
+
+  /// 用 exchange code 换 access_token（oauth2/access_token）
+  Future<AppLoginResult> oauth2AccessToken(
+      {required String code, required String buvid}) async {
+    final ts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final params = <String, String>{
+      ..._androidLoginBaseParams(ts),
+      'code': code,
+      'buvid': buvid,
+    };
+    final signed = BiliSign.signForAndroidHdLogin(params);
+    try {
+      final resp = await dio.post(apiOauth2AccessTokenUrl,
+          data: signed,
+          options: Options(contentType: Headers.formUrlEncodedContentType));
+      return AppLoginResult.fromResponse(
+          resp.data, resp.headers['set-cookie'] ?? []);
+    } catch (e) {
+      _logger.severe('oauth2AccessToken error: $e');
+      return AppLoginResult(code: -1, message: e.toString());
+    }
   }
 
   Future<int?> checkQrcodeLoginStatus(String qrcodeKey) async {
