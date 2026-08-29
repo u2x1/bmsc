@@ -33,27 +33,64 @@ class _AboutScreenState extends State<AboutScreen> {
       setState(() {
         releases = x.newVersionInfo;
         hasNewVersion = x.hasNewVersion;
-        latestVersion =
-            x.newVersionInfo?.first.tagName.replaceAll('v', '') ?? '';
+        latestVersion = x.newVersionInfo?.firstOrNull?.tagName
+                .replaceFirst(RegExp(r'^v'), '') ??
+            '';
       });
+    }
+  }
+
+  Future<void> _checkUpdateManually() async {
+    final x = await UpdateService.instance;
+    final info = await UpdateService.checkNewVersion();
+    if (!mounted) {
+      return;
+    }
+    if (info == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('检查更新失败，请稍后重试')),
+      );
+      return;
+    }
+    x.newVersionInfo = info;
+    x.hasNewVersion = UpdateService.isNewerVersion(
+        info.firstOrNull?.tagName, x.curVersion);
+    setState(() {
+      releases = x.newVersionInfo;
+      hasNewVersion = x.hasNewVersion;
+      latestVersion = x.newVersionInfo?.firstOrNull?.tagName
+              .replaceFirst(RegExp(r'^v'), '') ??
+          '';
+    });
+    if (hasNewVersion) {
+      x.showUpdateDialog(context, version);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当前已是最新版本')),
+      );
     }
   }
 
   Future<void> _loadVersionInfo() async {
     final packageInfo = await PackageInfo.fromPlatform();
     final currentVersion = packageInfo.version;
-    final changelogAsset = await rootBundle.loadString('changelog.md');
-    final c = changelogAsset
-        .split('#')
-        .map((e) => e.trim())
-        .map((e) => e
-            .split('\n')
-            .map((e) => e.trim())
-            .where((e) => e.isNotEmpty)
-            .toList())
-        .where((e) => e.isNotEmpty)
-        .map((e) => (e[0], e.sublist(1).join('\n')))
-        .toList();
+    List<(String, String)> c = [];
+    try {
+      final changelogAsset = await rootBundle.loadString('changelog.md');
+      c = changelogAsset
+          .split('#')
+          .map((e) => e.trim())
+          .map((e) => e
+              .split('\n')
+              .map((e) => e.trim())
+              .where((e) => e.isNotEmpty)
+              .toList())
+          .where((e) => e.isNotEmpty)
+          .map((e) => (e[0], e.sublist(1).join('\n')))
+          .toList();
+    } catch (_) {
+      // changelog 资源缺失或解析失败时静默忽略
+    }
     if (mounted) {
       setState(() {
         version = currentVersion;
@@ -113,6 +150,13 @@ class _AboutScreenState extends State<AboutScreen> {
                         }
                       }
                     },
+                  ),
+                ] else ...[
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    icon: const Icon(Icons.refresh),
+                    label: const Text('检查更新'),
+                    onPressed: _checkUpdateManually,
                   ),
                 ],
                 const SizedBox(height: 32),
@@ -229,7 +273,8 @@ class _AboutScreenState extends State<AboutScreen> {
                               ),
                             ),
                           const SizedBox(width: 8),
-                          if (entry.$1 == latestVersion)
+                          if (entry.$1 == latestVersion &&
+                              latestVersion != version)
                             Container(
                               padding: const EdgeInsets.symmetric(
                                 horizontal: 8,
@@ -238,7 +283,7 @@ class _AboutScreenState extends State<AboutScreen> {
                               decoration: BoxDecoration(
                                 color: Theme.of(context)
                                     .colorScheme
-                                    .primaryContainer,
+                                    .tertiaryContainer,
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: const Text(

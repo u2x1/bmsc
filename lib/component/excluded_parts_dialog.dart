@@ -1,4 +1,3 @@
-import 'package:flutter/rendering.dart';
 import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
@@ -36,39 +35,53 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
   }
 
   Future<void> _loadExcludedParts() async {
-    var es = await DatabaseManager.getEntities(widget.bvid);
-    if (es.isEmpty) {
-      _logger
-          .info('entities of ${widget.bvid} not in cache, fetching from API');
-      await (await BilibiliService.instance).getVidDetail(bvid: widget.bvid);
-      es = await DatabaseManager.getEntities(widget.bvid);
-    }
+    try {
+      var es = await DatabaseManager.getEntities(widget.bvid);
+      if (es.isEmpty) {
+        _logger.info(
+            'entities of ${widget.bvid} not in cache, fetching from API');
+        await (await BilibiliService.instance).getVidDetail(bvid: widget.bvid);
+        es = await DatabaseManager.getEntities(widget.bvid);
+      }
 
-    final excludedCids = await DatabaseManager.getExcludedParts(widget.bvid);
+      final excludedCids = await DatabaseManager.getExcludedParts(widget.bvid);
 
-    if (es.isNotEmpty) {
-      setState(() {
-        isLoading = false;
-        entities = es;
-        excludedParts = Set.from(excludedCids);
-        excludeCnt = excludedCids.length;
-        modified = List.filled(es.length, false);
-      });
-    } else {
-      setState(() {
-        isLoading = false;
-        hasError = true;
+      if (es.isEmpty) {
         _logger.severe('Failed to load entities for ${widget.bvid}');
-      });
+        if (mounted) {
+          setState(() {
+            isLoading = false;
+            hasError = true;
+          });
+        }
+        return;
+      }
+
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+          entities = es;
+          excludedParts = Set.from(excludedCids);
+          excludeCnt = excludedCids.length;
+          modified = List.filled(es.length, false);
+        });
+      }
+    } catch (e, stackTrace) {
+      _logger.severe(
+          'Failed to load entities for ${widget.bvid}', e, stackTrace);
+      if (mounted) {
+        setState(() {
+          isLoading = false;
+          hasError = true;
+        });
+      }
     }
   }
 
   void _selectAll() {
     final modifiedCopy = List<bool>.from(modified);
     for (var i = 0; i < modified.length; i++) {
-      final isExcluded = excludedParts.contains(entities[i].cid);
-      modifiedCopy[i] = !isExcluded;
-      excludeCnt += !isExcluded ? 0 : 1;
+      modifiedCopy[i] = !excludedParts.contains(entities[i].cid);
     }
     setState(() {
       modified = modifiedCopy;
@@ -116,15 +129,14 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
         children: [
           Text(
             widget.title,
-            style: const TextStyle(fontSize: 18),
+            style: Theme.of(context).textTheme.titleLarge,
           ),
           const SizedBox(height: 8),
           Text(
             '${entities.length} 个分集，已跳过 $excludeCnt 个',
-            style: TextStyle(
-              fontSize: 14,
-              color: Theme.of(context).colorScheme.secondary,
-            ),
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.secondary,
+                ),
           ),
           const Divider(),
           Row(
@@ -158,17 +170,26 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                       size: 48,
                     ),
                     const SizedBox(height: 16),
-                    Text(
+                    const Text(
                       '无法加载分集信息，请稍后重试',
                       textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: () {
+                        setState(() {
+                          isLoading = true;
+                          hasError = false;
+                        });
+                        _loadExcludedParts();
+                      },
+                      child: const Text('重试'),
                     ),
                   ],
                 )
               : SizedBox(
                   width: double.maxFinite,
                   child: ListView.builder(
-                    scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-                    shrinkWrap: true,
                     itemCount: entities.length,
                     itemBuilder: (context, index) {
                       final e = entities[index];
@@ -184,15 +205,6 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                         },
                         child: Container(
                           decoration: BoxDecoration(
-                            color: isExcluded
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .errorContainer
-                                    .withValues(alpha: 0.3)
-                                : Theme.of(context)
-                                    .colorScheme
-                                    .primaryContainer
-                                    .withValues(alpha: 0.3),
                             border: Border(
                               bottom: BorderSide(
                                 color: Theme.of(context).dividerColor,
@@ -219,17 +231,19 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                                       e.partTitle,
                                       maxLines: 2,
                                       overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        decoration: isExcluded
-                                            ? TextDecoration.lineThrough
-                                            : null,
-                                        color: isExcluded
-                                            ? Theme.of(context)
-                                                .colorScheme
-                                                .error
-                                            : null,
-                                      ),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            decoration: isExcluded
+                                                ? TextDecoration.lineThrough
+                                                : null,
+                                            color: isExcluded
+                                                ? Theme.of(context)
+                                                    .colorScheme
+                                                    .secondary
+                                                : null,
+                                          ),
                                     ),
                                     Text(
                                       _formatDuration(e.duration),
@@ -242,6 +256,13 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
                                   ],
                                 ),
                               ),
+                              if (isExcluded)
+                                Icon(
+                                  Icons.block,
+                                  size: 18,
+                                  color:
+                                      Theme.of(context).colorScheme.secondary,
+                                ),
                             ],
                           ),
                         ),
@@ -257,11 +278,24 @@ class _ExcludedPartsDialogState extends State<ExcludedPartsDialog> {
           child: const Text('取消'),
         ),
         FilledButton(
-          onPressed: () async {
-            setState(() => isLoading = true);
-            await _saveChanges();
-            if (context.mounted) Navigator.pop(context);
-          },
+          onPressed: isLoading
+              ? null
+              : () async {
+                  setState(() => isLoading = true);
+                  try {
+                    await _saveChanges();
+                    if (context.mounted) Navigator.pop(context);
+                  } catch (e, stackTrace) {
+                    _logger.severe(
+                        'Failed to save excluded parts', e, stackTrace);
+                    if (context.mounted) {
+                      setState(() => isLoading = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('保存失败，请稍后重试')),
+                      );
+                    }
+                  }
+                },
           child: const Text('确定'),
         ),
       ],

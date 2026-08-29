@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-Widget shadow(Widget child) {
+Widget shadow(Widget child, {double borderRadius = 10}) {
   return Builder(
     builder: (context) {
       final isDark = Theme.of(context).brightness == Brightness.dark;
       return Container(
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(10),
+          borderRadius: BorderRadius.circular(borderRadius),
           boxShadow: [
             BoxShadow(
               color: (isDark

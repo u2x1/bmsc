@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
@@ -44,9 +45,9 @@ class _DetailScreenState extends State<DetailScreen> {
   AudioService? _audioService;
   bool _isAudioServiceLoading = true;
   SequenceState? _currentSequenceState;
-  Duration _position = Duration.zero;
-  Duration _bufferedPosition = Duration.zero;
-  Duration _duration = Duration.zero;
+  StreamSubscription<SequenceState?>? _sequenceStateSubscription;
+  int _favCheckToken = 0;
+  int _subtitleLoadToken = 0;
   bool _isTitleExpanded = false;
 
   @override
@@ -64,7 +65,8 @@ class _DetailScreenState extends State<DetailScreen> {
     });
 
     // Set up listeners for audio state
-    _audioService!.player.sequenceStateStream.listen((state) {
+    _sequenceStateSubscription =
+        _audioService!.player.sequenceStateStream.listen((state) {
       if (!mounted) return;
       setState(() {
         _currentSequenceState = state;
@@ -85,33 +87,12 @@ class _DetailScreenState extends State<DetailScreen> {
       }
     });
 
-    // Set up combined position stream
-    Rx.combineLatest3(
-      _audioService!.player.positionStream,
-      _audioService!.player.bufferedPositionStream,
-      _audioService!.player.durationStream,
-      (position, bufferedPosition, duration) => (
-        position,
-        bufferedPosition,
-        duration,
-      ),
-    ).listen((durationState) {
-      if (!mounted) return;
-      setState(() {
-        _position = durationState.$1;
-        _bufferedPosition = durationState.$2;
-        _duration = durationState.$3 ?? Duration.zero;
-      });
-    });
-
     // Initialize initial values
-    _position = _audioService!.player.position;
-    _bufferedPosition = _audioService!.player.bufferedPosition;
-    _duration = _audioService!.player.duration ?? Duration.zero;
     _currentSequenceState = _audioService!.player.sequenceState;
   }
 
   Future<void> _checkFavoriteStatus(int? aid, String? bvid) async {
+    final token = ++_favCheckToken;
     if (!mounted) return;
     if (aid == null && bvid == null) {
       setState(() => _isFavorite = null);
@@ -120,16 +101,16 @@ class _DetailScreenState extends State<DetailScreen> {
     bool isFavedDB = false;
     if (bvid != null) {
       isFavedDB = await DatabaseManager.isFaved(bvid);
-      if (!mounted) return;
+      if (!mounted || token != _favCheckToken) return;
       setState(() => _isFavorite = isFavedDB);
     }
     if (aid != null) {
       final isFavorited =
           await (await BilibiliService.instance).isFavorited(aid);
       if (isFavedDB && bvid != null && isFavorited != null && !isFavorited) {
-        DatabaseManager.rmFav(bvid);
+        await DatabaseManager.rmFav(bvid);
       }
-      if (!mounted) return;
+      if (!mounted || token != _favCheckToken) return;
       setState(() => _isFavorite = isFavorited);
     }
   }
@@ -364,8 +345,18 @@ class _DetailScreenState extends State<DetailScreen> {
       factor *= 0.4;
       width *= 0.9;
     }
-    final imageSize = Size(width * factor, height * factor);
+    var imageSize = Size(width * factor, height * factor);
 
+    return LayoutBuilder(builder: (context, constraints) {
+      if (constraints.hasBoundedWidth && imageSize.width > constraints.maxWidth) {
+        imageSize = imageSize * (constraints.maxWidth / imageSize.width);
+      }
+      return _buildCoverImageContent(src, imageSize, showTapHint);
+    });
+  }
+
+  Widget _buildCoverImageContent(
+      IndexedAudioSource? src, Size imageSize, bool showTapHint) {
     return GestureDetector(
       onTap: showTapHint
           ? () async {
@@ -439,19 +430,13 @@ class _DetailScreenState extends State<DetailScreen> {
         InkWell(
           onTap: () => src == null
               ? null
-              : Navigator.pushReplacement(context, MaterialPageRoute<Widget>(
+              : Navigator.push(context, MaterialPageRoute<Widget>(
                   builder: (BuildContext context) {
-                    return Overlay(
-                      initialEntries: [
-                        OverlayEntry(builder: (context3) {
-                          return Scaffold(
-                            body: UserDetailScreen(
-                              mid: src.tag.extras['mid'] ?? 0,
-                            ),
-                            bottomNavigationBar: const PlayingCard(),
-                          );
-                        })
-                      ],
+                    return Scaffold(
+                      body: UserDetailScreen(
+                        mid: src.tag.extras['mid'] ?? 0,
+                      ),
+                      bottomNavigationBar: const PlayingCard(),
                     );
                   },
                 )),
@@ -488,20 +473,9 @@ class _DetailScreenState extends State<DetailScreen> {
   Widget _buildProgressBar(BuildContext context) {
     final isSmallScreen = _isSmallScreen(context);
 
-    return Padding(
-      padding: EdgeInsets.all(isSmallScreen ? 10.0 : 20.0),
-      child: ProgressBar(
-        progress: _position,
-        buffered: _bufferedPosition,
-        total: _duration,
-        onSeek: _audioService!.player.seek,
-        timeLabelTextStyle: TextStyle(
-          color: Theme.of(context).colorScheme.primary,
-          fontSize: 10,
-        ),
-        timeLabelPadding: 5,
-        thumbRadius: 5,
-      ),
+    return _PositionProgressBar(
+      player: _audioService!.player,
+      isSmallScreen: isSmallScreen,
     );
   }
 
@@ -607,7 +581,7 @@ class _DetailScreenState extends State<DetailScreen> {
     final defaultFolderId =
         await SharedPreferencesService.getDefaultFavFolder();
 
-    if (!_isFavorite! && defaultFolderId != null) {
+    if (_isFavorite != true && defaultFolderId != null) {
       final success = await bs.favoriteVideo(
             src.tag.extras['aid'],
             [defaultFolderId.$1],
@@ -1443,6 +1417,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _loadSubtitles(int aid, int cid) async {
+    final token = ++_subtitleLoadToken;
     final subtitleKey = '${aid}_$cid';
     if (_subtitleCache.containsKey(subtitleKey)) {
       // 使用缓存的字幕数据
@@ -1456,12 +1431,12 @@ class _DetailScreenState extends State<DetailScreen> {
     final bilibiliService = await BilibiliService.instance;
     final subtitles = await bilibiliService.getSubTitleInfo(aid, cid);
 
-    if (!mounted) return;
+    if (!mounted || token != _subtitleLoadToken) return;
 
     if (subtitles != null && subtitles.isNotEmpty) {
       final subtitleData =
           await bilibiliService.getSubTitleData(subtitles.last.$2);
-      if (subtitleData != null && mounted) {
+      if (subtitleData != null && mounted && token == _subtitleLoadToken) {
         // 缓存字幕数据
         _subtitleCache[subtitleKey] = subtitleData;
         setState(() {
@@ -1588,7 +1563,8 @@ class _DetailScreenState extends State<DetailScreen> {
                       index: index,
                       controller: _subtitleScrollController,
                       child: Container(
-                        height: subTitleHeight,
+                        constraints:
+                            const BoxConstraints(minHeight: subTitleHeight),
                         padding: const EdgeInsets.symmetric(
                             vertical: 8, horizontal: 24),
                         child: AnimatedDefaultTextStyle(
@@ -1639,8 +1615,51 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   void dispose() {
+    _sequenceStateSubscription?.cancel();
     _commentCache.clear();
     _subtitleScrollController.dispose();
     super.dispose();
+  }
+}
+
+class _PositionProgressBar extends StatelessWidget {
+  final AudioPlayer player;
+  final bool isSmallScreen;
+
+  const _PositionProgressBar({
+    required this.player,
+    required this.isSmallScreen,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.all(isSmallScreen ? 10.0 : 20.0),
+      child: StreamBuilder<(Duration, Duration, Duration?)>(
+        stream: Rx.combineLatest3(
+          player.positionStream,
+          player.bufferedPositionStream,
+          player.durationStream,
+          (position, bufferedPosition, duration) =>
+              (position, bufferedPosition, duration),
+        ),
+        builder: (context, snapshot) {
+          final state = snapshot.data ??
+              (player.position, player.bufferedPosition, player.duration);
+          return ProgressBar(
+            progress: state.$1,
+            buffered: state.$2,
+            total: state.$3 ?? Duration.zero,
+            onSeek: player.seek,
+            timeLabelTextStyle: TextStyle(
+              color: Theme.of(context).colorScheme.primary,
+              fontSize: 10,
+            ),
+            timeLabelPadding: 5,
+            thumbRadius: 5,
+          );
+        },
+      ),
+    );
   }
 }

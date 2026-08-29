@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:bmsc/component/playing_card.dart';
+import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
@@ -23,6 +24,8 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
   final _logger = LoggerUtils.getLogger('RecommendationScreen');
   List<Meta> recommendations = [];
   bool isLoading = true;
+  bool _isLoadingLock = false;
+  bool _noDefaultFolder = false;
   String? defaultFolderName;
 
   @override
@@ -83,32 +86,43 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
   }
 
   Future<void> _loadRecommendations({bool force = false}) async {
-    _logger.info('Loading recommendations (force: $force)');
-    setState(() => isLoading = true);
+    if (_isLoadingLock) return;
+    _isLoadingLock = true;
+    try {
+      _logger.info('Loading recommendations (force: $force)');
+      setState(() => isLoading = true);
 
-    final defaultFolder = await SharedPreferencesService.getDefaultFavFolder();
-    if (defaultFolder == null) {
+      final defaultFolder =
+          await SharedPreferencesService.getDefaultFavFolder();
+      if (defaultFolder == null) {
+        if (mounted) {
+          setState(() {
+            recommendations = [];
+            _noDefaultFolder = true;
+            isLoading = false;
+          });
+        }
+        return;
+      }
+
+      final recs = await BilibiliService.instance
+          .then((x) => x.getDailyRecommendations(force: force));
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('请先设置默认收藏夹')),
-        );
+        if (recs != null) {
+          _logger.info('Loaded ${recs.length} recommendations');
+        } else {
+          _logger.warning('Failed to load recommendations');
+        }
+        setState(() {
+          if (recs != null) {
+            recommendations = recs;
+          }
+          _noDefaultFolder = false;
+          isLoading = false;
+        });
       }
-      setState(() => isLoading = false);
-      return;
-    }
-
-    final recs = await BilibiliService.instance
-        .then((x) => x.getDailyRecommendations(force: force));
-    if (mounted) {
-      if (recs != null) {
-        _logger.info('Loaded ${recs.length} recommendations');
-      } else {
-        _logger.warning('Failed to load recommendations');
-      }
-      setState(() {
-        recommendations = recs ?? [];
-        isLoading = false;
-      });
+    } finally {
+      _isLoadingLock = false;
     }
   }
 
@@ -124,37 +138,47 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
       return;
     }
 
-    // 获取收藏夹中的视频
-    final favVideos = await BilibiliService.instance
-        .then((x) => x.getFavMetas(defaultFolder.$1));
-    if (favVideos == null || favVideos.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('收藏夹为空')),
-        );
-      }
+    // 获取收藏夹中的视频（优先本地缓存）
+    var favVideos = await DatabaseManager.getCachedFavMetas(defaultFolder.$1);
+    if (favVideos.isEmpty) {
+      favVideos = await BilibiliService.instance
+              .then((x) => x.getFavMetas(defaultFolder.$1)) ??
+          [];
+    }
+    if (!mounted) return;
+
+    // 排除当前列表已有的视频（含被替换的原项），避免重复推荐
+    final existingBvids = recommendations.map((v) => v.bvid).toSet();
+    final candidates =
+        favVideos.where((v) => !existingBvids.contains(v.bvid)).toList();
+    if (candidates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('收藏夹为空或没有更多可推荐的视频')),
+      );
       return;
     }
 
     // 随机选择一个视频
-    final selectedVideo = favVideos[Random().nextInt(favVideos.length)];
+    final selectedVideo = candidates[Random().nextInt(candidates.length)];
     _logger.info('Selected video for recommendation: ${selectedVideo.bvid}');
 
     // 获取相关推荐
     final relatedVideos = await BilibiliService.instance
         .then((x) => x.getRecommendations([selectedVideo]));
-    if (relatedVideos == null || relatedVideos.isEmpty) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('无法获取推荐视频')),
-        );
-      }
+    final newVideos = (relatedVideos ?? [])
+        .where((v) => !existingBvids.contains(v.bvid))
+        .toList();
+    if (!mounted) return;
+    if (newVideos.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('无法获取推荐视频')),
+      );
       return;
     }
 
     // 更新推荐列表中的这一项
     setState(() {
-      recommendations[index] = relatedVideos.first;
+      recommendations[index] = newVideos.first;
     });
 
     // 更新缓存
@@ -177,10 +201,14 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
         actions: [
           TextButton.icon(
             icon: const Icon(Icons.folder_outlined),
-            label: Text(
-              defaultFolderName ?? '选择收藏夹',
-              style: TextStyle(
-                color: Theme.of(context).colorScheme.onSurface,
+            label: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 120),
+              child: Text(
+                defaultFolderName ?? '选择收藏夹',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurface,
+                ),
               ),
             ),
             onPressed: _showFolderSelectionDialog,
@@ -212,87 +240,135 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
           ),
         ],
       ),
-      body: isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : recommendations.isEmpty
-              ? Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.music_note,
-                          size: 64, color: Colors.grey),
-                      const SizedBox(height: 16),
-                      Text(
-                        '暂无推荐',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Theme.of(context).colorScheme.secondary,
+      body: Column(
+        children: [
+          if (isLoading && recommendations.isNotEmpty)
+            const LinearProgressIndicator(),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () => _loadRecommendations(force: true),
+              child: isLoading && recommendations.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : recommendations.isEmpty
+                      ? _buildEmptyState()
+                      : ListView.builder(
+                          scrollCacheExtent:
+                              ScrollCacheExtent.pixels(10000),
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          itemCount: recommendations.length,
+                          itemBuilder: (context, index) {
+                            final video = recommendations[index];
+                            return InkWell(
+                              onLongPress: () {
+                                showDialog(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                    content: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        ListTile(
+                                          leading: const Icon(Icons.refresh),
+                                          title: const Text('重新推荐'),
+                                          onTap: () {
+                                            Navigator.pop(context);
+                                            _regenerateRecommendation(index);
+                                          },
+                                        ),
+                                        ListTile(
+                                          leading:
+                                              const Icon(Icons.playlist_add),
+                                          title: const Text('添加到播放列表'),
+                                          onTap: () async {
+                                            Navigator.pop(context);
+                                            try {
+                                              await AudioService.instance.then(
+                                                  (x) => x.appendPlaylist(
+                                                      video.bvid));
+                                            } catch (e) {
+                                              await AudioService.instance.then(
+                                                  (x) => x.appendCachedPlaylist(
+                                                      video.bvid));
+                                            }
+                                          },
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                              child: TrackTile(
+                                key: Key(video.bvid),
+                                pic: video.artUri,
+                                title: video.title,
+                                author: video.artist,
+                                len:
+                                    '${video.duration ~/ 60}:${(video.duration % 60).toString().padLeft(2, '0')}',
+                                onTap: () {
+                                  AudioService.instance.then((x) =>
+                                      x.playByBvids(
+                                          recommendations
+                                              .map((v) => v.bvid)
+                                              .toList(),
+                                          index: index));
+                                },
+                                onAddToPlaylistButtonPressed: () async {
+                                  try {
+                                    await AudioService.instance.then(
+                                        (x) => x.appendPlaylist(video.bvid));
+                                  } catch (e) {
+                                    await AudioService.instance.then((x) =>
+                                        x.appendCachedPlaylist(video.bvid));
+                                  }
+                                },
+                              ),
+                            );
+                          },
                         ),
-                      ),
-                    ],
-                  ),
-                )
-              : ListView.builder(
-                  scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-                  itemCount: recommendations.length,
-                  itemBuilder: (context, index) {
-                    final video = recommendations[index];
-                    return InkWell(
-                      onLongPress: () {
-                        showDialog(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            content: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                ListTile(
-                                  leading: const Icon(Icons.refresh),
-                                  title: const Text('重新推荐'),
-                                  onTap: () {
-                                    Navigator.pop(context);
-                                    _regenerateRecommendation(index);
-                                  },
-                                ),
-                                ListTile(
-                                  leading: const Icon(Icons.playlist_add),
-                                  title: const Text('添加到播放列表'),
-                                  onTap: () async {
-                                    Navigator.pop(context);
-                                    try {
-                                      await AudioService.instance.then(
-                                          (x) => x.appendPlaylist(video.bvid));
-                                    } catch (e) {
-                                      await AudioService.instance.then((x) =>
-                                          x.appendCachedPlaylist(video.bvid));
-                                    }
-                                  },
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                      child: TrackTile(
-                        key: Key(video.bvid),
-                        pic: video.artUri,
-                        title: video.title,
-                        author: video.artist,
-                        len:
-                            '${video.duration ~/ 60}:${(video.duration % 60).toString().padLeft(2, '0')}',
-                        onTap: () {
-                          AudioService.instance.then((x) => x.playByBvids(
-                              recommendations.map((v) => v.bvid).toList(),
-                              index: index));
-                        },
-                        onAddToPlaylistButtonPressed: () async {
-                          await AudioService.instance
-                              .then((x) => x.appendPlaylist(video.bvid));
-                        },
-                      ),
-                    );
-                  },
-                ),
+            ),
+          ),
+        ],
+      ),
       bottomNavigationBar: const PlayingCard(),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return LayoutBuilder(
+      builder: (context, constraints) => SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: SizedBox(
+          height: constraints.maxHeight,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _noDefaultFolder
+                      ? Icons.folder_off_outlined
+                      : Icons.music_note,
+                  size: 64,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  _noDefaultFolder ? '尚未设置默认收藏夹' : '暂无推荐',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
+                ),
+                if (_noDefaultFolder) ...[
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _showFolderSelectionDialog,
+                    child: const Text('去设置'),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

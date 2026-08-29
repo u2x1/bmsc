@@ -26,6 +26,7 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController();
   final _phoneController = TextEditingController();
   final _smsCodeController = TextEditingController();
+  final _riskSmsCodeController = TextEditingController();
   bool _isLoading = false;
   String? _errorMessage;
   String? _infoMessage;
@@ -38,6 +39,10 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _qrcodeUrl;
   String? _qrcodeAuthCode;
   bool _qrcodeIsTv = true;
+  bool _qrcodePolling = false;
+  bool _qrcodeFinished = false;
+  Timer? _smsCountdownTimer;
+  int _smsCountdown = 0;
 
   /// 当前极验参数（App 登录接口用）
   CaptchaData? _captchaData;
@@ -160,14 +165,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
       geetest.startCaptcha(registerData);
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString();
+        });
+      }
       logger.warning('Login error: $e');
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -283,13 +292,17 @@ class _LoginScreenState extends State<LoginScreen> {
       );
       geetest.startCaptcha(registerData);
     } catch (e) {
-      setState(() {
-        _errorMessage = '风控验证失败: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = '风控验证失败: $e';
+        });
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -302,7 +315,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final (exchangeCode, error) = await BilibiliService.instance
           .then((x) => x.verifySafeCenterSms(
-                code: _smsCodeController.text,
+                code: _riskSmsCodeController.text,
                 tmpCode: _riskParams!.tmpCode,
                 requestId: _riskParams!.requestId,
                 source: _riskParams!.source,
@@ -333,17 +346,49 @@ class _LoginScreenState extends State<LoginScreen> {
         Navigator.pop(context, true);
       }
     } catch (e) {
-      setState(() {
-        _errorMessage = '风控验证失败: $e';
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = '风控验证失败: $e';
+        });
+      }
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
+  void _startSmsCountdown() {
+    _smsCountdownTimer?.cancel();
+    setState(() {
+      _smsCountdown = 60;
+    });
+    _smsCountdownTimer =
+        Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _smsCountdown--;
+        if (_smsCountdown <= 0) {
+          timer.cancel();
+        }
+      });
+    });
+  }
+
   Future<void> _getSmsCode(BuildContext context) async {
+    final phone = _phoneController.text.trim();
+    if (!RegExp(r'^1\d{10}$').hasMatch(phone)) {
+      setState(() {
+        _errorMessage = '手机号格式不正确';
+      });
+      return;
+    }
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -386,12 +431,6 @@ class _LoginScreenState extends State<LoginScreen> {
             }
             result = Map<String, dynamic>.from(geetestResult);
             final phone = _phoneController.text.trim();
-            if (phone.isEmpty) {
-              setState(() {
-                _errorMessage = '手机号格式不正确';
-              });
-              return;
-            }
             final (captchaKey, error) =
                 await BilibiliService.instance.then((x) => x.sendSmsCaptchaApp(
                       phone,
@@ -408,6 +447,7 @@ class _LoginScreenState extends State<LoginScreen> {
               }
             } else {
               _captchaKey = captchaKey;
+              _startSmsCountdown();
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('验证码已发送')),
@@ -435,14 +475,18 @@ class _LoginScreenState extends State<LoginScreen> {
 
       geetest.startCaptcha(registerData);
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString();
+        });
+      }
       logger.warning('SMS code error: $e');
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -479,14 +523,18 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       }
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString();
+        });
+      }
       logger.warning('SMS login error: $e');
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
@@ -525,9 +573,18 @@ class _LoginScreenState extends State<LoginScreen> {
       });
 
       _qrcodeTimer?.cancel();
+      _qrcodePolling = false;
+      _qrcodeFinished = false;
       _qrcodeTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
+        // 已结束（成功/终态）或上次轮询仍在进行时，直接跳过，
+        // 保证成功分支的 pop 只发生一次
+        if (_qrcodeFinished || _qrcodePolling) {
+          return;
+        }
+        _qrcodePolling = true;
         try {
           if (!mounted || _qrcodeUrl == null) {
+            _qrcodeFinished = true;
             timer.cancel();
             return;
           }
@@ -541,6 +598,7 @@ class _LoginScreenState extends State<LoginScreen> {
               return;
             }
             if (result.code == 0) {
+              _qrcodeFinished = true;
               timer.cancel();
               try {
                 await BilibiliService.instance
@@ -562,6 +620,7 @@ class _LoginScreenState extends State<LoginScreen> {
               return;
             }
             if (result == 0) {
+              _qrcodeFinished = true;
               timer.cancel();
               try {
                 await BilibiliService.instance.then((x) => x.refreshMyInfo());
@@ -577,6 +636,7 @@ class _LoginScreenState extends State<LoginScreen> {
           }
 
           if (!mounted) {
+            _qrcodeFinished = true;
             timer.cancel();
             return;
           }
@@ -588,6 +648,7 @@ class _LoginScreenState extends State<LoginScreen> {
               });
               break;
             case 86038:
+              _qrcodeFinished = true;
               timer.cancel();
               setState(() {
                 _errorMessage = '二维码已过期，请重新获取';
@@ -598,6 +659,7 @@ class _LoginScreenState extends State<LoginScreen> {
               break;
             case -400:
             case 86103:
+              _qrcodeFinished = true;
               timer.cancel();
               setState(() {
                 _errorMessage = '扫码登录失败（$status），请重新获取二维码';
@@ -612,18 +674,35 @@ class _LoginScreenState extends State<LoginScreen> {
           }
         } catch (e) {
           logger.severe('QR poll error: $e');
+        } finally {
+          _qrcodePolling = false;
         }
       });
     } catch (e) {
-      setState(() {
-        _errorMessage = e.toString();
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = e.toString();
+          _qrcodeUrl = null;
+          _qrcodeKey = null;
+          _qrcodeAuthCode = null;
+        });
+      }
       logger.warning('QR code login error: $e');
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
+  }
+
+  /// 停止二维码轮询并清空二维码状态（切换登录方式时调用）
+  void _stopQrcodePolling() {
+    _qrcodeTimer?.cancel();
+    _qrcodeUrl = null;
+    _qrcodeKey = null;
+    _qrcodeAuthCode = null;
   }
 
   @override
@@ -639,6 +718,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 _loginType = LoginType.qrcode;
                 _errorMessage = null;
               });
+              if (_qrcodeUrl == null) {
+                _initQrcodeLogin();
+              }
             },
             icon: Icon(Icons.qr_code_scanner),
             label: Text('二维码'),
@@ -652,6 +734,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   _loginType = LoginType.sms;
                 }
                 _errorMessage = null;
+                // 切换到非二维码登录方式时停止轮询并清空二维码状态，
+                // 避免后台扫码成功把当前表单页 pop 掉
+                _stopQrcodePolling();
               });
             },
             icon: Icon(_loginType == LoginType.sms
@@ -723,7 +808,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       children: [
                         Expanded(
                           child: TextFormField(
-                            controller: _smsCodeController,
+                            controller: _riskSmsCodeController,
                             decoration: InputDecoration(
                               labelText: '验证码',
                               hintText: '请输入验证码',
@@ -758,6 +843,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ] else ...[
                     TextFormField(
                       controller: _usernameController,
+                      autofillHints: const [AutofillHints.username],
                       decoration: InputDecoration(
                         labelText: '账号',
                         hintText: '请输入手机号或邮箱',
@@ -775,6 +861,14 @@ class _LoginScreenState extends State<LoginScreen> {
                     const SizedBox(height: 16),
                     TextFormField(
                       controller: _passwordController,
+                      autofillHints: const [AutofillHints.password],
+                      textInputAction: TextInputAction.done,
+                      onFieldSubmitted: (_) {
+                        if (!_isLoading &&
+                            (_formKey.currentState?.validate() ?? false)) {
+                          _login(context);
+                        }
+                      },
                       decoration: InputDecoration(
                         labelText: '密码',
                         hintText: '请输入密码',
@@ -840,15 +934,17 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                       const SizedBox(width: 16),
                       ElevatedButton(
-                        onPressed:
-                            _isLoading ? null : () => _getSmsCode(context),
+                        onPressed: _isLoading || _smsCountdown > 0
+                            ? null
+                            : () => _getSmsCode(context),
                         style: ElevatedButton.styleFrom(
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(12),
                           ),
                         ),
-                        child: const Text('获取'),
+                        child: Text(
+                            _smsCountdown > 0 ? '${_smsCountdown}s' : '获取'),
                       ),
                     ],
                   ),
@@ -964,7 +1060,10 @@ class _LoginScreenState extends State<LoginScreen> {
                         : () {
                             if (_loginType == LoginType.password &&
                                 _riskParams != null) {
-                              _riskVerify(context);
+                              if (_formKey.currentState?.validate() ??
+                                  false) {
+                                _riskVerify(context);
+                              }
                               return;
                             }
                             if (_formKey.currentState?.validate() ?? false) {
@@ -982,12 +1081,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                     child: _isLoading
-                        ? const SizedBox(
+                        ? SizedBox(
                             height: 20,
                             width: 20,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.white,
+                              color:
+                                  Theme.of(context).colorScheme.onPrimary,
                             ),
                           )
                         : Text(
@@ -1012,7 +1112,9 @@ class _LoginScreenState extends State<LoginScreen> {
     _passwordController.dispose();
     _phoneController.dispose();
     _smsCodeController.dispose();
+    _riskSmsCodeController.dispose();
     _qrcodeTimer?.cancel();
+    _smsCountdownTimer?.cancel();
     super.dispose();
   }
 }

@@ -31,6 +31,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   bool isReverse = true;
   bool isSearchPaused = false;
   bool isSavingPaused = false;
+  bool _isSearchLoopRunning = false;
+  bool _isSaveLoopRunning = false;
 
   late BuildContext _context;
 
@@ -49,7 +51,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   void initState() {
     super.initState();
     SharedPreferencesService.getPlaylistSearchResult().then((value) {
-      if (value == null) return;
+      if (value == null || !mounted) return;
       setState(() {
         results = value['result'];
         favid = value['favid'];
@@ -135,19 +137,19 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   void _toggleSearchPause() {
     setState(() {
       isSearchPaused = !isSearchPaused;
-      if (!isSearchPaused) {
-        _search();
-      }
     });
+    if (!isSearchPaused && !_isSearchLoopRunning) {
+      _search();
+    }
   }
 
   void _toggleSavingPause() {
     setState(() {
       isSavingPaused = !isSavingPaused;
-      if (!isSavingPaused) {
-        _save();
-      }
     });
+    if (!isSavingPaused && !_isSaveLoopRunning) {
+      _save();
+    }
   }
 
   @override
@@ -177,7 +179,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                 maxLines: 6,
                 decoration: const InputDecoration(
                   hintText:
-                      '[示例1] 歌名 \$ 作者 \$ 时长(秒)\n夏日已所剩无几 \$ 泠鸢yousa \$ 271\n[示例2] 平台:歌单ID\nnetease:1234567890\ntencent:1207922987\nkugou:gcid_3z18k3yjxz3z089',
+                      '每行一首: 歌名 \$ 作者 \$ 时长(秒)\n或 平台:歌单ID (netease/tencent/kugou)',
                   border: OutlineInputBorder(),
                   isDense: true,
                   contentPadding: EdgeInsets.all(8),
@@ -274,13 +276,37 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                     ),
                   const SizedBox(height: 8),
                   if (isSearching && totalTracks > 0)
-                    LinearProgressIndicator(
-                      value: processedTracks / totalTracks,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Text('搜索 $processedTracks/$totalTracks',
+                              style: const TextStyle(fontSize: 12)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LinearProgressIndicator(
+                              value: processedTracks / totalTracks,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   if (isSaving && totalTracks > 0)
-                    LinearProgressIndicator(
-                      value: processedFavorites / totalTracks,
-                      color: Colors.green,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Row(
+                        children: [
+                          Text('收藏 $processedFavorites/$totalTracks',
+                              style: const TextStyle(fontSize: 12)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: LinearProgressIndicator(
+                              value: processedFavorites / totalTracks,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   Expanded(
                     child: ListView.builder(
@@ -296,15 +322,21 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                           child: ListTile(
                             title: Text(
                                 "${result['artist']} - ${result['track']}",
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(fontSize: 14)),
                             subtitle: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text('result: ${result['title'] ?? '未找到'}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(fontSize: 12)),
                                 if (result['bvid'] != null)
                                   Text(
-                                      '(∑: ${result['score']}) (|Δ|: ${result['durationDiff']}s) (ε: ${result['play']}) (§: ${result['typename']})',
+                                      '匹配度: ${result['score']}  时长差: ${result['durationDiff']}s  播放: ${result['play']}  分区: ${result['typename']}',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: TextStyle(fontSize: 12)),
                                 if (result['favAddStatus'] != null)
                                   Text(
@@ -314,8 +346,12 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                     style: TextStyle(
                                       fontSize: 12,
                                       color: result['favAddStatus']!
-                                          ? Colors.green
-                                          : Colors.red,
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : Theme.of(context)
+                                              .colorScheme
+                                              .error,
                                     ),
                                   ),
                               ],
@@ -373,11 +409,19 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                                                 stripHtmlIfNeeded(
                                                                     video[
                                                                         'title']),
+                                                                maxLines: 1,
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
                                                                 style: TextStyle(
                                                                     fontSize:
                                                                         12)),
                                                             subtitle: Text(
-                                                                '(∑: ${video['score']}) (|Δ|: ${video['durationDiff']}s) (ε: ${video['play']}) (§: ${video['typename']})',
+                                                                '匹配度: ${video['score']}  时长差: ${video['durationDiff']}s  播放: ${video['play']}  分区: ${video['typename']}',
+                                                                maxLines: 1,
+                                                                overflow:
+                                                                    TextOverflow
+                                                                        .ellipsis,
                                                                 style: TextStyle(
                                                                     fontSize:
                                                                         12)),
@@ -401,7 +445,10 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                                   );
                                                 },
                                               );
-                                              if (selectedVideo == null) return;
+                                              if (selectedVideo == null ||
+                                                  !mounted) {
+                                                return;
+                                              }
                                               setState(() {
                                                 results[index] =
                                                     trackResults[selectedVideo];
@@ -409,11 +456,15 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
                                             },
                                     ),
                                     if (result['bvid'] != null)
-                                      const Icon(Icons.check,
-                                          color: Colors.green)
+                                      Icon(Icons.check,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .primary)
                                     else
-                                      const Icon(Icons.close,
-                                          color: Colors.red),
+                                      Icon(Icons.close,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .error),
                                   ],
                                 ),
                               ],
@@ -438,11 +489,11 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       ScaffoldMessenger.of(_context).showSnackBar(
         SnackBar(
           content: Text(message),
-          backgroundColor: Colors.red[700],
+          backgroundColor: Theme.of(_context).colorScheme.error,
           duration: const Duration(seconds: 3),
           action: SnackBarAction(
             label: '关闭',
-            textColor: Colors.white,
+            textColor: Theme.of(_context).colorScheme.onError,
             onPressed: () {
               ScaffoldMessenger.of(_context).hideCurrentSnackBar();
             },
@@ -473,7 +524,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       },
     );
 
-    if (confirmed != true) return;
+    if (confirmed != true || !mounted) return;
 
     favid = folder.id;
     setState(() {
@@ -539,35 +590,6 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       _textController.text = 'netease:$playlistId';
     }
 
-    await flutterLocalNotificationsPlugin.show(
-      id: 0,
-      title: '歌单搜索',
-      body: '准备处理...',
-      notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-        'playlist_search',
-        'Playlist Search',
-        channelDescription: 'Notifications for playlist search progress',
-        importance: Importance.high,
-        priority: Priority.high,
-        showProgress: true,
-        onlyAlertOnce: true,
-        playSound: false,
-        ongoing: true,
-        autoCancel: false,
-      )),
-    );
-
-    setState(() {
-      isSearching = true;
-      isSaving = false;
-      isSearchPaused = false;
-      results = [];
-      processedFavorites = 0;
-      processedTracks = 0;
-      totalTracks = 0;
-    });
-
     List<Map<String, dynamic>> tracks = [];
 
     final lines = _textController.text.split('\n');
@@ -616,10 +638,15 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       } else {
         final parts = line.split('\$').map((e) => e.trim()).toList();
         if (parts.length != 3) continue;
+        final duration = int.tryParse(parts[2]);
+        if (duration == null) {
+          _logger.warning('Invalid duration, skipping line: $line');
+          continue;
+        }
         appendTracks.add({
           'name': parts[0],
           'artist': parts[1],
-          'duration': int.parse(parts[2]),
+          'duration': duration,
         });
       }
       tracks.addAll(appendTracks);
@@ -631,6 +658,37 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
     }
 
     _logger.info('Total tracks to process: ${tracks.length}');
+
+    if (!mounted) return;
+
+    await flutterLocalNotificationsPlugin.show(
+      id: 0,
+      title: '歌单搜索',
+      body: '准备处理...',
+      notificationDetails: NotificationDetails(
+          android: AndroidNotificationDetails(
+        'playlist_search',
+        'Playlist Search',
+        channelDescription: 'Notifications for playlist search progress',
+        importance: Importance.high,
+        priority: Priority.high,
+        showProgress: true,
+        onlyAlertOnce: true,
+        playSound: false,
+        ongoing: true,
+        autoCancel: false,
+      )),
+    );
+
+    setState(() {
+      isSearching = true;
+      isSaving = false;
+      isSearchPaused = false;
+      results = [];
+      processedFavorites = 0;
+      processedTracks = 0;
+      totalTracks = 0;
+    });
 
     if (isReverse) {
       tracks = tracks.reversed.toList();
@@ -652,32 +710,14 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   }
 
   Future<void> _search() async {
-    for (; processedTracks < results.length;) {
-      await flutterLocalNotificationsPlugin.show(
-        id: 0,
-        title: '歌单搜索',
-        body: '处理中: $processedTracks/$totalTracks',
-        notificationDetails: NotificationDetails(
-          android: AndroidNotificationDetails(
-            'playlist_search',
-            'Playlist Search',
-            channelDescription: 'Notifications for playlist search progress',
-            importance: Importance.high,
-            priority: Priority.high,
-            ongoing: true,
-            showProgress: true,
-            maxProgress: totalTracks,
-            progress: processedTracks,
-            onlyAlertOnce: true,
-            playSound: false,
-          ),
-        ),
-      );
-      if (isSearchPaused) {
+    if (_isSearchLoopRunning) return;
+    _isSearchLoopRunning = true;
+    try {
+      for (; processedTracks < results.length;) {
         await flutterLocalNotificationsPlugin.show(
           id: 0,
           title: '歌单搜索',
-          body: '已暂停: $processedTracks/${results.length}',
+          body: '处理中: $processedTracks/$totalTracks',
           notificationDetails: NotificationDetails(
             android: AndroidNotificationDetails(
               'playlist_search',
@@ -687,93 +727,106 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
               priority: Priority.high,
               ongoing: true,
               showProgress: true,
-              maxProgress: results.length,
+              maxProgress: totalTracks,
               progress: processedTracks,
               onlyAlertOnce: true,
               playSound: false,
             ),
           ),
         );
-        return;
+        if (isSearchPaused) {
+          await flutterLocalNotificationsPlugin.show(
+            id: 0,
+            title: '歌单搜索',
+            body: '已暂停: $processedTracks/${results.length}',
+            notificationDetails: NotificationDetails(
+              android: AndroidNotificationDetails(
+                'playlist_search',
+                'Playlist Search',
+                channelDescription:
+                    'Notifications for playlist search progress',
+                importance: Importance.high,
+                priority: Priority.high,
+                ongoing: true,
+                showProgress: true,
+                maxProgress: results.length,
+                progress: processedTracks,
+                onlyAlertOnce: true,
+                playSound: false,
+              ),
+            ),
+          );
+          return;
+        }
+        await Future.delayed(const Duration(milliseconds: 1200));
+        final track = results[processedTracks];
+        _logger.info(
+            'Searching track ${processedTracks + 1}/${results.length}: ${track['track']} - ${track['artist']}');
+
+        final result = await _searchTrack(
+            track['track'], track['artist'], track['duration']);
+        if (result == null) {
+          _logger.warning('Search failed for track: ${track['track']}');
+          showErrorSnackBar("搜索失败，已暂停");
+          _toggleSearchPause();
+          continue;
+        }
+
+        _logger.info(
+            'Found match for "${track['track']}": ${result['title']} (score: ${result['score']})');
+
+        if (!mounted) return;
+        setState(() {
+          results[processedTracks] = result;
+          processedTracks++;
+        });
+
+        if (autoscroll && !isSearchPaused) {
+          _scrollController.scrollToIndex(processedTracks,
+              preferPosition: AutoScrollPosition.middle);
+        }
       }
-      await Future.delayed(const Duration(milliseconds: 1200));
-      final track = results[processedTracks];
-      _logger.info(
-          'Searching track ${processedTracks + 1}/${results.length}: ${track['track']} - ${track['artist']}');
-
-      final result = await _searchTrack(
-          track['track'], track['artist'], track['duration']);
-      if (result == null) {
-        _logger.warning('Search failed for track: ${track['track']}');
-        showErrorSnackBar("搜索失败，已暂停");
-        _toggleSearchPause();
-        continue;
-      }
-
-      _logger.info(
-          'Found match for "${track['track']}": ${result['title']} (score: ${result['score']})');
-
-      setState(() {
-        results[processedTracks] = result;
-        processedTracks++;
-      });
-
-      if (autoscroll && !isSearchPaused) {
-        _scrollController.scrollToIndex(processedTracks,
-            preferPosition: AutoScrollPosition.middle);
-      }
-    }
-    await flutterLocalNotificationsPlugin.show(
-      id: 0,
-      title: '歌单搜索',
-      body: '处理完成: $totalTracks 首歌曲',
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'playlist_search',
-          'Playlist Search',
-          channelDescription: 'Notifications for playlist search progress',
-          importance: Importance.high,
-          priority: Priority.high,
-          onlyAlertOnce: true,
-          playSound: false,
-        ),
-      ),
-    );
-
-    setState(() {
-      isSearching = false;
-    });
-
-    _logger.info('Playlist processing completed');
-  }
-
-  Future<void> _save() async {
-    for (; processedFavorites < results.length;) {
       await flutterLocalNotificationsPlugin.show(
-        id: 1,
-        title: '添加收藏',
-        body: '处理中: $processedFavorites/${results.length}',
-        notificationDetails: NotificationDetails(
+        id: 0,
+        title: '歌单搜索',
+        body: '处理完成: $totalTracks 首歌曲',
+        notificationDetails: const NotificationDetails(
           android: AndroidNotificationDetails(
-            'favorite_progress',
-            'Favorite Progress',
-            channelDescription: 'Notifications for favorite progress',
+            'playlist_search',
+            'Playlist Search',
+            channelDescription: 'Notifications for playlist search progress',
             importance: Importance.high,
             priority: Priority.high,
-            ongoing: true,
-            showProgress: true,
-            maxProgress: results.length,
-            progress: processedFavorites,
             onlyAlertOnce: true,
             playSound: false,
           ),
         ),
       );
-      if (isSavingPaused) {
+    } catch (e) {
+      _logger.warning('Search interrupted: $e');
+      showErrorSnackBar("搜索出错，已停止");
+      await flutterLocalNotificationsPlugin.cancel(id: 0);
+    } finally {
+      _isSearchLoopRunning = false;
+      if (!isSearchPaused && isSearching && mounted) {
+        setState(() {
+          isSearching = false;
+        });
+      }
+    }
+
+    _logger.info('Playlist processing completed');
+  }
+
+  Future<void> _save() async {
+    if (_isSaveLoopRunning) return;
+    _isSaveLoopRunning = true;
+    try {
+      for (; processedFavorites < results.length;) {
         await flutterLocalNotificationsPlugin.show(
           id: 1,
           title: '添加收藏',
-          body: '已暂停: $processedFavorites/${results.length}',
+          body: '处理中: $processedFavorites/${results.length}',
           notificationDetails: NotificationDetails(
             android: AndroidNotificationDetails(
               'favorite_progress',
@@ -790,73 +843,107 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
             ),
           ),
         );
-        return;
+        if (isSavingPaused) {
+          await flutterLocalNotificationsPlugin.show(
+            id: 1,
+            title: '添加收藏',
+            body: '已暂停: $processedFavorites/${results.length}',
+            notificationDetails: NotificationDetails(
+              android: AndroidNotificationDetails(
+                'favorite_progress',
+                'Favorite Progress',
+                channelDescription: 'Notifications for favorite progress',
+                importance: Importance.high,
+                priority: Priority.high,
+                ongoing: true,
+                showProgress: true,
+                maxProgress: results.length,
+                progress: processedFavorites,
+                onlyAlertOnce: true,
+                playSound: false,
+              ),
+            ),
+          );
+          return;
+        }
+        final track = results[processedFavorites];
+        if (track['aid'] == null) {
+          showErrorSnackBar("歌曲没有搜索结果，已暂停");
+          _toggleSavingPause();
+          continue;
+        }
+        final success =
+            await BilibiliService.instance.then((x) => x.favoriteVideo(
+                  track['aid'],
+                  [favid],
+                  [],
+                ));
+        if (success == null) {
+          showErrorSnackBar("收藏失败，已暂停");
+          _toggleSavingPause();
+          continue;
+        }
+
+        if (!mounted) return;
+        setState(() {
+          results[processedFavorites]['favAddStatus'] = success;
+          processedFavorites++;
+        });
+
+        if (autoscroll) {
+          _scrollController.scrollToIndex(processedFavorites,
+              preferPosition: AutoScrollPosition.middle);
+        }
+
+        await Future.delayed(const Duration(milliseconds: 1200));
       }
-      final track = results[processedFavorites];
-      if (track['aid'] == null) {
-        showErrorSnackBar("歌曲没有搜索结果，已暂停");
-        _toggleSavingPause();
-        continue;
-      }
-      final success =
-          await BilibiliService.instance.then((x) => x.favoriteVideo(
-                track['aid'],
-                [favid],
-                [],
-              ));
-      if (success == null) {
-        showErrorSnackBar("收藏失败，已暂停");
-        _toggleSavingPause();
-        continue;
-      }
 
-      setState(() {
-        results[processedFavorites]['favAddStatus'] = success;
-        processedFavorites++;
-      });
-
-      if (autoscroll) {
-        _scrollController.scrollToIndex(processedFavorites,
-            preferPosition: AutoScrollPosition.middle);
-      }
-
-      await Future.delayed(const Duration(milliseconds: 1200));
-    }
-
-    // Show completion notification
-    await flutterLocalNotificationsPlugin.show(
-      id: 1,
-      title: '添加收藏',
-      body: '完成: 已添加 ${results.length} 首曲目到收藏夹',
-      notificationDetails: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'favorite_progress',
-          'Favorite Progress',
-          channelDescription: 'Notifications for favorite progress',
-          importance: Importance.high,
-          priority: Priority.high,
-          onlyAlertOnce: true,
-          playSound: false,
-        ),
-      ),
-    );
-
-    setState(() {
-      isSaving = false;
-    });
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('已添加 ${results.length} 首曲目到收藏夹'),
+      // Show completion notification
+      await flutterLocalNotificationsPlugin.show(
+        id: 1,
+        title: '添加收藏',
+        body: '完成: 已添加 ${results.length} 首曲目到收藏夹',
+        notificationDetails: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'favorite_progress',
+            'Favorite Progress',
+            channelDescription: 'Notifications for favorite progress',
+            importance: Importance.high,
+            priority: Priority.high,
+            onlyAlertOnce: true,
+            playSound: false,
+          ),
         ),
       );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('已添加 ${results.length} 首曲目到收藏夹'),
+          ),
+        );
+      }
+    } catch (e) {
+      _logger.warning('Saving interrupted: $e');
+      showErrorSnackBar("收藏出错，已停止");
+      await flutterLocalNotificationsPlugin.cancel(id: 1);
+    } finally {
+      _isSaveLoopRunning = false;
+      if (!isSavingPaused && isSaving && mounted) {
+        setState(() {
+          isSaving = false;
+        });
+      }
     }
   }
 
   int _parseDuration(String duration) {
     final parts = duration.split(':');
     if (parts.length != 2) return 0;
-    return int.parse(parts[0]) * 60 + int.parse(parts[1]);
+    final minutes = int.tryParse(parts[0]);
+    final seconds = int.tryParse(parts[1]);
+    if (minutes == null || seconds == null) return 0;
+    return minutes * 60 + seconds;
   }
 
   static const _minCommonSubstringLength = 4;
@@ -907,7 +994,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
     int rankScore(Result video) {
       // 音Mad, 音乐现场, 翻唱, 科学科普, 运动综合
       const list = [26, 29, 31, 201, 238];
-      if (list.contains(int.parse(video.typeid))) return -inf;
+      if (list.contains(int.tryParse(video.typeid))) return -inf;
 
       final durationDiff = (_parseDuration(video.duration) - duration).abs();
       if (durationDiff > 3 * 60) return -inf;

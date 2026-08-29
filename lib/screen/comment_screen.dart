@@ -26,6 +26,7 @@ class _CommentScreenState extends State<CommentScreen> {
   String? _nextOffset;
   bool _isLoading = false;
   bool _hasMore = true;
+  bool _hasError = false;
 
   @override
   void initState() {
@@ -46,137 +47,199 @@ class _CommentScreenState extends State<CommentScreen> {
   Future<void> _loadComments() async {
     if (_isLoading) return;
 
-    setState(() => _isLoading = true);
-    CommentData? commentData;
-    final bs = await BilibiliService.instance;
-    if (widget.aid != null) {
-      commentData = await bs.getComment(widget.aid!, _nextOffset);
-    } else if (widget.oid != null && widget.root != null) {
-      commentData = await bs.getCommentsOfComment(
-          widget.oid!, widget.root!, _nextPage ?? 1);
-    }
-
     setState(() {
-      if (commentData?.replies != null) {
-        _comments.addAll(commentData!.replies!);
-        _nextPage = commentData.cursor?.next;
-        _nextOffset = commentData.cursor?.nextOffset;
-        _nextOffset = _nextOffset == null
-            ? null
-            : '{"offset":"${_nextOffset!.replaceAll('"', '\\"')}"}';
-        if (widget.aid != null) {
-          _hasMore = !commentData.cursor!.isEnd;
-        } else {
-          _hasMore = _comments.length < (widget.total ?? 0);
-        }
-      } else {
-        _hasMore = false;
-      }
-      _isLoading = false;
+      _isLoading = true;
+      _hasError = false;
     });
+    try {
+      CommentData? commentData;
+      final bs = await BilibiliService.instance;
+      if (widget.aid != null) {
+        commentData = await bs.getComment(widget.aid!, _nextOffset);
+      } else if (widget.oid != null && widget.root != null) {
+        commentData = await bs.getCommentsOfComment(
+            widget.oid!, widget.root!, _nextPage ?? 1);
+      }
+
+      if (!mounted) return;
+      setState(() {
+        if (commentData?.replies != null) {
+          _comments.addAll(commentData!.replies!);
+          _nextPage = commentData.cursor?.next;
+          _nextOffset = commentData.cursor?.nextOffset;
+          _nextOffset = _nextOffset == null
+              ? null
+              : '{"offset":"${_nextOffset!.replaceAll('"', '\\"')}"}';
+          if (widget.aid != null) {
+            _hasMore = !commentData.cursor!.isEnd;
+          } else {
+            _hasMore = _comments.length < (widget.total ?? 0);
+          }
+        } else if (commentData == null) {
+          _hasError = true;
+        } else {
+          _hasMore = false;
+        }
+      });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _hasError = true);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('评论')),
-      body: ListView.separated(
-        controller: _scrollController,
-        itemCount: _comments.length + (_isLoading ? 1 : 0),
-        separatorBuilder: (context, index) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          if (index == _comments.length) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(8.0),
-                child: CircularProgressIndicator(),
+      body: _comments.isEmpty && !_isLoading && !_hasError
+          ? Center(
+              child: Text(
+                '暂无评论',
+                style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
-            );
-          }
-
-          final comment = _comments[index];
-          return GestureDetector(
-            onTap: () {
-              if (comment.replies != null && comment.replies!.isNotEmpty) {
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => CommentScreen(
-                            oid: comment.oid,
-                            root: comment.rpid,
-                            total: comment.count)));
-              }
-            },
-            onLongPress: () {
-              if (comment.content?.message != null) {
-                Clipboard.setData(
-                    ClipboardData(text: comment.content!.message));
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('已复制内容到剪贴板'),
-                      duration: Duration(seconds: 2),
+            )
+          : ListView.separated(
+              controller: _scrollController,
+              itemCount:
+                  _comments.length + (_isLoading || _hasError ? 1 : 0),
+              separatorBuilder: (context, index) => const Divider(height: 1),
+              itemBuilder: (context, index) {
+                if (index == _comments.length) {
+                  if (_hasError) {
+                    return Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: TextButton.icon(
+                          onPressed: _loadComments,
+                          icon: const Icon(Icons.refresh),
+                          label: const Text('加载失败，点击重试'),
+                        ),
+                      ),
+                    );
+                  }
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(8.0),
+                      child: CircularProgressIndicator(),
                     ),
                   );
                 }
-              }
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        comment.member.uname,
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
+
+                final comment = _comments[index];
+                final hasReplies =
+                    comment.replies != null && comment.replies!.isNotEmpty;
+                return Material(
+                  child: InkWell(
+                    onTap: hasReplies
+                        ? () {
+                            Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                    builder: (context) => CommentScreen(
+                                        oid: comment.oid,
+                                        root: comment.rpid,
+                                        total: comment.count)));
+                          }
+                        : null,
+                    onLongPress: () {
+                      if (comment.content?.message != null) {
+                        Clipboard.setData(
+                            ClipboardData(text: comment.content!.message));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('已复制内容到剪贴板'),
+                              duration: Duration(seconds: 2),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                comment.member.uname,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  color:
+                                      Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                DateTime.fromMillisecondsSinceEpoch(
+                                        comment.ctime * 1000)
+                                    .toString()
+                                    .substring(0, 19),
+                                style: TextStyle(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                '${comment.like}',
+                                style: TextStyle(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Icon(Icons.thumb_up,
+                                  size: 14,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            comment.content?.message ?? '',
+                            style: TextStyle(
+                              fontSize: ThemeProvider.instance.commentFontSize
+                                  .toDouble(),
+                            ),
+                          ),
+                          if (comment.count > 0)
+                            Row(
+                              children: [
+                                Text('${comment.count} 条回复',
+                                    style: TextStyle(
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurfaceVariant,
+                                        fontSize: 12)),
+                                Icon(Icons.chevron_right,
+                                    size: 14,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant),
+                              ],
+                            ),
+                        ],
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        DateTime.fromMillisecondsSinceEpoch(
-                                comment.ctime * 1000)
-                            .toString()
-                            .substring(0, 19),
-                        style: const TextStyle(
-                          color: Colors.grey,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const Spacer(),
-                      Text(
-                        '${comment.like}',
-                        style: const TextStyle(
-                          color: Colors.grey,
-                          fontSize: 12,
-                        ),
-                      ),
-                      const SizedBox(width: 4),
-                      const Icon(Icons.thumb_up, size: 14, color: Colors.grey),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    comment.content?.message ?? '',
-                    style: TextStyle(
-                      fontSize:
-                          ThemeProvider.instance.commentFontSize.toDouble(),
                     ),
                   ),
-                  if (comment.count > 0)
-                    Text('${comment.count} 条回复',
-                        style:
-                            const TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
+                );
+              },
             ),
-          );
-        },
-      ),
     );
   }
 

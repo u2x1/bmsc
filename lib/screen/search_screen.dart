@@ -27,6 +27,9 @@ class _SearchScreenState extends State<SearchScreen> {
   final _focusNode = FocusNode();
   final fieldTextController = TextEditingController();
   bool _hasMore = false;
+  bool _isLoading = false;
+  bool _searchFailed = false;
+  int _searchToken = 0;
   int _curPage = 1;
   String _curSearch = "";
   List<String> _searchHistory = [];
@@ -132,11 +135,32 @@ class _SearchScreenState extends State<SearchScreen> {
           ? _buildSuggestions()
           : _focusNode.hasFocus
               ? _buildSearchHistory()
-              : (vidList.isEmpty
-                  ? const Center(child: Text('输入关键词开始搜索'))
-                  : _listView()),
+              : _buildSearchResult(),
       bottomNavigationBar: const PlayingCard(),
     );
+  }
+
+  Widget _buildSearchResult() {
+    if (vidList.isEmpty) {
+      if (_isLoading) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (_searchFailed) {
+        return Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Text('加载失败，请检查网络后重试'),
+              const SizedBox(height: 8),
+              FilledButton(onPressed: loadMore, child: const Text('重试')),
+            ],
+          ),
+        );
+      }
+      return Center(
+          child: Text(_curSearch.isEmpty ? '输入关键词开始搜索' : '未找到相关结果'));
+    }
+    return _listView();
   }
 
   Widget _listView() {
@@ -154,8 +178,27 @@ class _SearchScreenState extends State<SearchScreen> {
       child: ListView.builder(
         scrollCacheExtent: ScrollCacheExtent.pixels(10000),
         physics: const ClampingScrollPhysics(),
-        itemCount: vidList.length,
+        itemCount: vidList.length + 1,
         itemBuilder: (BuildContext context, int index) {
+          if (index == vidList.length) {
+            if (_isLoading) {
+              return const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(8.0),
+                  child: CircularProgressIndicator(),
+                ),
+              );
+            }
+            if (_searchFailed) {
+              return Center(
+                child: TextButton(
+                  onPressed: loadMore,
+                  child: const Text('加载失败，点击重试'),
+                ),
+              );
+            }
+            return const SizedBox.shrink();
+          }
           return _listItemView(vidList[index]);
         },
       ),
@@ -180,7 +223,9 @@ class _SearchScreenState extends State<SearchScreen> {
       onAddToPlaylistButtonPressed: () => AudioService.instance.then((x) =>
           x.appendPlaylist(vid.bvid,
               insertIndex:
-                  x.playlist.length == 0 ? 0 : x.player.currentIndex! + 1)),
+                  x.playlist.length == 0
+                      ? 0
+                      : (x.player.currentIndex ?? 0) + 1)),
       onLongPress: () async {
         if (!context.mounted) return;
         showDialog(
@@ -266,7 +311,7 @@ class _SearchScreenState extends State<SearchScreen> {
               if (_clipboardUrl!.isEmpty) {
                 _clipboardUrl =
                     (await Clipboard.getData(Clipboard.kTextPlain))?.text;
-                if (_clipboardUrl!.isEmpty) return;
+                if (_clipboardUrl == null || _clipboardUrl!.isEmpty) return;
                 final vid = extractBiliUrl(_clipboardUrl!);
                 if (vid == null) {
                   setState(() {
@@ -328,11 +373,13 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void onSearching(String? value, {bool fromClipboard = false}) async {
+    _searchToken++;
     if (fromClipboard == true && _clipboardUrl != null) {
       final vidDetail = await getVidDetailFromUrl(_clipboardUrl!);
       if (vidDetail != null) {
         setState(() {
           _hasMore = false;
+          _searchFailed = false;
           _curPage = 1;
           vidList = [
             Result(
@@ -357,6 +404,7 @@ class _SearchScreenState extends State<SearchScreen> {
     setState(() {
       _curSearch = value;
       _hasMore = true;
+      _searchFailed = false;
       _curPage = 1;
       vidList.clear();
     });
@@ -364,17 +412,33 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> loadMore() async {
-    if (!_hasMore) {
+    if (!_hasMore || _isLoading) {
       return;
     }
-    final ret =
-        await (await BilibiliService.instance).search(_curSearch, _curPage);
-    if (ret != null) {
+    final token = ++_searchToken;
+    final keyword = _curSearch;
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    try {
+      final ret =
+          await (await BilibiliService.instance).search(keyword, _curPage);
+      if (!mounted || token != _searchToken) return;
       setState(() {
-        _hasMore = ret.page < ret.numPages;
-        _curPage++;
-        vidList.addAll(ret.result);
+        _searchFailed = ret == null;
+        if (ret != null) {
+          _hasMore = ret.page < ret.numPages;
+          _curPage++;
+          vidList.addAll(ret.result);
+        }
       });
+    } catch (_) {
+      if (mounted && token == _searchToken) {
+        setState(() => _searchFailed = true);
+      }
+    } finally {
+      if (token == _searchToken) {
+        _isLoading = false;
+      }
     }
   }
 }

@@ -632,7 +632,8 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   int? getRelativeIndex(int offset) {
     if (currentQueue.isEmpty || index == null) return null;
-    // if (_repeatMode == AudioServiceRepeatMode.one) return index;
+    // 与 UI 的 seekToNext/PreviousRegardlessOfLoopMode 语义保持一致：
+    // 单曲循环时也能切到上一首/下一首，而不是停在当前曲
     if (effectiveIndices.isEmpty) return null;
     if (index! >= effectiveIndicesInv.length) return null;
     final invPos = effectiveIndicesInv[index!];
@@ -650,7 +651,8 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   @override
   Future<void> skipToQueueItem(int index) async {
-    (await _player).seek(SeekRequest(position: Duration.zero, index: index));
+    await (await _player)
+        .seek(SeekRequest(position: Duration.zero, index: index));
   }
 
   @override
@@ -767,11 +769,13 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   /// Jumps away from the current position by [offset].
   Future<void> _seekRelative(Duration offset) async {
+    final duration = currentMediaItem?.duration;
+    if (duration == null) return;
     var newPosition = currentPosition + offset;
     // Make sure we don't jump out of bounds.
     if (newPosition < Duration.zero) newPosition = Duration.zero;
-    if (newPosition > currentMediaItem!.duration!) {
-      newPosition = currentMediaItem!.duration!;
+    if (newPosition > duration) {
+      newPosition = duration;
     }
     // Perform the jump via a seek.
     await (await _player).seek(SeekRequest(position: newPosition));
@@ -783,8 +787,10 @@ class _PlayerAudioHandler extends BaseAudioHandler
   void _seekContinuously(bool begin, int direction) {
     _seeker?.stop();
     if (begin) {
+      final duration = currentMediaItem?.duration;
+      if (duration == null) return;
       _seeker = _Seeker(this, Duration(seconds: 10 * direction),
-          const Duration(seconds: 1), currentMediaItem!.duration!)
+          const Duration(seconds: 1), duration)
         ..start();
     }
   }
@@ -797,6 +803,11 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   /// Broadcasts the current state to all clients.
   void _broadcastState() {
+    // 播放出错时强制复位播放标志，避免通知栏仍显示"暂停"
+    if (_justAudioEvent.errorCode != null && _playing) {
+      _playing = false;
+      customEvent.add(_PlayingEvent(false));
+    }
     final controls = [
       if (hasPrevious) MediaControl.skipToPrevious,
       if (_playing) MediaControl.pause else MediaControl.play,

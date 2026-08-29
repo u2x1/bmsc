@@ -21,6 +21,7 @@ class FavScreen extends StatefulWidget {
 
 class FavScreenState extends State<FavScreen> {
   bool signedin = false;
+  bool loadFailed = false;
   List<Fav> favList = [];
   List<Fav> collectedFavList = [];
   Set<int>? hideFav;
@@ -42,6 +43,17 @@ class FavScreenState extends State<FavScreen> {
   @override
   void dispose() {
     super.dispose();
+  }
+
+  Future<void> refreshLoginState() async {
+    final x = await BilibiliService.instance;
+    if (!mounted) return;
+    setState(() {
+      signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+    });
+    if (signedin) {
+      loadFavorites(local: true);
+    }
   }
 
   Future<void> loadFavorites({bool local = false}) async {
@@ -73,25 +85,39 @@ class FavScreenState extends State<FavScreen> {
         }
 
         try {
-          final ret = (await x.getFavs(uid)) ?? [];
-          final collectedRet = (await x.getCollection(uid)) ?? [];
+          final ret = await x.getFavs(uid);
+          final collectedRet = await x.getCollection(uid);
 
-          if (ret.isNotEmpty || collectedRet.isNotEmpty) {
-            if (!mounted) return;
+          if (!mounted) return;
+          if (ret == null && collectedRet == null) {
             setState(() {
-              favList = ret;
-              collectedFavList = collectedRet;
+              loadFailed = true;
             });
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('加载失败')),
+            );
+            return;
+          }
+          setState(() {
+            loadFailed = false;
+            favList = ret ?? [];
+            collectedFavList = collectedRet ?? [];
+          });
+
+          if (favList.isNotEmpty || collectedFavList.isNotEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('加载成功')),
             );
             logger.info(
-                'got ${ret.length} favs and ${collectedRet.length} collected favs from network');
+                'got ${favList.length} favs and ${collectedFavList.length} collected favs from network');
           }
         } catch (e) {
           logger.severe('loadFavorites error: $e');
 
           if (!mounted) return;
+          setState(() {
+            loadFailed = true;
+          });
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('加载失败')),
           );
@@ -255,15 +281,15 @@ class FavScreenState extends State<FavScreen> {
         content: Text('确定要删除收藏夹"${fav.title}"吗？此操作不可恢复。'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.red,
-            ),
-            child: const Text('删除'),
-          ),
-          TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('删除'),
           ),
         ],
       ),
@@ -310,24 +336,50 @@ class FavScreenState extends State<FavScreen> {
       ),
       body: !signedin
           ? const Center(child: Text('请先登录'))
-          : ListView(
+          : loadFailed && favList.isEmpty && collectedFavList.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.error_outline,
+                          size: 64, color: Colors.grey),
+                      const SizedBox(height: 16),
+                      Text(
+                        '加载失败',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.secondary,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      FilledButton(
+                        onPressed: loadFavorites,
+                        child: const Text('重试'),
+                      ),
+                    ],
+                  ),
+                )
+              : ListView(
               children: [
                 if (favList.isEmpty && collectedFavList.isEmpty)
-                  Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.folder_outlined,
-                            size: 64, color: Colors.grey),
-                        const SizedBox(height: 16),
-                        Text(
-                          '暂无收藏夹',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Theme.of(context).colorScheme.secondary,
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.6,
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.folder_outlined,
+                              size: 64, color: Colors.grey),
+                          const SizedBox(height: 16),
+                          Text(
+                            '暂无收藏夹',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Theme.of(context).colorScheme.secondary,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
 
@@ -450,6 +502,16 @@ class FavScreenState extends State<FavScreen> {
                                       Navigator.pop(context);
                                       final bvids = await DatabaseManager
                                           .getCachedFavBvids(fav.id);
+                                      if (!context.mounted) return;
+                                      if (bvids.isEmpty) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                              content:
+                                                  Text('本地缓存为空，请先打开收藏夹加载内容')),
+                                        );
+                                        return;
+                                      }
                                       await AudioService.instance
                                           .then((x) => x.playByBvids(bvids));
                                     },
@@ -482,10 +544,15 @@ class FavScreenState extends State<FavScreen> {
                                     },
                                   ),
                                   ListTile(
-                                    leading: const Icon(Icons.delete,
-                                        color: Colors.red),
-                                    title: const Text('删除收藏夹',
-                                        style: TextStyle(color: Colors.red)),
+                                    leading: Icon(Icons.delete,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error),
+                                    title: Text('删除收藏夹',
+                                        style: TextStyle(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .error)),
                                     onTap: () {
                                       Navigator.pop(context);
                                       _showDeleteConfirmation(fav);

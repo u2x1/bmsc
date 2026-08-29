@@ -11,6 +11,7 @@ class LogScreen extends StatefulWidget {
 
 class _LogScreenState extends State<LogScreen> {
   final ScrollController _scrollController = ScrollController();
+  final Set<LogRecord> _expandedLogs = {};
 
   @override
   void dispose() {
@@ -86,12 +87,15 @@ class _LogScreenState extends State<LogScreen> {
                 ),
               ),
               const SizedBox(width: 16),
-              Switch.adaptive(
-                value: LoggerUtils.isLoggingEnabled,
-                onChanged: (value) async {
-                  await LoggerUtils.setLoggingEnabled(value);
-                  setState(() {});
-                },
+              Tooltip(
+                message: '日志记录',
+                child: Switch.adaptive(
+                  value: LoggerUtils.isLoggingEnabled,
+                  onChanged: (value) async {
+                    await LoggerUtils.setLoggingEnabled(value);
+                    setState(() {});
+                  },
+                ),
               ),
               IconButton(
                 icon: const Icon(Icons.delete_outline),
@@ -158,11 +162,26 @@ class _LogScreenState extends State<LogScreen> {
                   ),
                 ),
                 subtitle: log.error != null || log.stackTrace != null
-                    ? Text(
-                        '${log.error ?? ''}\n${log.stackTrace ?? ''}',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'monospace',
+                    ? GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            if (_expandedLogs.contains(log)) {
+                              _expandedLogs.remove(log);
+                            } else {
+                              _expandedLogs.add(log);
+                            }
+                          });
+                        },
+                        child: Text(
+                          '${log.error ?? ''}\n${log.stackTrace ?? ''}',
+                          maxLines: _expandedLogs.contains(log) ? null : 3,
+                          overflow: _expandedLogs.contains(log)
+                              ? null
+                              : TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
                         ),
                       )
                     : null,

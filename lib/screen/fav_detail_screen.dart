@@ -32,6 +32,8 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
   List<Meta> rawFavInfo = [];
   List<Meta> favInfo = [];
   bool isLoading = false;
+  bool _loadError = false;
+  Map<String, (List<int>, int, int)> _itemInfoCache = {};
   bool isSelectionMode = false;
   Set<String> selectedItems = {};
   static final _logger = LoggerUtils.getLogger('FavDetailScreen');
@@ -93,6 +95,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
         rawFavInfo = cachedData;
         favInfo = rawFavInfo;
       });
+      await _loadItemInfos();
     } else {
       _logger.info('No cached data found, loading from network');
       await loadMetas();
@@ -107,6 +110,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
 
     setState(() {
       isLoading = true;
+      _loadError = false;
     });
 
     try {
@@ -121,16 +125,50 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
           rawFavInfo = metas;
           favInfo = rawFavInfo;
         });
+        await _loadItemInfos();
       } else {
         _logger.warning('Failed to load metas from network');
+        setState(() {
+          _loadError = true;
+        });
       }
     } catch (e, stackTrace) {
       _logger.severe('Error loading metas', e, stackTrace);
+      setState(() {
+        _loadError = true;
+      });
     } finally {
       setState(() {
         isLoading = false;
       });
     }
+  }
+
+  Future<void> _loadItemInfos() async {
+    final entries = await Future.wait(rawFavInfo.map((m) async => MapEntry(
+          m.bvid,
+          (
+            await DatabaseManager.getExcludedParts(m.bvid),
+            await DatabaseManager.cachedCount(m.bvid),
+            await DatabaseManager.downloadedCount(m.bvid),
+          ),
+        )));
+    if (!mounted) return;
+    setState(() {
+      _itemInfoCache = Map.fromEntries(entries);
+    });
+  }
+
+  Future<void> _refreshItemInfo(String bvid) async {
+    final info = (
+      await DatabaseManager.getExcludedParts(bvid),
+      await DatabaseManager.cachedCount(bvid),
+      await DatabaseManager.downloadedCount(bvid),
+    );
+    if (!mounted) return;
+    setState(() {
+      _itemInfoCache[bvid] = info;
+    });
   }
 
   Future<void> _refreshData() async {
@@ -170,7 +208,13 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: !isSelectionMode,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        toggleSelectionMode();
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: isSearching
             ? TextField(
@@ -237,13 +281,37 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
       ),
       body: RefreshIndicator(
         onRefresh: _refreshData,
-        child: ListView.builder(
-          scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-          itemCount: favInfo.length,
-          itemBuilder: (context, index) => favDetailListTileView(index),
-        ),
+        child: favInfo.isEmpty && !isLoading
+            ? ListView(
+                children: [
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.6,
+                    child: Center(
+                      child: _loadError
+                          ? Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Text('加载失败'),
+                                const SizedBox(height: 8),
+                                FilledButton(
+                                  onPressed: _refreshData,
+                                  child: const Text('重试'),
+                                ),
+                              ],
+                            )
+                          : const Text('暂无内容'),
+                    ),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                scrollCacheExtent: ScrollCacheExtent.pixels(10000),
+                itemCount: favInfo.length,
+                itemBuilder: (context, index) => favDetailListTileView(index),
+              ),
       ),
       bottomNavigationBar: const PlayingCard(),
+      ),
     );
   }
 
@@ -252,19 +320,12 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
     int sec = favInfo[index].duration % 60;
     final duration = "$min:${sec.toString().padLeft(2, '0')}";
 
-    return FutureBuilder<(List<int>, int, int)>(
-        future: Future.wait([
-          DatabaseManager.getExcludedParts(favInfo[index].bvid),
-          DatabaseManager.cachedCount(favInfo[index].bvid),
-          DatabaseManager.downloadedCount(favInfo[index].bvid),
-        ]).then((results) =>
-            (results[0] as List<int>, results[1] as int, results[2] as int)),
-        builder: (context, snapshot) {
-          final excludedCount = snapshot.data?.$1.length ?? 0;
-          var cachedCount = snapshot.data?.$2 ?? 0;
-          final downloadedCount = snapshot.data?.$3 ?? 0;
+    final itemInfo = _itemInfoCache[favInfo[index].bvid];
+    final excludedCount = itemInfo?.$1.length ?? 0;
+    final cachedCount = itemInfo?.$2 ?? 0;
+    final downloadedCount = itemInfo?.$3 ?? 0;
 
-          return Padding(
+    return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: TrackTile(
               key: Key(favInfo[index].bvid),
@@ -291,11 +352,16 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                       try {
                         _logger.info(
                             'Playing fav list ${widget.fav.id} from index $index');
-                        final bvids = widget.isCollected
-                            ? await DatabaseManager.getCachedCollectionBvids(
-                                widget.fav.id)
-                            : await DatabaseManager.getCachedFavBvids(
-                                widget.fav.id);
+                        final List<String> bvids;
+                        if (_searchController.text.isNotEmpty) {
+                          bvids = favInfo.map((m) => m.bvid).toList();
+                        } else {
+                          bvids = widget.isCollected
+                              ? await DatabaseManager.getCachedCollectionBvids(
+                                  widget.fav.id)
+                              : await DatabaseManager.getCachedFavBvids(
+                                  widget.fav.id);
+                        }
                         await AudioService.instance
                             .then((x) => x.playByBvids(bvids, index: index));
                       } catch (e, stackTrace) {
@@ -309,7 +375,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                       favInfo[index].bvid,
                       insertIndex: x.playlist.length == 0
                           ? 0
-                          : x.player.currentIndex! + 1));
+                          : (x.player.currentIndex ?? 0) + 1));
                 } catch (e) {
                   _logger.warning(
                       'Failed to append to playlist, trying cached playlist',
@@ -355,7 +421,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                                       title: favInfo[index].title,
                                     ),
                                   ).then((_) {
-                                    setState(() {});
+                                    _refreshItemInfo(favInfo[index].bvid);
                                   });
                                 },
                               ),
@@ -386,7 +452,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                                               )) ??
                                       false;
 
-                                  if (!context.mounted) return;
+                                  if (!mounted) return;
 
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
@@ -397,7 +463,10 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
 
                                   if (success) {
                                     setState(() {
-                                      favInfo.removeAt(index);
+                                      final removed = favInfo.removeAt(index);
+                                      rawFavInfo.removeWhere(
+                                          (m) => m.bvid == removed.bvid);
+                                      _itemInfoCache.remove(removed.bvid);
                                     });
                                   }
                                 },
@@ -430,11 +499,9 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                                       ),
                                     ).then((value) async {
                                       if (value == true) {
-                                        DatabaseManager.removeCache(
+                                        await DatabaseManager.removeCache(
                                             favInfo[index].bvid);
-                                        setState(() {
-                                          cachedCount = 0;
-                                        });
+                                        _refreshItemInfo(favInfo[index].bvid);
                                       }
                                     });
                                   },
@@ -451,7 +518,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                                       title: favInfo[index].title,
                                     ),
                                   ).then((_) {
-                                    setState(() {});
+                                    _refreshItemInfo(favInfo[index].bvid);
                                   });
                                 },
                               ),
@@ -461,7 +528,6 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                       );
                     },
             ),
-          );
-        });
+    );
   }
 }

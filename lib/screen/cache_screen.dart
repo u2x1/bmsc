@@ -93,6 +93,7 @@ class _CacheScreenState extends State<CacheScreen> {
         .whereType<Map<String, dynamic>>()
         .toList();
 
+    if (!mounted) return;
     setState(() {
       cachedFiles = results;
       filteredFiles = results;
@@ -107,39 +108,49 @@ class _CacheScreenState extends State<CacheScreen> {
     return '${(sizeInBytes / (1024 * 1024)).toStringAsFixed(2)} MB';
   }
 
-  Future<void> deleteCaches(List<Map<String, dynamic>> fileDatas) async {
+  Future<int> deleteCaches(List<Map<String, dynamic>> fileDatas) async {
     final itemsToRemove = <Map<String, dynamic>>[];
+    var failedCount = 0;
 
     for (var fileData in fileDatas) {
       final bvid = fileData['bvid'];
       final cid = fileData['cid'];
-      final filePath = fileData['filePath'];
-      final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
+      try {
+        final filePath = fileData['filePath'];
+        final file = File(filePath);
+        if (await file.exists()) {
+          await file.delete();
+        }
+
+        final db = await DatabaseManager.database;
+        await db.delete(
+          DatabaseManager.cacheTable,
+          where: 'bvid = ? AND cid = ?',
+          whereArgs: [bvid, cid],
+        );
+
+        itemsToRemove.addAll(cachedFiles
+            .where((item) => item['bvid'] == bvid && item['cid'] == cid));
+      } catch (e) {
+        failedCount++;
+        _logger.severe('Failed to delete cache ${bvid}_$cid', e);
       }
-
-      final db = await DatabaseManager.database;
-      await db.delete(
-        DatabaseManager.cacheTable,
-        where: 'bvid = ? AND cid = ?',
-        whereArgs: [bvid, cid],
-      );
-
-      itemsToRemove.addAll(cachedFiles
-          .where((item) => item['bvid'] == bvid && item['cid'] == cid));
     }
 
     cachedFiles.removeWhere((item) => itemsToRemove.contains(item));
-    setState(() {});
+    // Re-run the filter so filteredFiles stays in sync with cachedFiles
+    _filterFiles();
+    return failedCount;
   }
 
   Future<void> clearAllCache() async {
     try {
-      await deleteCaches(cachedFiles);
+      final failedCount = await deleteCaches(cachedFiles);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('缓存已清空')),
+          SnackBar(
+              content: Text(
+                  failedCount == 0 ? '缓存已清空' : '缓存清空完成，$failedCount 个文件删除失败')),
         );
       }
     } catch (e) {
@@ -163,7 +174,7 @@ class _CacheScreenState extends State<CacheScreen> {
     });
   }
 
-  Future<void> saveToDownloads(
+  Future<bool> saveToDownloads(
       Map<String, dynamic> file, String downloadPath) async {
     try {
       final sourceFile = File(file['filePath']);
@@ -182,12 +193,14 @@ class _CacheScreenState extends State<CacheScreen> {
       final targetPath = '${downloadDir.path}/$sanitizedFileName';
 
       await sourceFile.copy(targetPath);
+      return true;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('保存失败: $e')),
         );
       }
+      return false;
     }
   }
 
@@ -256,7 +269,13 @@ class _CacheScreenState extends State<CacheScreen> {
                           child: const Text('取消'),
                           onPressed: () => Navigator.of(context).pop(),
                         ),
-                        TextButton(
+                        FilledButton(
+                          style: FilledButton.styleFrom(
+                            backgroundColor:
+                                Theme.of(context).colorScheme.error,
+                            foregroundColor:
+                                Theme.of(context).colorScheme.onError,
+                          ),
                           child: const Text('确定'),
                           onPressed: () {
                             Navigator.of(context).pop();
@@ -275,13 +294,17 @@ class _CacheScreenState extends State<CacheScreen> {
               onPressed: selectedItems.isEmpty
                   ? null
                   : () {
+                      final targets = filteredFiles
+                          .where((f) => selectedItems
+                              .contains('${f['bvid']}_${f['cid']}'))
+                          .toList();
                       final ctx = context;
                       showDialog(
                         context: context,
                         builder: (context) => AlertDialog(
                           title: const Text('保存到本地'),
-                          content: Text(
-                              '确定要保存这 ${selectedItems.length} 个缓存文件到本地下载目录吗？'),
+                          content:
+                              Text('确定要保存这 ${targets.length} 个缓存文件到本地下载目录吗？'),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.pop(context),
@@ -294,16 +317,18 @@ class _CacheScreenState extends State<CacheScreen> {
                                     await SharedPreferencesService
                                         .getDownloadPath();
 
-                                for (var file in filteredFiles.where((f) =>
-                                    selectedItems.contains(
-                                        '${f['bvid']}_${f['cid']}'))) {
-                                  await saveToDownloads(file, downloadPath);
+                                var successCount = 0;
+                                for (var file in targets) {
+                                  if (await saveToDownloads(
+                                      file, downloadPath)) {
+                                    successCount++;
+                                  }
                                 }
                                 if (ctx.mounted) {
                                   ScaffoldMessenger.of(ctx).showSnackBar(
                                     SnackBar(
                                         content: Text(
-                                            '已将${selectedItems.length}个文件保存到 $downloadPath')),
+                                            '已保存 $successCount/${targets.length} 个文件到 $downloadPath')),
                                   );
                                 }
                                 _toggleSelectionMode();
@@ -320,24 +345,39 @@ class _CacheScreenState extends State<CacheScreen> {
               onPressed: selectedItems.isEmpty
                   ? null
                   : () {
+                      final targets = filteredFiles
+                          .where((f) => selectedItems
+                              .contains('${f['bvid']}_${f['cid']}'))
+                          .toList();
+                      final ctx = context;
                       showDialog(
                         context: context,
                         builder: (context) => AlertDialog(
                           title: const Text('删除缓存'),
-                          content:
-                              Text('确定要删除这 ${selectedItems.length} 个缓存文件吗？'),
+                          content: Text('确定要删除这 ${targets.length} 个缓存文件吗？'),
                           actions: [
                             TextButton(
                               onPressed: () => Navigator.pop(context),
                               child: const Text('取消'),
                             ),
                             FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.error,
+                                foregroundColor:
+                                    Theme.of(context).colorScheme.onError,
+                              ),
                               onPressed: () async {
                                 Navigator.pop(context);
-                                await deleteCaches(filteredFiles
-                                    .where((f) => selectedItems
-                                        .contains('${f['bvid']}_${f['cid']}'))
-                                    .toList());
+                                final failedCount = await deleteCaches(targets);
+                                if (ctx.mounted) {
+                                  ScaffoldMessenger.of(ctx).showSnackBar(
+                                    SnackBar(
+                                        content: Text(failedCount == 0
+                                            ? '已删除 ${targets.length} 个缓存文件'
+                                            : '删除完成，${targets.length - failedCount} 个成功，$failedCount 个失败')),
+                                  );
+                                }
                                 _toggleSelectionMode();
                               },
                               child: const Text('确定'),

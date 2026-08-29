@@ -29,25 +29,41 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   List<Meta> vidList = [];
   UserInfoResult? info;
   int pn = 1;
+  bool _isLoading = false;
+  bool _loadFailed = false;
 
   loadMore() async {
-    if (pn == -1) {
-      return;
-    }
-    final rst =
-        await (await BilibiliService.instance).getUserUploads(widget.mid, pn);
-    if (rst == null) {
+    if (pn == -1 || _isLoading) {
       return;
     }
     setState(() {
+      _isLoading = true;
+      _loadFailed = false;
+    });
+    final rst =
+        await (await BilibiliService.instance).getUserUploads(widget.mid, pn);
+    if (!mounted) return;
+    if (rst == null) {
+      setState(() {
+        _isLoading = false;
+        _loadFailed = true;
+      });
+      return;
+    }
+    setState(() {
+      final bvids = vidList.map((x) => x.bvid).toSet();
+      vidList.addAll(rst.$1.where((x) => bvids.add(x.bvid)));
       pn = rst.$2;
-      vidList.addAll(rst.$1);
+      _isLoading = false;
     });
   }
 
   loadUserInfo() async {
-    info = await (await BilibiliService.instance).getUserInfo(widget.mid);
-    setState(() {});
+    final rst = await (await BilibiliService.instance).getUserInfo(widget.mid);
+    if (!mounted) return;
+    setState(() {
+      info = rst;
+    });
   }
 
   @override
@@ -67,92 +83,115 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             }
             return true;
           },
-          child: ListView(
-            shrinkWrap: true,
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 100,
-                      height: 100,
-                      child: ClipRRect(
-                          borderRadius: BorderRadius.circular(5.0),
-                          child: info == null
-                              ? const Icon(Icons.question_mark)
-                              : CachedNetworkImage(
-                                  imageUrl: info!.card.face,
-                                  fit: BoxFit.cover,
-                                  placeholder: (context, url) =>
-                                      const Icon(Icons.question_mark),
-                                  errorWidget: (context, url, error) =>
-                                      const Icon(Icons.question_mark),
-                                )),
-                    ),
-                  ],
-                ),
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Text(info?.card.name ?? "",
-                        style: const TextStyle(fontSize: 14),
-                        softWrap: false,
-                        maxLines: 1),
-                  )
-                ],
-              ),
-              const Divider(
-                height: 1,
-              ),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.all(14.0),
-                    child: Text(
-                      "全部稿件 (${info?.archiveCount ?? 0})",
-                      style: const TextStyle(fontSize: 16),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: ElevatedButton.icon(
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('播放全部'),
-                      style: ElevatedButton.styleFrom(
-                        side: BorderSide.none,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(0),
-                        ),
-                      ),
-                      onPressed: () async {
-                        final bvids = vidList.map((x) => x.bvid).toList();
-                        await AudioService.instance
-                            .then((x) => x.playByBvids(bvids));
-                      },
-                    ),
-                  )
-                ],
-              ),
-              vidListView(),
-            ],
+          child: ListView.builder(
+            scrollCacheExtent: ScrollCacheExtent.pixels(10000),
+            itemCount: vidList.length + 2,
+            itemBuilder: (context, index) => index == 0
+                ? headerView()
+                : index == vidList.length + 1
+                    ? footerView()
+                    : hisListTileView(index - 1),
           ),
         ));
   }
 
-  vidListView() {
-    return ListView.builder(
-      scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-      physics: const NeverScrollableScrollPhysics(),
-      shrinkWrap: true,
-      itemCount: vidList.length,
-      itemBuilder: (context, index) => hisListTileView(index),
+  Widget headerView() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 100,
+                height: 100,
+                child: ClipRRect(
+                    borderRadius: BorderRadius.circular(5.0),
+                    child: info == null
+                        ? const Icon(Icons.person)
+                        : CachedNetworkImage(
+                            imageUrl: info!.card.face,
+                            fit: BoxFit.cover,
+                            placeholder: (context, url) =>
+                                const Icon(Icons.person),
+                            errorWidget: (context, url, error) =>
+                                const Icon(Icons.person),
+                          )),
+              ),
+            ],
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text(info?.card.name ?? "",
+                    style: const TextStyle(fontSize: 14),
+                    softWrap: false,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ),
+            )
+          ],
+        ),
+        const Divider(
+          height: 1,
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(14.0),
+              child: Text(
+                "全部稿件 (${info?.archiveCount ?? 0})",
+                style: const TextStyle(fontSize: 16),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.play_arrow),
+                label: Text('播放已加载(${vidList.length})'),
+                onPressed: () async {
+                  final bvids = vidList.map((x) => x.bvid).toList();
+                  await AudioService.instance
+                      .then((x) => x.playByBvids(bvids));
+                },
+              ),
+            )
+          ],
+        ),
+      ],
     );
+  }
+
+  Widget footerView() {
+    if (_isLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(8.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    if (_loadFailed) {
+      return Center(
+        child: TextButton(
+          onPressed: loadMore,
+          child: const Text('加载失败，点击重试'),
+        ),
+      );
+    }
+    if (vidList.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16.0),
+        child: Center(child: Text('暂无稿件')),
+      );
+    }
+    return const SizedBox.shrink();
   }
 
   hisListTileView(int index) {

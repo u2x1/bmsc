@@ -7,7 +7,6 @@ import 'package:bmsc/screen/fav_screen.dart';
 import 'package:bmsc/screen/local_history_screen.dart';
 import 'package:bmsc/service/audio_service.dart' as app_audio;
 import 'package:bmsc/audio/just_audio_background_custom.dart';
-import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/url.dart';
@@ -30,6 +29,7 @@ final _logger = LoggerUtils.getLogger('main');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await LoggerUtils.init();
 
   if (Platform.isAndroid) {
     _logger.info('Android version: ${Platform.operatingSystemVersion}');
@@ -48,7 +48,6 @@ Future<void> main() async {
   await ThemeProvider.instance.init();
   if (!kDebugMode) _setupErrorHandlers();
   runApp(const MyApp());
-  LoggerUtils.init();
 }
 
 void _setupErrorHandlers() {
@@ -71,16 +70,6 @@ class MyApp extends StatelessWidget {
     return ListenableBuilder(
       listenable: ThemeProvider.instance,
       builder: (context, child) {
-        final isDarkMode = ThemeProvider.instance.themeMode == ThemeMode.dark ||
-            (ThemeProvider.instance.themeMode == ThemeMode.system &&
-                WidgetsBinding.instance.platformDispatcher.platformBrightness ==
-                    Brightness.dark);
-        SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
-          systemNavigationBarColor: isDarkMode
-              ? ThemeProvider.darkTheme.colorScheme.surfaceContainer
-              : ThemeProvider.lightTheme.colorScheme.surfaceContainer,
-        ));
-
         return MaterialApp(
           navigatorKey: ErrorHandler.navigatorKey,
           theme: ThemeProvider.lightTheme,
@@ -112,12 +101,17 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   bool hasNewVersion = false;
   FavScreenState? _favScreenState;
   String? _clipboardText;
+  DateTime? _lastNavAt;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ThemeProvider.instance.addListener(_updateSystemUiOverlay);
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _updateSystemUiOverlay());
     UpdateService.instance.then((x) async {
+      if (!mounted) return;
       setState(() {
         curVersion = x.curVersion;
         hasNewVersion = x.hasNewVersion;
@@ -127,6 +121,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    ThemeProvider.instance.removeListener(_updateSystemUiOverlay);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -136,6 +131,34 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _checkClipboard();
     }
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    _updateSystemUiOverlay();
+  }
+
+  void _updateSystemUiOverlay() {
+    if (!mounted) return;
+    final themeMode = ThemeProvider.instance.themeMode;
+    final isDarkMode = themeMode == ThemeMode.dark ||
+        (themeMode == ThemeMode.system &&
+            MediaQuery.platformBrightnessOf(context) == Brightness.dark);
+    SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
+      systemNavigationBarColor: isDarkMode
+          ? ThemeProvider.darkTheme.colorScheme.surfaceContainer
+          : ThemeProvider.lightTheme.colorScheme.surfaceContainer,
+    ));
+  }
+
+  Future<T?>? _pushThrottled<T>(Route<T> route) {
+    final now = DateTime.now();
+    if (_lastNavAt != null &&
+        now.difference(_lastNavAt!) < const Duration(milliseconds: 500)) {
+      return null;
+    }
+    _lastNavAt = now;
+    return Navigator.push<T>(context, route);
   }
 
   Future<void> _checkClipboard() async {
@@ -152,7 +175,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     if (vidDetail == null) return;
 
     final as = await app_audio.AudioService.instance;
-    if (as.player.sequenceState.currentSource?.tag.extras['bvid'] ==
+    if (as.player.sequenceState.currentSource?.tag.extras?['bvid'] ==
         vidDetail.bvid) {
       _logger.info('clipboard detected, but already playing');
       return;
@@ -192,61 +215,57 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: GestureDetector(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute<Widget>(builder: (_) => const AboutScreen()),
-          ),
-          child: Row(
-            children: [
-              const Text("BiliMusic"),
-              if (hasNewVersion)
-                Icon(Icons.arrow_circle_up_outlined,
-                    color: Theme.of(context).colorScheme.error),
-            ],
+        title: Tooltip(
+          message: '关于',
+          child: Semantics(
+            button: true,
+            label: '关于',
+            child: GestureDetector(
+              onTap: () => _pushThrottled<Widget>(
+                MaterialPageRoute<Widget>(builder: (_) => const AboutScreen()),
+              ),
+              child: Row(
+                children: [
+                  const Text("BiliMusic"),
+                  if (hasNewVersion)
+                    Tooltip(
+                      message: '有新版本',
+                      child: Icon(Icons.arrow_circle_up_outlined,
+                          color: Theme.of(context).colorScheme.error),
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
         actions: [
           IconButton(
-            onPressed: () => Navigator.push(
-              context,
+            onPressed: () => _pushThrottled<Widget>(
               MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
             ),
             icon: const Icon(Icons.search),
           ),
           IconButton(
-            onPressed: () => Navigator.push(
-              context,
+            onPressed: () => _pushThrottled<Widget>(
               MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()),
             ),
-            icon: const Icon(Icons.wind_power_outlined),
+            icon: const Icon(Icons.dynamic_feed),
           ),
           IconButton(
-            onPressed: () => Navigator.push(
-              context,
+            onPressed: () => _pushThrottled<Widget>(
               MaterialPageRoute<Widget>(
                   builder: (_) => const LocalHistoryScreen()),
             ),
             icon: const Icon(Icons.history_outlined),
           ),
           IconButton(
-            onPressed: () => Navigator.push(
-              context,
+            onPressed: () => _pushThrottled<bool>(
               MaterialPageRoute<bool>(
                 builder: (_) => const SettingsScreen(),
               ),
-            ).then((shouldRefresh) async {
+            )?.then((shouldRefresh) async {
               if (shouldRefresh == true) {
-                if ((await BilibiliService.instance).myInfo?.mid == 0) {
-                  _favScreenState?.setState(() {
-                    _favScreenState?.signedin = false;
-                  });
-                } else {
-                  _favScreenState?.setState(() {
-                    _favScreenState?.signedin = true;
-                  });
-                  _favScreenState?.loadFavorites();
-                }
+                await _favScreenState?.refreshLoginState();
               }
             }),
             icon: const Icon(Icons.settings_outlined),

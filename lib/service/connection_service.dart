@@ -9,7 +9,7 @@ class ConnectionService {
 
   static ConnectionService getInstance() => _singleton;
 
-  bool hasConnection = false;
+  bool hasConnection = true;
 
   StreamController<bool> connectionChangeController =
       StreamController.broadcast();
@@ -35,13 +35,16 @@ class ConnectionService {
     bool previousConnection = hasConnection;
 
     try {
-      final result = await InternetAddress.lookup('google.com');
+      final result = await InternetAddress.lookup('bilibili.com')
+          .timeout(const Duration(seconds: 5));
       if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
         hasConnection = true;
       } else {
         hasConnection = false;
       }
     } on SocketException catch (_) {
+      hasConnection = false;
+    } on TimeoutException catch (_) {
       hasConnection = false;
     }
 

@@ -174,15 +174,15 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
         content: Text('确定要删除收藏夹"${fav.title}"吗？此操作不可恢复。'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Colors.red,
-            ),
-            child: const Text('删除'),
-          ),
-          TextButton(
             onPressed: () => Navigator.pop(context, false),
             child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('删除'),
           ),
         ],
       ),
@@ -231,6 +231,10 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final hiddenFavs =
+        favList.where((f) => hideFav?.contains(f.id) ?? false).toList();
+    final hiddenCollectedFavs =
+        collectedFavList.where((f) => hideFav?.contains(f.id) ?? false).toList();
     return Scaffold(
       appBar: AppBar(
         title: const Text('隐藏的收藏夹',
@@ -240,27 +244,30 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
           ? const Center(child: Text('请先登录'))
           : ListView(
               children: [
-                if (favList.isEmpty && collectedFavList.isEmpty)
-                  Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.folder_outlined,
-                            size: 64, color: Colors.grey),
-                        const SizedBox(height: 16),
-                        Text(
-                          '暂无收藏夹',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Theme.of(context).colorScheme.secondary,
+                if (hiddenFavs.isEmpty && hiddenCollectedFavs.isEmpty)
+                  SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.6,
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.folder_outlined,
+                              size: 64, color: Colors.grey),
+                          const SizedBox(height: 16),
+                          Text(
+                            '无隐藏项',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Theme.of(context).colorScheme.secondary,
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
 
                 // 我的收藏夹标题
-                if (favList.isNotEmpty)
+                if (hiddenFavs.isNotEmpty)
                   const Padding(
                     padding:
                         EdgeInsets.symmetric(horizontal: 24.0, vertical: 8.0),
@@ -274,10 +281,10 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
                   ),
 
                 // 我的收藏夹列表
-                ...buildFavList(favList, true),
+                ...buildFavList(hiddenFavs, true),
 
                 // 收藏的收藏夹标题
-                if (collectedFavList.isNotEmpty) ...[
+                if (hiddenCollectedFavs.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   const Padding(
                     padding:
@@ -292,7 +299,7 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
                   ),
 
                   // 收藏的收藏夹列表
-                  ...buildFavList(collectedFavList, false),
+                  ...buildFavList(hiddenCollectedFavs, false),
                 ],
 
                 // 显示空状态
@@ -347,6 +354,16 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
                                       Navigator.pop(context);
                                       final bvids = await DatabaseManager
                                           .getCachedFavBvids(fav.id);
+                                      if (!context.mounted) return;
+                                      if (bvids.isEmpty) {
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                          const SnackBar(
+                                              content:
+                                                  Text('本地缓存为空，请先打开收藏夹加载内容')),
+                                        );
+                                        return;
+                                      }
                                       await AudioService.instance
                                           .then((x) => x.playByBvids(bvids));
                                     },
@@ -379,10 +396,15 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
                                     },
                                   ),
                                   ListTile(
-                                    leading: const Icon(Icons.delete,
-                                        color: Colors.red),
-                                    title: const Text('删除收藏夹',
-                                        style: TextStyle(color: Colors.red)),
+                                    leading: Icon(Icons.delete,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .error),
+                                    title: Text('删除收藏夹',
+                                        style: TextStyle(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .error)),
                                     onTap: () {
                                       Navigator.pop(context);
                                       _showDeleteConfirmation(fav);

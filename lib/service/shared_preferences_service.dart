@@ -239,9 +239,13 @@ class SharedPreferencesService {
           dummy: dummy,
         ).toJson();
       }
+      _logger.warning(
+          'Skipping unsupported audio source type: ${source.runtimeType}');
+      return null;
     }).toList());
 
-    await prefs.setString(playlistId, jsonEncode(playlistData));
+    await prefs.setString(playlistId,
+        jsonEncode(playlistData.whereType<Map<String, dynamic>>().toList()));
     await prefs.setInt(currentIndexId, currentIndex);
   }
 
@@ -330,8 +334,6 @@ class SharedPreferencesService {
 
   static Future<int> getReportHistoryInterval() async {
     final prefs = await SharedPreferencesService.instance;
-    _logger.info(
-        'getReportHistoryInterval: ${prefs.getInt('report_history_interval')}');
     return prefs.getInt('report_history_interval') ?? 10;
   }
 

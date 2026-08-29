@@ -14,6 +14,21 @@ class PlaylistBottomSheet extends StatefulWidget {
 
 class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
   final AutoScrollController _scrollController = AutoScrollController();
+  bool _switching = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // 只在初次构建时滚动到当前播放项，避免重建时拽回用户滚动位置
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final currentIndex =
+          await AudioService.instance.then((x) => x.player.currentIndex);
+      if (currentIndex != null && mounted) {
+        _scrollController.scrollToIndex(currentIndex,
+            preferPosition: AutoScrollPosition.middle);
+      }
+    });
+  }
 
   @override
   void dispose() {
@@ -23,14 +38,6 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
 
   @override
   Widget build(BuildContext context) {
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final currentIndex =
-          await AudioService.instance.then((x) => x.player.currentIndex);
-      if (currentIndex != null) {
-        _scrollController.scrollToIndex(currentIndex,
-            preferPosition: AutoScrollPosition.middle);
-      }
-    });
     return FutureBuilder(
         future: AudioService.instance,
         builder: (context, snapshot) {
@@ -161,176 +168,284 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                       );
                     }
 
-                    return ReorderableListView.builder(
-                      scrollController: _scrollController,
-                      shrinkWrap: true,
-                      itemCount: playlist.length,
-                      onReorderItem: (oldIndex, newIndex) async {
-                        if (oldIndex < newIndex) newIndex--;
-                        await service.doAndSavePlaylist(() async {
-                          await service.playlist.move(oldIndex, newIndex);
-                        });
-                      },
-                      itemBuilder: (context, index) {
-                        final item = playlist[index].tag;
-                        return AutoScrollTag(
-                          key: ValueKey(index),
-                          index: index,
-                          controller: _scrollController,
-                          child: StreamBuilder<SequenceState?>(
-                              key: ValueKey('${item.id}_$index'),
-                              stream: service.player.sequenceStateStream,
-                              builder: (context, snapshot) {
-                                final isPlaying =
-                                    snapshot.data?.currentIndex == index;
-                                return ListTile(
-                                  dense: true,
-                                  visualDensity:
-                                      const VisualDensity(vertical: -2),
-                                  contentPadding:
-                                      const EdgeInsets.only(left: 16, right: 8),
-                                  minLeadingWidth: 24,
-                                  leading: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      isPlaying
-                                          ? Icon(Icons.play_arrow,
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .primary,
-                                              size: 20)
-                                          : Text('${index + 1}',
-                                              style: Theme.of(context)
-                                                  .textTheme
-                                                  .bodySmall),
-                                    ],
-                                  ),
-                                  title: Row(
-                                    children: [
-                                      if (item.extras['dummy'] ?? false)
-                                        Container(
-                                          margin:
-                                              const EdgeInsets.only(right: 4),
-                                          padding: const EdgeInsets.symmetric(
-                                              horizontal: 2, vertical: 2),
-                                          decoration: BoxDecoration(
+                    // 外层监听一次播放状态，避免每行单独订阅
+                    return StreamBuilder<(SequenceState?, PlayerState)>(
+                      stream: Rx.combineLatest2(
+                        service.player.sequenceStateStream,
+                        service.player.playerStateStream,
+                        (a, b) => (a, b),
+                      ),
+                      builder: (_, stateSnapshot) {
+                        final currentIndex =
+                            stateSnapshot.data?.$1?.currentIndex;
+                        final playing =
+                            stateSnapshot.data?.$2.playing ?? false;
+
+                        // 保留 shrinkWrap 让弹层高度贴合内容
+                        return ReorderableListView.builder(
+                          scrollController: _scrollController,
+                          shrinkWrap: true,
+                          itemCount: playlist.length,
+                          onReorderItem: (oldIndex, newIndex) async {
+                            if (oldIndex < newIndex) newIndex--;
+                            await service.doAndSavePlaylist(() async {
+                              await service.playlist.move(oldIndex, newIndex);
+                            });
+                          },
+                          itemBuilder: (context, index) {
+                            final item = playlist[index].tag;
+                            final isPlaying = currentIndex == index;
+                            return AutoScrollTag(
+                              key: ValueKey(
+                                  '${item.id}_${item.extras['bvid']}_${item.extras['cid']}'),
+                              index: index,
+                              controller: _scrollController,
+                              child: ListTile(
+                                dense: true,
+                                visualDensity:
+                                    const VisualDensity(vertical: -2),
+                                contentPadding:
+                                    const EdgeInsets.only(left: 16, right: 8),
+                                minLeadingWidth: 24,
+                                leading: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    isPlaying
+                                        ? Icon(
+                                            playing
+                                                ? Icons.play_arrow
+                                                : Icons.pause,
                                             color: Theme.of(context)
                                                 .colorScheme
-                                                .surfaceContainerHighest,
-                                            borderRadius:
-                                                BorderRadius.circular(4),
-                                          ),
-                                          child: Icon(Icons.hourglass_empty,
-                                              size: 12),
+                                                .primary,
+                                            size: 20)
+                                        : Text('${index + 1}',
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall),
+                                  ],
+                                ),
+                                title: Row(
+                                  children: [
+                                    if (item.extras['dummy'] ?? false)
+                                      Container(
+                                        margin:
+                                            const EdgeInsets.only(right: 4),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 2, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .surfaceContainerHighest,
+                                          borderRadius:
+                                              BorderRadius.circular(4),
                                         ),
+                                        child: Icon(Icons.hourglass_empty,
+                                            size: 12),
+                                      ),
+                                    Flexible(
+                                      // Added Flexible widget here
+                                      child: Text(
+                                        item.title,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                              color: isPlaying
+                                                  ? Theme.of(context)
+                                                      .colorScheme
+                                                      .primary
+                                                  : null,
+                                            ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                    if (item.extras['cached'] ?? false)
+                                      Padding(
+                                        padding:
+                                            const EdgeInsets.only(left: 4),
+                                        child: Icon(Icons.check_circle,
+                                            size: 16,
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .tertiary),
+                                      ),
+                                  ],
+                                ),
+                                subtitle: Row(
+                                  children: [
+                                    if (item.extras['multi'] ?? false) ...[
+                                      const Padding(
+                                        padding: EdgeInsets.symmetric(
+                                            horizontal: 4),
+                                        child: Icon(Icons.album, size: 12),
+                                      ),
                                       Flexible(
-                                        // Added Flexible widget here
                                         child: Text(
-                                          item.title,
+                                          item.extras['raw_title'] as String,
                                           style: Theme.of(context)
                                               .textTheme
-                                              .bodyMedium
-                                              ?.copyWith(
-                                                color: isPlaying
-                                                    ? Theme.of(context)
-                                                        .colorScheme
-                                                        .primary
-                                                    : null,
-                                              ),
+                                              .bodySmall,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                         ),
                                       ),
-                                      if (item.extras['cached'] ?? false)
-                                        const Padding(
-                                          padding: EdgeInsets.only(left: 4),
-                                          child: Icon(Icons.check_circle,
-                                              size: 16,
-                                              color: Color(0xFF66BB6A)),
+                                    ] else
+                                      Flexible(
+                                        child: Text(
+                                          item.artist ?? '',
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
                                         ),
-                                    ],
-                                  ),
-                                  subtitle: Row(
-                                    children: [
-                                      if (item.extras['multi'] ?? false) ...[
-                                        const Padding(
-                                          padding: EdgeInsets.symmetric(
-                                              horizontal: 4),
-                                          child: Icon(Icons.album, size: 12),
-                                        ),
-                                        Flexible(
-                                          child: Text(
-                                            item.extras['raw_title'] as String,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      ] else
-                                        Flexible(
-                                          child: Text(
-                                            item.artist ?? '',
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall,
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (item.extras['multi'] ?? false)
-                                        Container(
-                                          margin:
-                                              const EdgeInsets.only(right: 8),
-                                          child: InkWell(
-                                            onTap: () {
-                                              DatabaseManager.addExcludedPart(
-                                                  item.extras['bvid'] as String,
-                                                  item.extras['cid'] as int);
-                                              service
-                                                  .doAndSavePlaylist(() async {
-                                                await service.playlist
-                                                    .removeAt(index);
-                                              });
-                                            },
-                                            child: const Icon(
-                                                Icons.not_interested,
-                                                size: 20),
-                                          ),
-                                        ),
+                                      ),
+                                  ],
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (item.extras['multi'] ?? false)
                                       Container(
-                                        margin: const EdgeInsets.only(right: 8),
-                                        child: InkWell(
-                                          onTap: () {
-                                            service.doAndSavePlaylist(() async {
+                                        margin:
+                                            const EdgeInsets.only(right: 8),
+                                        child: IconButton(
+                                          tooltip: '屏蔽该分 P',
+                                          style: const ButtonStyle(
+                                            tapTargetSize:
+                                                MaterialTapTargetSize
+                                                    .shrinkWrap,
+                                          ),
+                                          constraints: const BoxConstraints(
+                                              minWidth: 40, minHeight: 40),
+                                          padding: EdgeInsets.zero,
+                                          iconSize: 20,
+                                          icon: const Icon(
+                                              Icons.not_interested),
+                                          onPressed: () async {
+                                            final bvid = item.extras['bvid']
+                                                as String;
+                                            final cid =
+                                                item.extras['cid'] as int;
+                                            final removedSource =
+                                                playlist[index];
+                                            await DatabaseManager
+                                                .addExcludedPart(bvid, cid);
+                                            await service
+                                                .doAndSavePlaylist(() async {
                                               await service.playlist
                                                   .removeAt(index);
                                             });
+                                            if (!context.mounted) return;
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content:
+                                                    const Text('已屏蔽该分 P'),
+                                                action: SnackBarAction(
+                                                  label: '撤销',
+                                                  onPressed: () async {
+                                                    await DatabaseManager
+                                                        .removeExcludedPart(
+                                                            bvid, cid);
+                                                    await service
+                                                        .doAndSavePlaylist(
+                                                            () async {
+                                                      if (index <=
+                                                          service.playlist
+                                                              .length) {
+                                                        await service.playlist
+                                                            .insert(index,
+                                                                removedSource);
+                                                      } else {
+                                                        await service.playlist
+                                                            .add(removedSource);
+                                                      }
+                                                    });
+                                                  },
+                                                ),
+                                              ),
+                                            );
                                           },
-                                          child: const Icon(Icons.delete,
-                                              size: 20),
                                         ),
                                       ),
-                                      ReorderableDragStartListener(
-                                        index: index,
-                                        child: const Icon(Icons.drag_handle,
-                                            size: 24),
+                                    Container(
+                                      margin: const EdgeInsets.only(right: 8),
+                                      child: IconButton(
+                                        tooltip: '删除',
+                                        style: const ButtonStyle(
+                                          tapTargetSize:
+                                              MaterialTapTargetSize.shrinkWrap,
+                                        ),
+                                        constraints: const BoxConstraints(
+                                            minWidth: 40, minHeight: 40),
+                                        padding: EdgeInsets.zero,
+                                        iconSize: 20,
+                                        icon: const Icon(Icons.delete),
+                                        onPressed: () async {
+                                          final removedSource =
+                                              playlist[index];
+                                          await service
+                                              .doAndSavePlaylist(() async {
+                                            await service.playlist
+                                                .removeAt(index);
+                                          });
+                                          if (!context.mounted) return;
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content:
+                                                  const Text('已从播放列表删除'),
+                                              action: SnackBarAction(
+                                                label: '撤销',
+                                                onPressed: () async {
+                                                  await service
+                                                      .doAndSavePlaylist(
+                                                          () async {
+                                                    if (index <=
+                                                        service.playlist
+                                                            .length) {
+                                                      await service.playlist
+                                                          .insert(index,
+                                                              removedSource);
+                                                    } else {
+                                                      await service.playlist
+                                                          .add(removedSource);
+                                                    }
+                                                  });
+                                                },
+                                              ),
+                                            ),
+                                          );
+                                        },
                                       ),
-                                    ],
-                                  ),
-                                  onTap: () async {
+                                    ),
+                                    ReorderableDragStartListener(
+                                      index: index,
+                                      child: const Icon(Icons.drag_handle,
+                                          size: 24),
+                                    ),
+                                  ],
+                                ),
+                                onTap: () async {
+                                  // 防止快速重复点击导致多次 seek
+                                  if (_switching) {
+                                    return;
+                                  }
+                                  _switching = true;
+                                  try {
                                     await service.player
                                         .seek(Duration.zero, index: index);
                                     await service.player.play();
-                                  },
-                                );
-                              }),
+                                  } finally {
+                                    _switching = false;
+                                  }
+                                },
+                              ),
+                            );
+                          },
                         );
                       },
                     );

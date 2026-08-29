@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:bmsc/api/bilibili.dart';
@@ -59,6 +60,7 @@ class BilibiliService {
   // ===== Android-HD 登录身份（对齐 BiliPai PiliPlusLoginIdentity） =====
   String _loginBuvid = '';
   String _deviceId = '';
+  final Completer<void> _loginIdentityReady = Completer<void>();
 
   Future<void> _loadLoginIdentity() async {
     var buvid = await SharedPreferencesService.getLoginBuvid();
@@ -68,14 +70,13 @@ class BilibiliService {
     }
     _loginBuvid = buvid;
     _deviceId = BiliSign.createDeviceId();
+    _loginIdentityReady.complete();
     _logger.info(
         'login identity loaded: buvid=$_loginBuvid deviceId=$_deviceId');
   }
 
   Future<(String, String)> getLoginIdentity() async {
-    while (_loginBuvid.isEmpty) {
-      await Future.delayed(const Duration(milliseconds: 10));
-    }
+    await _loginIdentityReady.future;
     return (_loginBuvid, _deviceId);
   }
 
@@ -109,7 +110,7 @@ class BilibiliService {
     _bilibiliAPI.setCookieValue('DedeUserID', mid > 0 ? mid.toString() : '');
     // 持久化 cookie 串，保证重启后 DedeUserID 还在
     if (mid > 0) {
-      SharedPreferencesService.setCookie(_bilibiliAPI.cookies).then((_) {});
+      SharedPreferencesService.setCookie(_bilibiliAPI.cookies);
     }
   }
 
@@ -145,8 +146,9 @@ class BilibiliService {
     final ret = await _bilibiliAPI.getFavs(mid, rid: rid);
     if (ret != null) {
       DatabaseManager.cacheFavList(ret);
+      return ret;
     }
-    return ret;
+    return DatabaseManager.getCachedFavList();
   }
 
   Future<List<Fav>?> getCollection(int mid) async {
@@ -584,7 +586,6 @@ class BilibiliService {
     final lastUpdateStr = prefs.getString('last_recommendations_update');
     final recommendations = prefs.getString('daily_recommendations');
 
-    if (lastUpdateStr != null) {}
     final lastUpdate =
         lastUpdateStr != null ? DateTime.parse(lastUpdateStr) : null;
     final now = DateTime.now();

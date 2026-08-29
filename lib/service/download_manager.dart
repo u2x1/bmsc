@@ -19,6 +19,8 @@ class DownloadManager {
   final _dio = Dio();
   final _downloadQueue = Queue<DownloadTask>();
   final _activeDownloads = <String>{};
+  final _cancelTokens = <String, CancelToken>{};
+  bool _processingQueue = false;
 
   final _taskController = BehaviorSubject<Map<String, DownloadTask>>.seeded({});
 
@@ -37,7 +39,9 @@ class DownloadManager {
 
     instance._dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        options.headers = headers;
+        // Merge default headers instead of overwriting, so per-request
+        // headers (e.g. Range for resuming downloads) are preserved
+        options.headers = {...?headers, ...options.headers};
         return handler.next(options);
       },
     ));
@@ -54,6 +58,7 @@ class DownloadManager {
 
     // Load tasks from database
     await _loadTasksFromDatabase();
+    _processQueue();
   }
 
   Future<void> _loadTasksFromDatabase() async {
@@ -63,14 +68,20 @@ class DownloadManager {
 
     for (final task in downloads) {
       final taskId = '${task.bvid}-${task.cid}';
+
+      // Tasks stuck in downloading state mean the process was killed
+      // mid-download; reset them to pending so they can be resumed.
+      if (task.status == DownloadStatus.downloading) {
+        task.status = DownloadStatus.pending;
+        await DatabaseManager.updateDownloadTaskStatus(
+            task.bvid, task.cid, DownloadStatus.pending);
+      }
+
       tasks[taskId] = task;
 
-      // Add pending or paused tasks to the queue
-      if (task.status == DownloadStatus.pending ||
-          task.status == DownloadStatus.paused) {
-        if (task.status == DownloadStatus.pending) {
-          _downloadQueue.add(task);
-        }
+      // Add pending tasks to the queue
+      if (task.status == DownloadStatus.pending) {
+        _downloadQueue.add(task);
       }
     }
 
@@ -96,11 +107,15 @@ class DownloadManager {
         return;
       }
 
-      if (await DatabaseManager.downloadedCount(bvid) != 0) {
-        return;
-      }
+      // Check each part individually so partially downloaded bvids
+      // can still enqueue their missing parts
+      final downloadedParts = await DatabaseManager.getDownloadedParts(bvid);
 
       for (var part in vid.pages) {
+        if (downloadedParts.contains(part.cid)) {
+          continue;
+        }
+
         final existingTask =
             await DatabaseManager.getDownloadTask(bvid, part.cid);
         if (existingTask != null) {
@@ -154,18 +169,8 @@ class DownloadManager {
     final pathsToDelete = await Future.wait(bvidscids
         .map((tuple) => DatabaseManager.getDownloadPath(tuple.$1, tuple.$2)));
 
-    // Delete files outside the transaction
-    for (final path in pathsToDelete) {
-      if (path != null) {
-        final file = File(path);
-        if (await file.exists()) {
-          await file.delete();
-          _logger.info('Removed downloaded file: $path');
-        }
-      }
-    }
-
-    // Now handle the database operations in a transaction
+    // Handle the database operations in a transaction first, so the
+    // records stay consistent even if file deletion fails afterwards
     final db = await DatabaseManager.database;
     await db.transaction((txn) async {
       for (var (bvid, cid) in bvidscids) {
@@ -183,6 +188,17 @@ class DownloadManager {
       }
     });
 
+    // Delete files after the database operations
+    for (final path in pathsToDelete) {
+      if (path != null) {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+          _logger.info('Removed downloaded file: $path');
+        }
+      }
+    }
+
     // Update the task controller with the latest tasks
     final updatedTasks = await tasks;
     _taskController.add(updatedTasks);
@@ -193,16 +209,22 @@ class DownloadManager {
     if (parts.length != 2) return;
 
     final bvid = parts[0];
-    final cid = int.parse(parts[1]);
+    final cid = int.tryParse(parts[1]);
+    if (cid == null) return;
 
     final task = await DatabaseManager.getDownloadTask(bvid, cid);
     if (task == null) return;
 
     if (task.status == DownloadStatus.downloading) {
-      task.cancelToken?.cancel('Paused by user');
+      // Cancel the real network stream via the in-memory token; the task
+      // loaded from the database never carries a live token.
+      _cancelTokens[taskId]?.cancel('Paused by user');
       task.status = DownloadStatus.paused;
       await DatabaseManager.updateDownloadTaskStatus(
           bvid, cid, DownloadStatus.paused);
+      // Persist the latest in-memory progress
+      await DatabaseManager.updateDownloadTaskProgress(
+          bvid, cid, _taskController.value[taskId]?.progress ?? task.progress);
       _activeDownloads.remove(taskId);
 
       // Update the task controller with the latest tasks
@@ -226,7 +248,8 @@ class DownloadManager {
     if (parts.length != 2) return;
 
     final bvid = parts[0];
-    final cid = int.parse(parts[1]);
+    final cid = int.tryParse(parts[1]);
+    if (cid == null) return;
 
     final task = await DatabaseManager.getDownloadTask(bvid, cid);
     if (task == null) return;
@@ -251,12 +274,14 @@ class DownloadManager {
     if (parts.length != 2) return;
 
     final bvid = parts[0];
-    final cid = int.parse(parts[1]);
+    final cid = int.tryParse(parts[1]);
+    if (cid == null) return;
 
     final task = await DatabaseManager.getDownloadTask(bvid, cid);
     if (task == null) return;
 
-    task.cancelToken?.cancel('Cancelled by user');
+    // Cancel the real network stream via the in-memory token
+    _cancelTokens[taskId]?.cancel('Cancelled by user');
 
     // Remove the task from the database
     await DatabaseManager.removeDownloadTask(bvid, cid);
@@ -281,136 +306,186 @@ class DownloadManager {
   }
 
   Future<void> _processQueue() async {
-    while (_activeDownloads.length < maxConcurrentDownloads &&
-        _downloadQueue.isNotEmpty) {
-      if (Platform.isAndroid) {
+    // Guard against concurrent triggers; the running loop re-evaluates
+    // the queue condition on every iteration.
+    if (_processingQueue) return;
+    _processingQueue = true;
+    try {
+      // Check the storage permission once per scheduling round instead of
+      // per task; clear the queue if it is not granted.
+      if (Platform.isAndroid && _downloadQueue.isNotEmpty) {
         var status = await Permission.storage.status;
         if (!status.isGranted) {
-          await Permission.storage.request();
+          status = await Permission.storage.request();
+        }
+        if (!status.isGranted) {
+          _logger.warning(
+              'Storage permission not granted, clearing download queue');
+          _downloadQueue.clear();
+          return;
         }
       }
-      final task = _downloadQueue.removeFirst();
-      final taskId = '${task.bvid}-${task.cid}';
 
-      final dbTask = await DatabaseManager.getDownloadTask(task.bvid, task.cid);
-      if (dbTask == null) continue;
+      while (_activeDownloads.length < maxConcurrentDownloads &&
+          _downloadQueue.isNotEmpty) {
+        final task = _downloadQueue.removeFirst();
+        final taskId = '${task.bvid}-${task.cid}';
 
-      final fileName = '${task.bvid}-${task.cid}.m4a';
-      final targetPath = path.join(downloadPath, fileName.replaceAll(' ', '-'));
+        // Reserve a slot immediately after dequeuing so concurrently
+        // triggered calls cannot exceed maxConcurrentDownloads.
+        _activeDownloads.add(taskId);
 
-      // Update the target path in the database
-      task.targetPath = targetPath;
-      await DatabaseManager.saveDownloadTask(task);
+        final dbTask =
+            await DatabaseManager.getDownloadTask(task.bvid, task.cid);
+        if (dbTask == null) {
+          _activeDownloads.remove(taskId);
+          continue;
+        }
 
-      final localPath =
-          await DatabaseManager.getCachedPath(task.bvid, task.cid);
-      if (localPath != null) {
-        _logger
-            .info('Cached file found, copying it to target path: $localPath');
-        File(localPath).copySync(targetPath);
+        final fileName = '${task.bvid}-${task.cid}.m4a';
+        final targetPath =
+            path.join(downloadPath, fileName.replaceAll(' ', '-'));
 
-        // Update task status to completed
+        // Update the target path in the database
+        task.targetPath = targetPath;
+        await DatabaseManager.saveDownloadTask(task);
+
+        final localPath =
+            await DatabaseManager.getCachedPath(task.bvid, task.cid);
+        if (localPath != null) {
+          _logger
+              .info('Cached file found, copying it to target path: $localPath');
+          await File(localPath).copy(targetPath);
+
+          // Update task status to completed
+          await DatabaseManager.updateDownloadTaskStatus(
+              task.bvid, task.cid, DownloadStatus.completed);
+          await DatabaseManager.updateDownloadTaskProgress(
+              task.bvid, task.cid, 1.0);
+
+          // Save to downloads table
+          await DatabaseManager.saveDownload(task.bvid, task.cid, targetPath);
+
+          _activeDownloads.remove(taskId);
+
+          // Update the task controller with the latest tasks
+          final updatedTasks = await tasks;
+          _taskController.add(updatedTasks);
+
+          continue;
+        }
+
+        // Update task status to downloading
         await DatabaseManager.updateDownloadTaskStatus(
-            task.bvid, task.cid, DownloadStatus.completed);
-        await DatabaseManager.updateDownloadTaskProgress(
-            task.bvid, task.cid, 1.0);
-
-        // Save to downloads table
-        await DatabaseManager.saveDownload(task.bvid, task.cid, targetPath);
+            task.bvid, task.cid, DownloadStatus.downloading);
+        task.status = DownloadStatus.downloading;
+        final cancelToken = CancelToken();
+        _cancelTokens[taskId] = cancelToken;
+        task.cancelToken = cancelToken;
 
         // Update the task controller with the latest tasks
         final updatedTasks = await tasks;
         _taskController.add(updatedTasks);
 
-        continue;
-      }
+        _logger.info('Downloading ${task.bvid}-${task.cid}');
 
-      _activeDownloads.add(taskId);
+        try {
+          final audios = await (await BilibiliService.instance)
+              .getAudio(task.bvid, task.cid);
+          final url = audios?.first.baseUrl;
+          if (url == null) {
+            throw Exception('Failed to get audio URL');
+          }
 
-      // Update task status to downloading
-      await DatabaseManager.updateDownloadTaskStatus(
-          task.bvid, task.cid, DownloadStatus.downloading);
-      task.status = DownloadStatus.downloading;
-      task.cancelToken = CancelToken();
+          final tempPath = '$targetPath.temp';
+          int startBytes = 0;
 
-      // Update the task controller with the latest tasks
-      final updatedTasks = await tasks;
-      _taskController.add(updatedTasks);
+          if (await File(tempPath).exists()) {
+            startBytes = await File(tempPath).length();
+            _logger.info('Resuming download from $startBytes bytes');
+          }
 
-      _logger.info('Downloading ${task.bvid}-${task.cid}');
+          final options = Options(
+            headers: {
+              'Range': 'bytes=$startBytes-',
+            },
+            responseType: ResponseType.stream,
+          );
 
-      try {
-        final audios = await (await BilibiliService.instance)
-            .getAudio(task.bvid, task.cid);
-        final url = audios?.first.baseUrl;
-        if (url == null) {
-          throw Exception('Failed to get audio URL');
-        }
+          final response = await _dio.get(
+            url,
+            options: options,
+            cancelToken: cancelToken,
+          );
 
-        final tempPath = '$targetPath.temp';
-        int startBytes = 0;
+          final total =
+              int.tryParse(response.headers.value('content-length') ?? '') ??
+                  -1;
+          final contentRange = response.headers.value('content-range');
+          final totalBytes = contentRange != null
+              ? int.tryParse(contentRange.split('/').last) ?? total + startBytes
+              : total + startBytes;
 
-        if (await File(tempPath).exists()) {
-          startBytes = await File(tempPath).length();
-          _logger.info('Resuming download from $startBytes bytes');
-        }
+          final file = File(tempPath);
+          final raf = await file.open(mode: FileMode.append);
 
-        final options = Options(
-          headers: {
-            'Range': 'bytes=$startBytes-',
-          },
-          responseType: ResponseType.stream,
-        );
+          int received = startBytes;
+          double lastProgress = 0;
+          double lastDbProgress = 0;
+          int lastUpdateTime = DateTime.now().millisecondsSinceEpoch;
+          const progressThreshold = 0.01; // Update stream every 1% change
+          const dbProgressThreshold = 0.05; // Persist to DB every 5% change
+          const timeThreshold = 100; // Or every 100ms, whichever comes first
 
-        final response = await _dio.get(
-          url,
-          options: options,
-          cancelToken: task.cancelToken,
-        );
+          try {
+            await for (final List<int> chunk in response.data.stream) {
+              await raf.writeFrom(chunk);
+              received += chunk.length;
+              if (totalBytes != -1) {
+                final progress = received / totalBytes;
+                final now = DateTime.now().millisecondsSinceEpoch;
+                final timeDiff = now - lastUpdateTime;
 
-        final total =
-            int.parse(response.headers.value('content-length') ?? '-1');
-        final contentRange = response.headers.value('content-range');
-        final totalBytes = contentRange != null
-            ? int.parse(contentRange.split('/').last)
-            : total + startBytes;
+                // Update if progress changed significantly or enough time has passed
+                if ((progress - lastProgress).abs() >= progressThreshold ||
+                    timeDiff >= timeThreshold) {
+                  task.progress = progress;
 
-        final file = File(tempPath);
-        final raf = await file.open(mode: FileMode.append);
+                  // Update the task controller at full frequency
+                  _taskController.add({..._taskController.value, taskId: task});
 
-        int received = startBytes;
-        double lastProgress = 0;
-        int lastUpdateTime = DateTime.now().millisecondsSinceEpoch;
-        const progressThreshold = 0.01; // Update every 1% change
-        const timeThreshold = 100; // Or every 100ms, whichever comes first
+                  // Persist progress to the database at a lower frequency
+                  if ((progress - lastDbProgress).abs() >=
+                      dbProgressThreshold) {
+                    DatabaseManager.updateDownloadTaskProgress(
+                        task.bvid, task.cid, progress);
+                    lastDbProgress = progress;
+                  }
 
-        await response.data.stream.listen(
-          (List<int> chunk) {
-            raf.writeFromSync(chunk);
-            received += chunk.length;
-            if (totalBytes != -1) {
-              final progress = received / totalBytes;
-              final now = DateTime.now().millisecondsSinceEpoch;
-              final timeDiff = now - lastUpdateTime;
-
-              // Update if progress changed significantly or enough time has passed
-              if ((progress - lastProgress).abs() >= progressThreshold ||
-                  timeDiff >= timeThreshold) {
-                // Update progress in the database
-                DatabaseManager.updateDownloadTaskProgress(
-                    task.bvid, task.cid, progress);
-                task.progress = progress;
-
-                // Update the task controller
-                _taskController.add({..._taskController.value, taskId: task});
-
-                lastProgress = progress;
-                lastUpdateTime = now;
+                  lastProgress = progress;
+                  lastUpdateTime = now;
+                }
               }
             }
-          },
-          onDone: () async {
+          } catch (e) {
             await raf.close();
+            _handleDownloadError(task, taskId, e);
+            continue;
+          }
+
+          await raf.close();
+
+          if (cancelToken.isCancelled) {
+            _handleDownloadError(task, taskId, 'Download cancelled');
+            continue;
+          }
+
+          try {
+            // Remove any existing target file before renaming
+            final targetFile = File(targetPath);
+            if (await targetFile.exists()) {
+              await targetFile.delete();
+            }
             // Rename temp file to target file before database operations
             await file.rename(targetPath);
 
@@ -441,26 +516,25 @@ class DownloadManager {
                 whereArgs: [task.bvid, task.cid],
               );
             });
+          } catch (e) {
+            _handleDownloadError(task, taskId, e);
+            continue;
+          }
 
-            _activeDownloads.remove(taskId);
-            task.cancelToken = null;
+          _activeDownloads.remove(taskId);
+          _cancelTokens.remove(taskId);
+          task.cancelToken = null;
 
-            // Update the task controller with the latest tasks
-            final updatedTasks = await DatabaseManager.getAllDownloadTasks();
-            _taskController.add(Map.fromEntries(
-                updatedTasks.map((t) => MapEntry('${t.bvid}-${t.cid}', t))));
-
-            _processQueue();
-          },
-          onError: (error) async {
-            await raf.close();
-            _handleDownloadError(task, taskId, error);
-          },
-          cancelOnError: true,
-        );
-      } catch (e) {
-        _handleDownloadError(task, taskId, e);
+          // Update the task controller with the latest tasks
+          final allTasks = await DatabaseManager.getAllDownloadTasks();
+          _taskController.add(Map.fromEntries(
+              allTasks.map((t) => MapEntry('${t.bvid}-${t.cid}', t))));
+        } catch (e) {
+          _handleDownloadError(task, taskId, e);
+        }
       }
+    } finally {
+      _processingQueue = false;
     }
   }
 
@@ -469,17 +543,24 @@ class DownloadManager {
   }
 
   void _handleDownloadError(DownloadTask task, String taskId, dynamic error) {
-    if (task.cancelToken != null && !task.cancelToken!.isCancelled) {
-      // Update task status to failed
-      DatabaseManager.updateDownloadTaskStatus(
-          task.bvid, task.cid, DownloadStatus.failed);
-      task.status = DownloadStatus.failed;
-      task.error = error.toString();
-      _logger.severe('Download failed: $taskId', error);
-    }
-
+    final cancelToken = _cancelTokens.remove(taskId);
     _activeDownloads.remove(taskId);
     task.cancelToken = null;
+
+    if (cancelToken != null && cancelToken.isCancelled) {
+      // Cancelled by pauseTask/cancelTask; the status is handled there
+      _processQueue();
+      return;
+    }
+
+    // Update task status to failed
+    DatabaseManager.updateDownloadTaskStatus(
+        task.bvid, task.cid, DownloadStatus.failed);
+    DatabaseManager.updateDownloadTaskProgress(
+        task.bvid, task.cid, task.progress);
+    task.status = DownloadStatus.failed;
+    task.error = error.toString();
+    _logger.severe('Download failed: $taskId', error);
 
     // Update the task controller
     _taskController.add({..._taskController.value, taskId: task});

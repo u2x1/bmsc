@@ -646,7 +646,7 @@ class DatabaseManager {
               'bvid': bvid,
               'cid': cid,
               'filePath': file.path,
-              'fileSize': file.lengthSync(),
+              'fileSize': await file.length(),
               'playCount': 0,
               'lastPlayed': now,
               'createdAt': now,
@@ -994,7 +994,7 @@ class DatabaseManager {
     final db = await database;
     await db.delete(favListVideoTable,
         where: 'bvid = ? ${mid != null ? 'AND mid = ?' : ''}',
-        whereArgs: [bvid, mid]);
+        whereArgs: mid != null ? [bvid, mid] : [bvid]);
     _logger.info(
         'removed fav $bvid ${mid != null ? 'and mid $mid' : ''} from database');
   }

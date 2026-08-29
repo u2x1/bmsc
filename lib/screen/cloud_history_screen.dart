@@ -21,32 +21,53 @@ class CloudHistoryScreen extends StatefulWidget {
 
 class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
   static final _logger = LoggerUtils.getLogger('CloudHistoryScreen');
-  bool login = true;
+  bool? login;
   List<HistoryData> hisList = [];
+  bool _isLoading = false;
+  bool _loadFailed = false;
   @override
   void initState() {
     super.initState();
-    loadMore();
     _checkLogin();
   }
 
   void _checkLogin() async {
     final info = await BilibiliService.instance.then((x) => x.myInfo);
+    if (!mounted) return;
     setState(() {
       login = info != null && info.mid != 0;
     });
+    if (login == true) {
+      loadMore();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('云端历史记录')),
-      body: login ? hisListView() : const Center(child: Text('请先登录')),
+      body: login == null
+          ? const Center(child: CircularProgressIndicator())
+          : login! ? hisListView() : const Center(child: Text('请先登录')),
       bottomNavigationBar: const PlayingCard(),
     );
   }
 
   hisListView() {
+    if (hisList.isEmpty) {
+      if (_isLoading) {
+        return const Center(child: CircularProgressIndicator());
+      }
+      if (_loadFailed) {
+        return Center(
+          child: TextButton(
+            onPressed: loadMore,
+            child: const Text('加载失败，点击重试'),
+          ),
+        );
+      }
+      return const Center(child: Text('暂无云端历史记录'));
+    }
     return NotificationListener<ScrollEndNotification>(
         onNotification: (scrollEnd) {
           final metrics = scrollEnd.metrics;
@@ -60,24 +81,56 @@ class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
         },
         child: ListView.builder(
           scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-          itemCount: hisList.length,
-          itemBuilder: (context, index) => hisListTileView(index),
+          itemCount: hisList.length + 1,
+          itemBuilder: (context, index) =>
+              index == hisList.length ? footerView() : hisListTileView(index),
         ));
+  }
+
+  Widget footerView() {
+    if (_isLoading) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(8.0),
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+    if (_loadFailed) {
+      return Center(
+        child: TextButton(
+          onPressed: loadMore,
+          child: const Text('加载失败，点击重试'),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
   }
 
   int viewat = 0;
   loadMore() async {
+    if (_isLoading) return;
     _logger.info('loadMore: viewat=$viewat hisList.len=${hisList.length}');
+    setState(() {
+      _isLoading = true;
+      _loadFailed = false;
+    });
     final detail =
         await BilibiliService.instance.then((x) => x.getHistory(viewat));
+    if (!mounted) return;
     if (detail == null) {
       _logger.info('loadMore: detail is null');
+      setState(() {
+        _isLoading = false;
+        _loadFailed = true;
+      });
       return;
     }
     _logger.info('loadMore: got ${detail.list.length} items');
     setState(() {
       hisList.addAll(detail.list.where((x) => x.history.bvid.isNotEmpty));
       viewat = detail.cursor.viewAt;
+      _isLoading = false;
     });
     _logger.info('loadMore: done hisList.len=${hisList.length}');
   }
@@ -87,7 +140,7 @@ class _CloudHistoryScreenState extends State<CloudHistoryScreen> {
     int sec = hisList[index].duration % 60;
     final duration = "$min:${sec.toString().padLeft(2, '0')}";
     return TrackTile(
-      key: Key(hisList[index].history.bvid),
+      key: Key('${hisList[index].history.bvid}-${hisList[index].viewAt}'),
       pic: hisList[index].cover,
       title: hisList[index].title,
       author: hisList[index].authorName,

@@ -36,6 +36,8 @@ class AudioService {
   StreamSubscription<AudioInterruptionEvent>? _interruptionEventSubscription;
   bool _playInterrupted = false;
   bool _hijacking = false;
+  double? _volumeBeforeDuck;
+  double? _userVolumeBeforeFade;
 
   // 获取定时停止播放的流
   Stream<int?> get sleepTimerStream => _sleepTimerSubject.stream;
@@ -57,7 +59,11 @@ class AudioService {
       final position = await SharedPreferencesService.getPlayPosition();
       if (restored != null && restored.$2 < x.playlist.length) {
         await x.player.seek(null, index: restored.$2);
-        await Future.delayed(const Duration(milliseconds: 100));
+        // 等待播放器就绪后再恢复进度，最多兜底 3 秒
+        await x.player.processingStateStream
+            .firstWhere((s) => s == ProcessingState.ready)
+            .timeout(const Duration(seconds: 3),
+                onTimeout: () => ProcessingState.ready);
         await x.player.seek(Duration(seconds: position));
       }
       await x.restorePlayMode();
@@ -117,8 +123,9 @@ class AudioService {
         if (event.begin) {
           switch (event.type) {
             case AudioInterruptionType.duck:
-              if (session.androidAudioAttributes!.usage ==
+              if (session.androidAudioAttributes?.usage ==
                   AndroidAudioUsage.game) {
+                _volumeBeforeDuck ??= player.volume;
                 player.setVolume(player.volume / 2);
               }
               _playInterrupted = false;
@@ -136,7 +143,11 @@ class AudioService {
         } else {
           switch (event.type) {
             case AudioInterruptionType.duck:
-              player.setVolume(min(1.0, player.volume * 2));
+              final volumeBeforeDuck = _volumeBeforeDuck;
+              _volumeBeforeDuck = null;
+              if (volumeBeforeDuck != null) {
+                player.setVolume(min(1.0, volumeBeforeDuck));
+              }
               _playInterrupted = false;
               break;
             case AudioInterruptionType.pause:
@@ -276,8 +287,12 @@ class AudioService {
     _fadeTimer?.cancel();
     _fadeTimer = null;
 
-    // 恢复音量
-    await player.setVolume(1);
+    // 如果之前有淡出，恢复用户原音量
+    final userVolume = _userVolumeBeforeFade;
+    _userVolumeBeforeFade = null;
+    if (userVolume != null) {
+      await player.setVolume(userVolume);
+    }
 
     // 更新设置
     await SharedPreferencesService.setSleepTimerMinutes(minutes);
@@ -312,8 +327,14 @@ class AudioService {
 
     _sleepTimerSubject.add(durationInSeconds);
 
+    // 记录淡出前的用户音量，结束/取消时恢复
+    _userVolumeBeforeFade = player.volume;
+
+    // 用截止时间计算剩余秒数，避免后台挂起时 timer.tick 不准
+    final deadline = DateTime.now().add(Duration(seconds: durationInSeconds));
+
     _sleepTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      final remainingSeconds = durationInSeconds - timer.tick;
+      final remainingSeconds = deadline.difference(DateTime.now()).inSeconds;
 
       if (remainingSeconds <= 0) {
         // 时间到，停止播放
@@ -324,8 +345,10 @@ class AudioService {
         _fadeTimer = null;
         _sleepTimerSubject.add(null);
         SharedPreferencesService.setSleepTimerMinutes(null);
-        // 恢复音量
-        player.setVolume(1);
+        // 恢复用户原音量
+        final userVolume = _userVolumeBeforeFade;
+        _userVolumeBeforeFade = null;
+        player.setVolume(userVolume ?? 1.0);
       } else if (remainingSeconds <= _fadeOutDuration && _fadeTimer == null) {
         // 开始淡出
         _startFadeOut(remainingSeconds);
@@ -384,55 +407,63 @@ class AudioService {
     _logger.info('Hijacking dummy source for index: $index');
     _hijacking = true;
 
-    List<IndexedAudioSource>? srcs;
     try {
-      srcs = await (await BilibiliService.instance)
-          .getAudios(currentSource.tag.id);
-    } catch (e) {
-      _logger.warning('Failed to get audio sources: $e');
-      srcs = await DatabaseManager.getLocalAudioList(currentSource.tag.id);
-    }
-    final excludedCids =
-        await DatabaseManager.getExcludedParts(currentSource.tag.id);
-    for (var cid in excludedCids) {
-      srcs?.removeWhere((src) => src.tag.extras?['cid'] == cid);
-    }
-    if (srcs == null) {
-      _logger
-          .warning('No audio sources found for BVID: ${currentSource.tag.id}');
-      if (player.loopMode != LoopMode.one &&
-          player.currentIndex != null &&
-          player.currentIndex! < playlist.length - 1) {
-        await player.seekToNext();
-        await player.play();
+      List<IndexedAudioSource>? srcs;
+      try {
+        srcs = await (await BilibiliService.instance)
+            .getAudios(currentSource.tag.id);
+      } catch (e) {
+        _logger.warning('Failed to get audio sources: $e');
+        srcs = await DatabaseManager.getLocalAudioList(currentSource.tag.id);
       }
+      final excludedCids =
+          await DatabaseManager.getExcludedParts(currentSource.tag.id);
+      for (var cid in excludedCids) {
+        srcs?.removeWhere((src) => src.tag.extras?['cid'] == cid);
+      }
+      if (srcs == null) {
+        _logger.warning(
+            'No audio sources found for BVID: ${currentSource.tag.id}');
+        if (player.loopMode != LoopMode.one &&
+            player.currentIndex != null &&
+            player.currentIndex! < playlist.length - 1) {
+          await player.seekToNext();
+          await player.play();
+        }
+        return;
+      }
+      await doAndSavePlaylist(() async {
+        // 闭包内无法利用外部的 null 检查做类型提升，取局部非空变量
+        final targetIndex = index!;
+        final newSources = srcs!;
+        final isShuffle = player.shuffleModeEnabled;
+        if (isShuffle) {
+          await player.setShuffleModeEnabled(false);
+        }
+        await playlist.insertAll(targetIndex + 1, newSources);
+        if (player.loopMode == LoopMode.one) {
+          await player.seek(Duration.zero, index: targetIndex + 1);
+        }
+        await playlist.removeAt(targetIndex);
+        if (isShuffle) {
+          await player.setShuffleModeEnabled(true);
+        }
+      });
+    } finally {
       _hijacking = false;
-      return;
     }
-    await doAndSavePlaylist(() async {
-      // 闭包内无法利用外部的 null 检查做类型提升，取局部非空变量
-      final targetIndex = index!;
-      final newSources = srcs!;
-      final isShuffle = player.shuffleModeEnabled;
-      if (isShuffle) {
-        await player.setShuffleModeEnabled(false);
-      }
-      await playlist.insertAll(targetIndex + 1, newSources);
-      if (player.loopMode == LoopMode.one) {
-        await player.seek(Duration.zero, index: targetIndex + 1);
-      }
-      await playlist.removeAt(targetIndex);
-      if (isShuffle) {
-        await player.setShuffleModeEnabled(true);
-      }
-    });
-    _hijacking = false;
   }
 
   Future<void> playByBvid(String bvid) async {
     _logger.info('Playing by BVID: $bvid');
     await player.pause();
-    final srcs = await (await BilibiliService.instance).getAudios(bvid);
+    List<IndexedAudioSource>? srcs;
+    try {
+      srcs = await (await BilibiliService.instance).getAudios(bvid);
+    } catch (e) {
+      _logger.warning('Failed to get audio sources: $e');
+      srcs = await DatabaseManager.getLocalAudioList(bvid);
+    }
     if (srcs == null) {
       _logger.warning('No audio sources found for BVID: $bvid');
       return;
@@ -443,7 +474,7 @@ class AudioService {
     }
 
     final idx = await _addUniqueSourcesToPlaylist(srcs,
-        insertIndex: playlist.length == 0 ? 0 : player.currentIndex! + 1);
+        insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
     if (idx != null) {
       await player.seek(Duration.zero, index: idx);
     }
@@ -476,7 +507,7 @@ class AudioService {
       return;
     }
     final idx = await _addUniqueSourcesToPlaylist([cachedSource],
-        insertIndex: playlist.length == 0 ? 0 : player.currentIndex! + 1);
+        insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
 
     if (idx != null) {
       await player.seek(Duration.zero, index: idx);
@@ -490,7 +521,7 @@ class AudioService {
       return;
     }
     await _addUniqueSourcesToPlaylist([cachedSource],
-        insertIndex: playlist.length == 0 ? 0 : player.currentIndex! + 1);
+        insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
   }
 
   Future<void> appendPlaylist(String bvid,
@@ -523,42 +554,59 @@ class AudioService {
 
   Future<void> doAndSavePlaylist(Future<void> Function() func) async {
     await func();
-    SharedPreferencesService.savePlaylist(playlist, player.currentIndex ?? 0);
+    await SharedPreferencesService.savePlaylist(
+        playlist, player.currentIndex ?? 0);
   }
+
+  // 以 extras 中的 bvid + cid 作为去重依据（dummy 源与真实源的 id 体系不同）
+  static bool _isSameMedia(MediaItem a, MediaItem b) =>
+      a.extras?['bvid'] != null &&
+      a.extras?['bvid'] == b.extras?['bvid'] &&
+      a.extras?['cid'] == b.extras?['cid'];
 
   Future<int?> _addUniqueSourcesToPlaylist(List<IndexedAudioSource> sources,
       {int? insertIndex, Map<String, dynamic>? extraExtras}) async {
     int? ret;
+    final uniqueSources = <IndexedAudioSource>[];
     for (var source in sources) {
-      if (source.tag is MediaItem) {
-        var mediaItem = source.tag as MediaItem;
-        var duplicatePos = playlist.children.indexWhere((child) {
-          if (child is IndexedAudioSource && child.tag is MediaItem) {
-            return (child.tag as MediaItem).id == mediaItem.id;
-          }
-          return false;
-        });
-
-        if (duplicatePos == -1) {
-          if (extraExtras != null) {
-            mediaItem.extras?.addAll(extraExtras);
-          }
-          if (insertIndex != null) {
-            await doAndSavePlaylist(() async {
-              await playlist.insert(insertIndex!, source);
-            });
-            ret ??= insertIndex;
-            insertIndex++;
-          } else {
-            await doAndSavePlaylist(() async {
-              await playlist.add(source);
-            });
-            ret ??= playlist.length - 1;
-          }
-        } else {
-          ret = duplicatePos;
-        }
+      if (source.tag is! MediaItem) {
+        continue;
       }
+      final mediaItem = source.tag as MediaItem;
+      final duplicatePos = playlist.children.indexWhere((child) =>
+          child is IndexedAudioSource &&
+          child.tag is MediaItem &&
+          _isSameMedia(child.tag as MediaItem, mediaItem));
+      final pendingPos = uniqueSources.indexWhere((child) =>
+          child.tag is MediaItem &&
+          _isSameMedia(child.tag as MediaItem, mediaItem));
+
+      if (duplicatePos == -1 && pendingPos == -1) {
+        if (extraExtras != null) {
+          mediaItem.extras?.addAll(extraExtras);
+        }
+        uniqueSources.add(source);
+        ret ??= insertIndex != null
+            ? insertIndex + uniqueSources.length - 1
+            : playlist.length + uniqueSources.length - 1;
+      } else if (duplicatePos != -1) {
+        ret = duplicatePos;
+      } else {
+        ret ??= insertIndex != null
+            ? insertIndex + pendingPos
+            : playlist.length + pendingPos;
+      }
+    }
+    if (uniqueSources.isNotEmpty) {
+      final index = insertIndex;
+      // 批量插入后只保存一次
+      await doAndSavePlaylist(() async {
+        if (index != null) {
+          await playlist.insertAll(index, uniqueSources);
+        } else {
+          await playlist.addAll(uniqueSources);
+        }
+      });
     }
     return ret;
   }

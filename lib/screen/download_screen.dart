@@ -1,5 +1,6 @@
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/download_task.dart';
+import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/download_manager.dart';
 import 'package:flutter/material.dart';
@@ -16,6 +17,38 @@ class DownloadScreen extends StatefulWidget {
 class _DownloadScreenState extends State<DownloadScreen> {
   bool isSelectionMode = false;
   Set<String> selectedItems = {};
+  final Map<String, Entity> _entityCache = {};
+  Set<String> _taskIds = {};
+
+  Future<void> _handleTasksChanged(Map<String, DownloadTask> tasks) async {
+    final ids = tasks.keys.toSet();
+    _entityCache.removeWhere((id, _) => !ids.contains(id));
+
+    // Drop selection entries whose tasks disappeared
+    if (selectedItems.any((id) => !ids.contains(id))) {
+      setState(() {
+        selectedItems.removeWhere((id) => !ids.contains(id));
+        if (selectedItems.isEmpty) {
+          isSelectionMode = false;
+        }
+      });
+    }
+
+    // Batch-fetch entities for new tasks only, progress updates reuse
+    // the cache without hitting the database again.
+    final missing = ids.where((id) => !_entityCache.containsKey(id)).toList();
+    if (missing.isEmpty) return;
+    await Future.wait(missing.map((id) async {
+      final task = tasks[id]!;
+      final entity = await DatabaseManager.getEntity(task.bvid, task.cid);
+      if (entity != null) {
+        _entityCache[id] = entity;
+      }
+    }));
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   void _toggleSelectionMode() {
     setState(() {
@@ -76,12 +109,31 @@ class _DownloadScreenState extends State<DownloadScreen> {
               style: const ButtonStyle(
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              onPressed: () async {
-                final dm = await DownloadManager.instance;
-                for (var id in selectedItems) {
-                  await dm.cancelTask(id);
-                }
-                _toggleSelectionMode();
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('取消下载'),
+                    content: Text('确定要取消这 ${selectedItems.length} 个下载任务吗？'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () async {
+                          Navigator.pop(context);
+                          final dm = await DownloadManager.instance;
+                          for (var id in selectedItems) {
+                            await dm.cancelTask(id);
+                          }
+                          _toggleSelectionMode();
+                        },
+                        child: const Text('确定'),
+                      ),
+                    ],
+                  ),
+                );
               },
             ),
             IconButton(
@@ -152,7 +204,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
           future: DownloadManager.instance,
           builder: (context, snapshot) {
             if (!snapshot.hasData) {
-              return const SizedBox.shrink();
+              return const Center(child: CircularProgressIndicator());
             }
             final dm = snapshot.data!;
             return StreamBuilder<Map<String, DownloadTask>>(
@@ -162,8 +214,22 @@ class _DownloadScreenState extends State<DownloadScreen> {
                   return const Center(child: CircularProgressIndicator());
                 }
 
-                final tasks = snapshot.data!.values.toList().reversed.toList();
+                final tasksMap = snapshot.data!;
+                final tasks = tasksMap.values.toList().reversed.toList();
                 tasks.sort((a, b) => Enum.compareByIndex(a.status, b.status));
+
+                // Batch-fetch entities and prune stale selection when the
+                // task set changes; progress-only updates reuse the cache.
+                final ids = tasksMap.keys.toSet();
+                if (_taskIds.length != ids.length ||
+                    !ids.every(_taskIds.contains) ||
+                    selectedItems.any((id) => !ids.contains(id))) {
+                  _taskIds = ids;
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    _handleTasksChanged(tasksMap);
+                  });
+                }
+
                 if (tasks.isEmpty) {
                   return Center(
                     child: ListView(
@@ -181,66 +247,57 @@ class _DownloadScreenState extends State<DownloadScreen> {
                   itemCount: tasks.length,
                   itemBuilder: (context, index) {
                     final task = tasks[index];
-                    return FutureBuilder(
-                        future: DatabaseManager.getEntity(task.bvid, task.cid),
-                        builder: (context, snapshot) {
-                          if (!snapshot.hasData) {
-                            return const SizedBox.shrink();
-                          }
-                          final entity = snapshot.data!;
-                          final id = '${task.bvid}-${task.cid}';
+                    final id = '${task.bvid}-${task.cid}';
+                    final entity = _entityCache[id];
+                    if (entity == null) {
+                      return const SizedBox.shrink();
+                    }
 
-                          return TrackTile(
-                            title: entity.partTitle,
-                            author: entity.artist,
-                            len: _getStatusText(task.status),
-                            pic: entity.artUri,
-                            album: entity.part == 0 ? null : entity.bvidTitle,
-                            color: isSelectionMode
-                                ? selectedItems.contains(id)
-                                    ? Theme.of(context)
-                                        .colorScheme
-                                        .primaryContainer
-                                        .withValues(alpha: 0.7)
-                                    : null
-                                : _getColor(task.status).withValues(alpha: 0.3),
-                            onTap: isSelectionMode
-                                ? () => _toggleItemSelection(id)
-                                : () async {
-                                    if (task.status ==
-                                        DownloadStatus.completed) {
-                                      final service =
-                                          await AudioService.instance;
-                                      service.playLocalAudio(
-                                          task.bvid, task.cid);
-                                    } else if (task.status ==
-                                            DownloadStatus.downloading ||
-                                        task.status == DownloadStatus.pending) {
-                                      (await DownloadManager.instance)
-                                          .pauseTask(id);
-                                    } else if (task.status ==
-                                        DownloadStatus.paused) {
-                                      (await DownloadManager.instance)
-                                          .resumeTask(id);
-                                    }
-                                  },
-                            onPicTap: () => _toggleItemSelection(id),
-                            onLongPress: isSelectionMode
-                                ? null
-                                : () {
-                                    if (!isSelectionMode) {
-                                      _toggleSelectionMode();
-                                      _toggleItemSelection(id);
-                                    }
-                                  },
-                            progress:
-                                task.status == DownloadStatus.downloading ||
-                                        task.status == DownloadStatus.paused ||
-                                        task.status == DownloadStatus.pending
-                                    ? task.progress
-                                    : null,
-                          );
-                        });
+                    return TrackTile(
+                      title: entity.partTitle,
+                      author: entity.artist,
+                      len: _getStatusText(task.status),
+                      pic: entity.artUri,
+                      album: entity.part == 0 ? null : entity.bvidTitle,
+                      color: isSelectionMode
+                          ? selectedItems.contains(id)
+                              ? Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                                  .withValues(alpha: 0.7)
+                              : null
+                          : _getColor(context, task.status)
+                              .withValues(alpha: 0.3),
+                      onTap: isSelectionMode
+                          ? () => _toggleItemSelection(id)
+                          : () async {
+                              if (task.status == DownloadStatus.completed) {
+                                final service = await AudioService.instance;
+                                service.playLocalAudio(task.bvid, task.cid);
+                              } else if (task.status ==
+                                      DownloadStatus.downloading ||
+                                  task.status == DownloadStatus.pending) {
+                                (await DownloadManager.instance).pauseTask(id);
+                              } else if (task.status == DownloadStatus.paused ||
+                                  task.status == DownloadStatus.failed) {
+                                (await DownloadManager.instance).resumeTask(id);
+                              }
+                            },
+                      onPicTap: () => _toggleItemSelection(id),
+                      onLongPress: isSelectionMode
+                          ? null
+                          : () {
+                              if (!isSelectionMode) {
+                                _toggleSelectionMode();
+                                _toggleItemSelection(id);
+                              }
+                            },
+                      progress: task.status == DownloadStatus.downloading ||
+                              task.status == DownloadStatus.paused ||
+                              task.status == DownloadStatus.pending
+                          ? task.progress
+                          : null,
+                    );
                   },
                 );
               },
@@ -267,20 +324,21 @@ class _DownloadScreenState extends State<DownloadScreen> {
     }
   }
 
-  Color _getColor(DownloadStatus status) {
+  Color _getColor(BuildContext context, DownloadStatus status) {
+    final colorScheme = Theme.of(context).colorScheme;
     switch (status) {
       case DownloadStatus.downloading:
-        return Colors.blue.shade100;
+        return colorScheme.primaryContainer;
       case DownloadStatus.paused:
-        return Colors.grey.shade100;
+        return colorScheme.surfaceContainerHighest;
       case DownloadStatus.pending:
-        return Colors.amber.shade100;
+        return colorScheme.tertiaryContainer;
       case DownloadStatus.completed:
-        return Colors.green.shade100;
+        return colorScheme.secondaryContainer;
       case DownloadStatus.failed:
-        return Colors.red.shade100;
+        return colorScheme.errorContainer;
       case DownloadStatus.canceled:
-        return Colors.grey.shade100;
+        return colorScheme.surfaceContainerHighest;
     }
   }
 }
