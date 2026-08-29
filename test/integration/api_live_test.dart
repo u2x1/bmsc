@@ -1,8 +1,11 @@
 // ignore_for_file: avoid_print
 // 集成测试的诊断输出使用 print 是刻意设计
+/// 扫码登录最多等 3 分钟，把文件级超时调到 5 分钟（test 包默认 30s 会掐断 setUpAll）
+@Timeout(Duration(minutes: 5))
 library;
 
 import 'package:bmsc/api/bilibili.dart';
+import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:test/test.dart';
@@ -46,6 +49,10 @@ void main() {
       session = await LiveSession.ensure(api);
       if (session != null) {
         await api.applyLoginCookies(session!.cookies, save: false);
+        // 让 App playurl 走与 token 匹配的签名组（TV 登录 -> TV appkey）
+        await SharedPreferencesService.setAccessToken(session!.accessToken);
+        await SharedPreferencesService.setAccessTokenPlatform(
+            session!.platform);
       }
       print('=== live 测试：${session != null ? '已登录(自动获取)' : '未登录'} ===');
     });
@@ -212,8 +219,15 @@ void main() {
               '扫码登录场景自动具备）');
           return;
         }
+        // cid 动态获取（避免硬编码错误 cid）
+        final pages = await api.getPageList('BV1GJ411x7h7');
+        if (pages == null || pages.isEmpty) {
+          print('  [SKIP] 无法获取视频分P信息');
+          return;
+        }
+        final cid = pages.first['cid'] as int;
         final audios = await probe('getAudioApp',
-            () => api.getAudioApp('BV1GJ411x7h7', 3687553, accessToken: token));
+            () => api.getAudioApp('BV1GJ411x7h7', cid, accessToken: token));
         if (audios != null) {
           print('  音频流数: ${audios.length}');
           expect(audios, isNotEmpty);

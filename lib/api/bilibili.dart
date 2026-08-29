@@ -458,7 +458,10 @@ class BilibiliAPI {
       'bvid': bvid,
       'cid': cid.toString(),
       'qn': hires ? '127' : '64',
-      'fnval': '20432',
+      // fnval=16（MP4 基础格式，兼容 TV/Android 两组 appkey 签名）
+      // 注意：BiliPai 视频场景的 20432(Web DASH + APP-only HDR) 在
+      // App 端 playurl 会返回 -400，音频场景用 16 即可拿到 DASH audio
+      'fnval': '16',
       'fnver': '0',
       'fourk': '1',
       'access_key': accessToken,
@@ -481,7 +484,8 @@ class BilibiliAPI {
         }
         return null;
       }
-      final dash = TrackResult.fromJson(body).dash;
+      // 与 web 版一致：TrackResult 解析的是 data 子对象（非整个响应体）
+      final dash = TrackResult.fromJson(body['data']).dash;
       if (hires && dash.flac?.audio != null) {
         return [dash.flac!.audio!] + dash.audio;
       }
