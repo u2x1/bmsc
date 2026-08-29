@@ -194,10 +194,16 @@ void main() {
       test('动态接口可达', () async {
         final dynamics =
             await probe('getDynamics', () => api.getDynamics(null));
-        if (session != null && dynamics != null) {
-          print('  动态条数: ${dynamics.items.length}');
+        if (session != null) {
+          // 登录态下动态必须可用（回归：update_num/mid/pub_ts 类型漂移导致整批 null）
+          expect(dynamics, isNotNull,
+              reason: '登录态下动态接口返回 null，解析层仍有类型漂移问题');
+          if (dynamics != null) {
+            print('  动态条数: ${dynamics.items.length}');
+            expect(dynamics.items, isNotEmpty);
+          }
         } else {
-          print('  [NOTE] ${session != null ? '无动态' : '未登录'} -> null');
+          print('  [NOTE] 未登录 -> null');
         }
       }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 

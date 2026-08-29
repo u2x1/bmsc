@@ -30,15 +30,13 @@ jobs:
       - name: Unit tests
         run: flutter test test/unit
 
-      # live 集成测试默认 skip（不触网）；此步仅验证 gate 生效，
-      # 防止将来误提交导致 CI 打真实 B 站接口
-      - name: Verify live tests are skip-gated
-        run: flutter test test/integration 2>&1 | tee /tmp/live.out
-      - name: Assert live tests remain skipped in CI
+      # integration 目录为真实网络测试，CI 永不执行：
+      # 1) 只跑 test/unit；2) 静态断言集成测试文件保留 live 门控（防误提交失效）
+      - name: Assert live gate present in integration tests
         run: |
-          if grep -q "~" /tmp/live.out; then
-            echo "OK: live tests skipped in CI (no real Bilibili API calls)"
+          if grep -q "skip: !isLive" test/integration/api_live_test.dart; then
+            echo "OK: live gate present, integration never runs in CI"
           else
-            echo "::error::live 测试在 CI 中真实执行了（应保持 skipped，勿打真实 B 站接口）"
+            echo "::error::live 门控缺失（skip: !isLive），勿在 CI 中执行真实 B 站接口"
             exit 1
           fi

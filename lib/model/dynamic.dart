@@ -26,9 +26,11 @@ class DynamicResult {
         .whereType<DataItem>()
         .toList();
     hasMore = json['has_more'] ?? false;
-    offset = json['offset'] as String? ?? '';
-    updateBaseline = json['update_baseline'] as String? ?? '';
-    updateNum = json['update_num'] as int? ?? 0;
+    // B 站对 offset/update_baseline/update_num 的类型时 int 时 String，
+    // 统一经 toString 安全转换（历史踩坑：as String?/as int? 硬转抛 TypeError 导致整批 null）
+    offset = json['offset']?.toString() ?? '';
+    updateBaseline = json['update_baseline']?.toString() ?? '';
+    updateNum = int.tryParse(json['update_num']?.toString() ?? '') ?? 0;
   }
 }
 
@@ -82,10 +84,11 @@ class ModuleAuthor {
 
   ModuleAuthor.fromJson(Map<String, dynamic> json) {
     face = json['face'];
-    mid = json['mid'];
+    // B 站 id/时间戳字段时 int 时 String，统一安全转换
+    mid = int.tryParse(json['mid']?.toString() ?? '') ?? 0;
     name = json['name'];
     pubTime = json['pub_time'];
-    pubTs = json['pub_ts'];
+    pubTs = int.tryParse(json['pub_ts']?.toString() ?? '') ?? 0;
   }
 }
 
