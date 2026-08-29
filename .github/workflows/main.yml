@@ -6,8 +6,26 @@ on:
       - "v*.*.*"
 
 jobs:
+  test:
+    name: Unit Tests Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.47.2' # 与本地开发环境一致
+          cache: true
+      - run: flutter pub get
+      - name: Analyze
+        run: flutter analyze --no-pub lib test
+      - name: Unit tests
+        run: flutter test test/unit
+
   build:
     name: Build Artifacts and Release
+    needs: test # 发版门禁：单元测试不过不构建
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
