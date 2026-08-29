@@ -39,7 +39,7 @@ class _PlayingCardState extends State<PlayingCard> {
     }
   }
 
-  /// 长辈模式：大封面、大按钮、无播放列表入口（防误删）
+  /// 长辈模式：两行布局——上行封面+歌名，下行三个带文字的超大按钮
   Widget _buildElderLayout(
     BuildContext context,
     AudioPlayer player,
@@ -52,6 +52,10 @@ class _PlayingCardState extends State<PlayingCard> {
     required bool isLoadingOrBuffering,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
+    final labelStyle = Theme.of(context)
+        .textTheme
+        .bodyMedium
+        ?.copyWith(fontWeight: FontWeight.w600);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -69,7 +73,7 @@ class _PlayingCardState extends State<PlayingCard> {
         InkWell(
           onTap: _openDetail,
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
             child: Row(
               children: [
                 shadow(
@@ -109,7 +113,10 @@ class _PlayingCardState extends State<PlayingCard> {
                     children: [
                       Text(
                         title,
-                        style: Theme.of(context).textTheme.titleMedium,
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -123,46 +130,112 @@ class _PlayingCardState extends State<PlayingCard> {
                     ],
                   ),
                 ),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.skip_previous, size: 36),
-                      onPressed: player.hasPrevious
-                          ? player.seekToPreviousRegardlessOfLoopMode
-                          : null,
-                    ),
-                    Container(
-                      decoration: BoxDecoration(
-                        color: colorScheme.primaryContainer,
-                        shape: BoxShape.circle,
-                      ),
-                      child: IconButton(
-                        iconSize: 40,
-                        icon: Icon(
-                          playing ? Icons.pause : Icons.play_arrow,
-                          color: colorScheme.onPrimaryContainer,
-                        ),
-                        onPressed: isLoadingOrBuffering
-                            ? null
-                            : playing
-                                ? player.pause
-                                : player.play,
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.skip_next, size: 36),
-                      onPressed: player.hasNext
-                          ? player.seekToNextRegardlessOfLoopMode
-                          : null,
-                    ),
-                  ],
-                ),
+                Icon(Icons.chevron_right,
+                    size: 32, color: colorScheme.secondary),
               ],
             ),
           ),
         ),
+        // 三个带文字的超大按钮
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: _elderControlButton(
+                  icon: Icons.skip_previous,
+                  label: '上一首',
+                  iconSize: 36,
+                  labelStyle: labelStyle,
+                  onPressed: player.hasPrevious
+                      ? player.seekToPreviousRegardlessOfLoopMode
+                      : null,
+                ),
+              ),
+              Expanded(
+                child: _elderControlButton(
+                  icon: playing ? Icons.pause : Icons.play_arrow,
+                  label: isLoadingOrBuffering
+                      ? '加载中'
+                      : playing
+                          ? '暂停'
+                          : '播放',
+                  iconSize: 44,
+                  emphasized: true,
+                  labelStyle: labelStyle,
+                  onPressed: isLoadingOrBuffering
+                      ? null
+                      : playing
+                          ? player.pause
+                          : player.play,
+                ),
+              ),
+              Expanded(
+                child: _elderControlButton(
+                  icon: Icons.skip_next,
+                  label: '下一首',
+                  iconSize: 36,
+                  labelStyle: labelStyle,
+                  onPressed: player.hasNext
+                      ? player.seekToNextRegardlessOfLoopMode
+                      : null,
+                ),
+              ),
+            ],
+          ),
+        ),
       ],
+    );
+  }
+
+  /// 长辈模式大按钮：图标在上、文字在下，整块区域可点
+  Widget _elderControlButton({
+    required IconData icon,
+    required String label,
+    required double iconSize,
+    required TextStyle? labelStyle,
+    required VoidCallback? onPressed,
+    bool emphasized = false,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final enabled = onPressed != null;
+    final iconColor = !enabled
+        ? colorScheme.outline.withValues(alpha: 0.4)
+        : emphasized
+            ? colorScheme.onPrimary
+            : colorScheme.onSurface;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onPressed,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            emphasized
+                ? Container(
+                    width: 68,
+                    height: 68,
+                    decoration: BoxDecoration(
+                      color: enabled
+                          ? colorScheme.primary
+                          : colorScheme.surfaceContainerHighest,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(icon, size: iconSize, color: iconColor),
+                  )
+                : Icon(icon, size: iconSize, color: iconColor),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: labelStyle?.copyWith(
+                color:
+                    enabled ? null : colorScheme.outline.withValues(alpha: 0.4),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

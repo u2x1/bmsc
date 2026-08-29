@@ -1,3 +1,4 @@
+import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -47,11 +48,22 @@ class TrackTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final progress = this.progress?.clamp(0.0, 1.0).toDouble();
     final colorScheme = Theme.of(context).colorScheme;
-    final secondaryStyle = Theme.of(context)
-        .textTheme
-        .bodySmall
+    final elderMode = ThemeProvider.instance.elderMode;
+    // 长辈模式：更大的封面、更粗更大的文字、更大的辅助图标
+    final coverWidth = elderMode ? 100.0 : 76.0;
+    final coverHeight = elderMode ? 64.0 : 48.0;
+    final metaIconSize = elderMode ? 16.0 : 12.0;
+    final secondaryStyle = (elderMode
+            ? Theme.of(context).textTheme.bodyMedium
+            : Theme.of(context).textTheme.bodySmall)
         ?.copyWith(color: colorScheme.secondary);
-    final smallStyle = secondaryStyle?.copyWith(fontSize: 11);
+    final smallStyle = secondaryStyle?.copyWith(fontSize: elderMode ? 13 : 11);
+    final titleStyle = elderMode
+        ? Theme.of(context)
+            .textTheme
+            .titleMedium
+            ?.copyWith(fontWeight: FontWeight.w600)
+        : Theme.of(context).textTheme.titleSmall;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
       elevation: 2,
@@ -90,7 +102,7 @@ class TrackTile extends StatelessWidget {
             onTap: onTap,
             onLongPress: onLongPress,
             child: Padding(
-              padding: const EdgeInsets.all(8),
+              padding: EdgeInsets.all(elderMode ? 12 : 8),
               child: Column(
                 children: [
                   Row(
@@ -103,8 +115,8 @@ class TrackTile extends StatelessWidget {
                           child: GestureDetector(
                             onTap: onPicTap,
                             child: SizedBox(
-                              width: 76,
-                              height: 48,
+                              width: coverWidth,
+                              height: coverHeight,
                               child: pic == null || pic == ""
                                   ? Container(
                                       color: Theme.of(context)
@@ -161,7 +173,7 @@ class TrackTile extends StatelessWidget {
                                 if (downloaded || cached) ...[
                                   Icon(
                                     Icons.check_circle,
-                                    size: 16,
+                                    size: elderMode ? 20 : 16,
                                     color: downloaded
                                         ? colorScheme.tertiary
                                         : colorScheme.outline,
@@ -171,8 +183,7 @@ class TrackTile extends StatelessWidget {
                                 Expanded(
                                   child: Text(
                                     title,
-                                    style:
-                                        Theme.of(context).textTheme.titleSmall,
+                                    style: titleStyle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -185,10 +196,9 @@ class TrackTile extends StatelessWidget {
                                 if (album != null) ...[
                                   Icon(
                                     Icons.album,
-                                    size: 12,
-                                    color: Theme.of(context)
-                                        .colorScheme
-                                        .secondary,
+                                    size: metaIconSize,
+                                    color:
+                                        Theme.of(context).colorScheme.secondary,
                                   ),
                                   const SizedBox(width: 2),
                                   Flexible(
@@ -202,7 +212,7 @@ class TrackTile extends StatelessWidget {
                                 ],
                                 Icon(
                                   Icons.person_outline,
-                                  size: 12,
+                                  size: metaIconSize,
                                   color:
                                       Theme.of(context).colorScheme.secondary,
                                 ),
@@ -223,7 +233,7 @@ class TrackTile extends StatelessWidget {
                                 if (parts != null) ...[
                                   Icon(
                                     Icons.playlist_play,
-                                    size: 12,
+                                    size: metaIconSize,
                                     color:
                                         Theme.of(context).colorScheme.secondary,
                                   ),
@@ -243,7 +253,7 @@ class TrackTile extends StatelessWidget {
                                 ],
                                 Icon(
                                   Icons.schedule,
-                                  size: 12,
+                                  size: metaIconSize,
                                   color:
                                       Theme.of(context).colorScheme.secondary,
                                 ),
@@ -256,7 +266,7 @@ class TrackTile extends StatelessWidget {
                                   const SizedBox(width: 8),
                                   Icon(
                                     Icons.visibility_outlined,
-                                    size: 12,
+                                    size: metaIconSize,
                                     color:
                                         Theme.of(context).colorScheme.secondary,
                                   ),
@@ -270,7 +280,7 @@ class TrackTile extends StatelessWidget {
                                   const SizedBox(width: 8),
                                   Icon(
                                     Icons.access_time,
-                                    size: 12,
+                                    size: metaIconSize,
                                     color:
                                         Theme.of(context).colorScheme.secondary,
                                   ),
@@ -284,7 +294,7 @@ class TrackTile extends StatelessWidget {
                                   const SizedBox(width: 8),
                                   Icon(
                                     Icons.play_arrow,
-                                    size: 12,
+                                    size: metaIconSize,
                                     color:
                                         Theme.of(context).colorScheme.secondary,
                                   ),

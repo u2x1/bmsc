@@ -84,23 +84,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   /// 长辈模式开关：置顶醒目显示
   Widget _buildElderModeTile() {
     final elderMode = ThemeProvider.instance.elderMode;
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-      color: elderMode
-          ? Theme.of(context).colorScheme.primaryContainer
-          : Theme.of(context).colorScheme.surfaceContainerHighest,
-      child: SwitchListTile(
-        title:
-            const Text('长辈模式', style: TextStyle(fontWeight: FontWeight.bold)),
-        secondary: Icon(Icons.accessibility_new,
-            size: 32, color: Theme.of(context).colorScheme.primary),
-        subtitle: const Text('字体更大，界面更简单，适合长辈使用'),
-        value: elderMode,
-        onChanged: (bool value) async {
-          await ThemeProvider.instance.setElderMode(value);
-          setState(() {});
-        },
-      ),
+    return SwitchListTile(
+      title: const Text('长辈模式'),
+      secondary: const Icon(Icons.accessibility_new),
+      subtitle: const Text('字体更大，界面更简单，适合长辈使用'),
+      value: elderMode,
+      onChanged: (bool value) async {
+        await ThemeProvider.instance.setElderMode(value);
+        setState(() {});
+      },
     );
   }
 
@@ -289,12 +281,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
       body: ListView(
         children: [
-          _buildElderModeTile(),
           _buildSectionTitle('账号'),
           _buildLoginTile(),
           // 长辈模式下只保留核心设置项，避免误改
           if (elderMode) ...[
             _buildSectionTitle('显示'),
+            _buildElderModeTile(),
             _buildThemeModeTile(),
           ] else ...[
             _buildSectionTitle('音质'),
@@ -441,6 +433,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             _buildSectionTitle('显示'),
+            _buildElderModeTile(),
             ListTile(
               title: const Text('隐藏收藏夹管理'),
               leading: const Icon(Icons.folder),

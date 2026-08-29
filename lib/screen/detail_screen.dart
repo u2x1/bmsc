@@ -676,11 +676,63 @@ class _DetailScreenState extends State<DetailScreen> {
     // 使用辅助方法判断小屏幕
     final isSmallScreen = _isSmallScreen(context);
     final elderMode = ThemeProvider.instance.elderMode;
-    final iconSize = elderMode ? 48.0 : (isSmallScreen ? 30.0 : 36.0);
+    final iconSize = isSmallScreen ? 30.0 : 36.0;
     final player = _audioService!.player;
     final hasPrevious = player.hasPrevious;
     final hasNext = player.hasNext;
     final playerState = player.playerState;
+
+    // 长辈模式：图标 + 文字标签，老人看得懂才点得准
+    if (elderMode) {
+      final labelStyle = Theme.of(context)
+          .textTheme
+          .bodyMedium
+          ?.copyWith(fontWeight: FontWeight.w600);
+      final processingState = playerState.processingState;
+      final isLoading = processingState == ProcessingState.loading ||
+          processingState == ProcessingState.buffering;
+      final playLabel = isLoading
+          ? '加载中'
+          : player.playing
+              ? '暂停'
+              : '播放';
+      return Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _elderTransportButton(
+            icon: Icons.skip_previous,
+            label: '上一首',
+            labelStyle: labelStyle,
+            onPressed:
+                hasPrevious ? player.seekToPreviousRegardlessOfLoopMode : null,
+          ),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer,
+                  shape: BoxShape.circle,
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: _playPauseButton(
+                      playerState, player, context, isSmallScreen),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(playLabel, style: labelStyle),
+            ],
+          ),
+          _elderTransportButton(
+            icon: Icons.skip_next,
+            label: '下一首',
+            labelStyle: labelStyle,
+            onPressed: hasNext ? player.seekToNextRegardlessOfLoopMode : null,
+          ),
+        ],
+      );
+    }
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -696,8 +748,7 @@ class _DetailScreenState extends State<DetailScreen> {
             shape: BoxShape.circle,
           ),
           child: Padding(
-            padding:
-                EdgeInsets.all(elderMode ? 12.0 : (isSmallScreen ? 6.0 : 8.0)),
+            padding: EdgeInsets.all(isSmallScreen ? 6.0 : 8.0),
             child:
                 _playPauseButton(playerState, player, context, isSmallScreen),
           ),
@@ -705,6 +756,35 @@ class _DetailScreenState extends State<DetailScreen> {
         IconButton(
           icon: Icon(Icons.skip_next, size: iconSize),
           onPressed: hasNext ? player.seekToNextRegardlessOfLoopMode : null,
+        ),
+      ],
+    );
+  }
+
+  /// 长辈模式：图标在上、文字在下的传输大按钮
+  Widget _elderTransportButton({
+    required IconData icon,
+    required String label,
+    required TextStyle? labelStyle,
+    required VoidCallback? onPressed,
+  }) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final enabled = onPressed != null;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          icon: Icon(icon, size: 48),
+          color: enabled
+              ? colorScheme.onSurface
+              : colorScheme.outline.withValues(alpha: 0.4),
+          onPressed: onPressed,
+        ),
+        Text(
+          label,
+          style: labelStyle?.copyWith(
+            color: enabled ? null : colorScheme.outline.withValues(alpha: 0.4),
+          ),
         ),
       ],
     );

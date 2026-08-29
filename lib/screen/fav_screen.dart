@@ -321,8 +321,8 @@ class FavScreenState extends State<FavScreen> {
     final elderMode = ThemeProvider.instance.elderMode;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('云收藏夹',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+        title: Text(elderMode ? '我的歌单' : '云收藏夹',
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
         actions: !signedin
             ? []
             : [
@@ -331,10 +331,21 @@ class FavScreenState extends State<FavScreen> {
                     icon: const Icon(Icons.add),
                     onPressed: _showCreateFolderDialog,
                   ),
-                IconButton(
-                  icon: const Icon(Icons.refresh),
-                  onPressed: loadFavorites,
-                ),
+                if (elderMode)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.refresh, size: 28),
+                      label: const Text('刷新',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                      onPressed: loadFavorites,
+                    ),
+                  )
+                else
+                  IconButton(
+                    icon: const Icon(Icons.refresh),
+                    onPressed: loadFavorites,
+                  ),
               ],
       ),
       body: !signedin
@@ -465,8 +476,103 @@ class FavScreenState extends State<FavScreen> {
     );
   }
 
+  /// 长辈模式：一键播放整个收藏夹（缓存为空时联网加载兜底）
+  Future<void> _playWholeFav(Fav fav, bool isOwned) async {
+    final messenger = ScaffoldMessenger.of(context);
+    var bvids = isOwned
+        ? await DatabaseManager.getCachedFavBvids(fav.id)
+        : await DatabaseManager.getCachedCollectionBvids(fav.id);
+    if (bvids.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('正在加载歌曲…')));
+      final metas = isOwned
+          ? await BilibiliService.instance.then((x) => x.getFavMetas(fav.id))
+          : await BilibiliService.instance
+              .then((x) => x.getCollectionMetas(fav.id));
+      bvids = metas?.map((m) => m.bvid).toList() ?? [];
+    }
+    if (bvids.isEmpty) {
+      messenger.showSnackBar(const SnackBar(content: Text('加载失败，请检查网络后重试')));
+      return;
+    }
+    await AudioService.instance.then((x) => x.playByBvids(bvids));
+  }
+
+  /// 长辈模式大卡片：大图标 + 大字标题 + 「▶ 播放」大按钮，两步听歌
+  Widget _buildElderFavCard(Fav fav, bool isOwned) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => FavDetailScreen(
+                fav: fav,
+                isCollected: !isOwned,
+              ),
+            ),
+          );
+        },
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Icon(Icons.folder, size: 48, color: colorScheme.primary),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      fav.title,
+                      style: Theme.of(context)
+                          .textTheme
+                          .titleLarge
+                          ?.copyWith(fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${fav.mediaCount} 个视频',
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodyMedium
+                          ?.copyWith(color: colorScheme.secondary),
+                    ),
+                  ],
+                ),
+              ),
+              FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+                ),
+                icon: const Icon(Icons.play_arrow, size: 28),
+                label: const Text('播放',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () => _playWholeFav(fav, isOwned),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   List<Widget> buildFavList(List<Fav> favs, bool isOwned) {
     final elderMode = ThemeProvider.instance.elderMode;
+    if (elderMode) {
+      return favs
+          .where((fav) => hideFav == null || !hideFav!.contains(fav.id))
+          .map((fav) => _buildElderFavCard(fav, isOwned))
+          .toList();
+    }
     return favs
         .map((fav) => (hideFav != null && hideFav!.contains(fav.id))
             ? SizedBox()

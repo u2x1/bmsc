@@ -309,11 +309,56 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                 )
               : ListView.builder(
                   scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-                  itemCount: favInfo.length,
-                  itemBuilder: (context, index) => favDetailListTileView(index),
+                  itemCount: favInfo.length +
+                      (ThemeProvider.instance.elderMode ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (ThemeProvider.instance.elderMode) {
+                      if (index == 0) return _buildElderPlayAllButton();
+                      return favDetailListTileView(index - 1);
+                    }
+                    return favDetailListTileView(index);
+                  },
                 ),
         ),
         bottomNavigationBar: const PlayingCard(),
+      ),
+    );
+  }
+
+  /// 长辈模式：整宽「播放全部」大按钮，放列表顶部
+  Widget _buildElderPlayAllButton() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(vertical: 18),
+          minimumSize: const Size.fromHeight(56),
+        ),
+        icon: const Icon(Icons.play_arrow, size: 32),
+        label: Text(
+          '播放全部 (${favInfo.length} 首)',
+          style: const TextStyle(fontWeight: FontWeight.w600),
+        ),
+        onPressed: () async {
+          try {
+            _logger.info('Playing whole fav list ${widget.fav.id}');
+            final bvids = widget.isCollected
+                ? await DatabaseManager.getCachedCollectionBvids(widget.fav.id)
+                : await DatabaseManager.getCachedFavBvids(widget.fav.id);
+            if (bvids.isEmpty) {
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('本地缓存为空，请先下拉刷新加载内容')),
+                );
+              }
+              return;
+            }
+            await AudioService.instance
+                .then((x) => x.playByBvids(bvids, index: 0));
+          } catch (e, stackTrace) {
+            _logger.severe('Error playing whole fav list', e, stackTrace);
+          }
+        },
       ),
     );
   }

@@ -18,7 +18,7 @@ class ThemeProvider extends ChangeNotifier {
   int get commentFontSize => _commentFontSize;
 
   /// 长辈模式：全局大字体 + 简化界面
-  static const double elderTextScale = 1.3;
+  static const double elderTextScale = 1.4;
 
   bool _elderMode = false;
   bool get elderMode => _elderMode;
