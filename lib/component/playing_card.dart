@@ -31,6 +31,8 @@ class _PlayingCardState extends State<PlayingCard> {
         context,
         MaterialPageRoute(
           builder: (context) => const DetailScreen(),
+          // 底部滑入模态样式（类 Apple Music「播放中」页）；iOS 上该转场
+          // 不支持左缘手势返回，由 DetailScreen 自行实现下滑关闭手势。
           fullscreenDialog: true,
         ),
       );

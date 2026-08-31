@@ -7,11 +7,11 @@ import 'dart:math';
 import 'package:async/async.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/util/logger.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
-// import 'package:bmsc/util/logger.dart';
 
-// final _logger = LoggerUtils.getLogger('LazyAudioSource');
+final _logger = LoggerUtils.getLogger('LazyAudioSource');
 
 /// This is an experimental audio source that caches the audio while it is being
 /// downloaded and played. It is not supported on platforms that do not provide
@@ -27,6 +27,19 @@ class LazyAudioSource extends StreamAudioSource {
   final _requests = <_StreamingByteRangeRequest>[];
   final _downloadProgressSubject = BehaviorSubject<double>();
   bool _downloading = false;
+
+  /// 实际解析选中的音频流音质 id（B 站 dash.audio[].id），未解析前为 null。
+  int? qualityId;
+
+  /// 实验：iOS 上把未缓存内容以「直播流」形式喂给 AVPlayer（200 chunked，
+  /// 无 Content-Length/Content-Range）。AVPlayer 对 localhost 渐进式 MP4
+  /// 会等全量下载完才开播（实测 moov 前置、MIME 正确均无效），伪装成
+  /// 无界直播流可使其收到 moov 和片段后即开播。下载完成后由
+  /// AudioService 无缝替换为本地文件源，恢复完整时长与拖动能力。
+  static bool liveStreamExperimentEnabled = true;
+
+  static bool get _serveAsLiveStream =>
+      Platform.isIOS && liveStreamExperimentEnabled;
 
   /// Creates a [LockCachingAudioSource] to that provides [uri] to the player
   /// while simultaneously caching it to [file]. If no cache file is
@@ -50,6 +63,7 @@ class LazyAudioSource extends StreamAudioSource {
     return await _uriMemoizer.runOnce(() async {
       final service = await BilibiliService.instance;
       final audio = await service.getAudio(bvid, cid);
+      qualityId = audio?.firstOrNull?.id;
       return Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
     });
   }
@@ -77,14 +91,8 @@ class LazyAudioSource extends StreamAudioSource {
       throw Exception("Cannot clear cache while download is in progress");
     }
     _response = null;
-    final file = await localFile;
-    if (file.existsSync()) {
-      await file.delete();
-    }
-    final mimeFile = await _mimeFile;
-    if (await mimeFile.exists()) {
-      await mimeFile.delete();
-    }
+    // 主文件 + .mime + .part 一并删除
+    await DatabaseManager.deleteCacheFiles((await localFile).path);
     _progress = 0;
     _downloadProgressSubject.add(0.0);
   }
@@ -98,13 +106,90 @@ class LazyAudioSource extends StreamAudioSource {
   /// MIME type to an extension but we will need a complete dictionary.
   Future<File> get _mimeFile async => File('${(await localFile).path}.mime');
 
+  /// B 站音频响应常为 application/octet-stream（或缺失），Android 上
+  /// ExoPlayer 会探测格式，但 iOS AVPlayer 见 octet-stream 直接拒绝解码。
+  /// 按 URL 扩展名推断真实音频类型，兼容两端。
+  static String sniffMimeFromUri(Uri uri, [String fallback = 'audio/mpeg']) {
+    final path = uri.path.toLowerCase();
+    if (path.endsWith('.m4s') || path.endsWith('.m4a') ||
+        path.endsWith('.mp4')) {
+      return 'audio/mp4';
+    }
+    if (path.endsWith('.aac') || path.endsWith('.adts')) {
+      return 'audio/aac';
+    }
+    if (path.endsWith('.flac')) {
+      return 'audio/flac';
+    }
+    if (path.endsWith('.ogg') || path.endsWith('.oga')) {
+      return 'audio/ogg';
+    }
+    if (path.endsWith('.wav')) {
+      return 'audio/wav';
+    }
+    return fallback;
+  }
+
+  /// 按文件头魔数嗅探真实音频格式。B 站 CDN 的 URL 通常无扩展名且
+  /// Content-Type 为 application/octet-stream，只能按内容判断：
+  /// B 站音频实际是 fMP4（开头为 ftyp box）。若响应头被错标为
+  /// audio/mpeg，AVPlayer 会用 MP3 解析器扫全文件，拖到快下完才开播。
+  static String? sniffMimeFromBytes(List<int> header) {
+    if (header.length < 12) return null;
+    bool eq(int i, int c) => header[i] == c;
+    // ftyp box（MP4/M4A/m4s）：第 4-7 字节为 'ftyp'
+    if (eq(4, 0x66) && eq(5, 0x74) && eq(6, 0x79) && eq(7, 0x70)) {
+      return 'audio/mp4';
+    }
+    // 'ID3' 标签或 MP3 帧同步字（0xFFEx）
+    if (eq(0, 0x49) && eq(1, 0x44) && eq(2, 0x33)) return 'audio/mpeg';
+    if (eq(0, 0xFF) && (header[1] & 0xE0) == 0xE0) return 'audio/mpeg';
+    // 'OggS'
+    if (eq(0, 0x4F) && eq(1, 0x67) && eq(2, 0x67) && eq(3, 0x53)) {
+      return 'audio/ogg';
+    }
+    // 'fLaC'
+    if (eq(0, 0x66) && eq(1, 0x4C) && eq(2, 0x61) && eq(3, 0x43)) {
+      return 'audio/flac';
+    }
+    // 'RIFF'....'WAVE'
+    if (eq(0, 0x52) && eq(1, 0x49) && eq(2, 0x46) && eq(3, 0x46) &&
+        eq(8, 0x57) &&
+        eq(9, 0x41) &&
+        eq(10, 0x56) &&
+        eq(11, 0x45)) {
+      return 'audio/wav';
+    }
+    return null;
+  }
+
+  static String sanitizeMime(String mime, [String fallback = 'audio/mpeg']) {
+    if (mime == 'application/octet-stream') {
+      return fallback;
+    }
+    if (mime.isEmpty || !mime.contains('/')) {
+      return fallback;
+    }
+    return mime;
+  }
+
   Future<String> _readCachedMimeType() async {
+    // 内容魔数最权威：旧缓存的 .mime 可能是 octet-stream 或错误的
+    // audio/mpeg（实际内容为 fMP4）。
+    try {
+      final raf = await (await localFile).open();
+      final header = await raf.read(12);
+      await raf.close();
+      final sniffed = sniffMimeFromBytes(header);
+      if (sniffed != null) return sniffed;
+    } catch (_) {
+      // 文件不可读时回退到 .mime 记录
+    }
     final file = await _mimeFile;
     if (file.existsSync()) {
-      return (await _mimeFile).readAsString();
-    } else {
-      return 'audio/mpeg';
+      return sanitizeMime(await file.readAsString());
     }
+    return 'audio/mpeg';
   }
 
   /// Start downloading the whole audio file to the cache and fulfill byte-range
@@ -119,6 +204,8 @@ class LazyAudioSource extends StreamAudioSource {
   /// separate HTTP request is made to fulfill it while the download of the
   /// entire file continues in parallel.
   Future<HttpClientResponse> _fetch() async {
+    final sw = Stopwatch()..start();
+    _logger.info('[$bvid:$cid] fetch: start');
     _downloading = true;
     final partialCacheFile = await _partialCacheFile;
     final localFile = await this.localFile;
@@ -127,11 +214,14 @@ class LazyAudioSource extends StreamAudioSource {
         partialCacheFile.existsSync() ? partialCacheFile : localFile;
 
     var uri = await this.uri;
+    _logger.info('[$bvid:$cid] fetch: playurl resolved (${sw.elapsed})');
     final headers = (await BilibiliService.instance).headers;
 
     final httpClient = HttpClient();
     var httpRequest = await _getUrl(httpClient, uri, headers: headers);
     var response = await httpRequest.close();
+    _logger.info(
+        '[$bvid:$cid] fetch: CDN response ${response.statusCode} (${sw.elapsed})');
     // B 站 playurl 的 baseUrl/backup 均有有效期（TTL 几小时），过期后可能返回
     // 403（防盗链）或 404（URL 失效）。二者都需重新解析音频源重试，并对
     // backupUrl 兜底——否则「播放中切歌/缓存后播放」会直接 HTTP 错误失败。
@@ -179,12 +269,14 @@ class LazyAudioSource extends StreamAudioSource {
     final sink = (await _partialCacheFile).openWrite();
     final sourceLength =
         response.contentLength == -1 ? null : response.contentLength;
-    final mimeType = response.headers.contentType.toString();
+    final rawMimeType = response.headers.contentType.toString();
+    // iOS AVPlayer 不认 octet-stream：优先按 URL 扩展名推断；URL 无扩展名
+    // 时留空，待首个数据块到达后按文件头魔数嗅探（B 站 CDN URL 通常无
+    // 扩展名，实际内容为 fMP4）。
+    var mimeType = sanitizeMime(rawMimeType, sniffMimeFromUri(uri, ''));
     final acceptRanges = response.headers.value(HttpHeaders.acceptRangesHeader);
     final originSupportsRangeRequests =
         acceptRanges != null && acceptRanges != 'none';
-    final mimeFile = await _mimeFile;
-    await mimeFile.writeAsString(mimeType);
     final inProgressResponses = <_InProgressCacheResponse>[];
     late StreamSubscription<List<int>> subscription;
     var percentProgress = 0;
@@ -197,6 +289,15 @@ class LazyAudioSource extends StreamAudioSource {
 
     _progress = 0;
     subscription = response.listen((data) async {
+      if (_progress == 0) {
+        // 首个数据块：URL 嗅探落空时按内容魔数定格式
+        if (mimeType.isEmpty) {
+          mimeType = sniffMimeFromBytes(data) ?? 'audio/mpeg';
+        }
+        _logger.info(
+            '[$bvid:$cid] fetch: first chunk ${data.length}B (${sw.elapsed}), '
+            'mime=$mimeType, pendingRequests=${_requests.length}');
+      }
       _progress += data.length;
       final newPercentProgress = (sourceLength == null)
           ? 0
@@ -249,7 +350,10 @@ class LazyAudioSource extends StreamAudioSource {
           // which the client (AV or exo player) should know how to deal with.
         }
         final effectiveStart = start ?? 0;
-        final effectiveEnd = end ?? sourceLength;
+        // 直播流模式：始终向文件尾流式输出，但响应头不携带长度/偏移，
+        // 客户端（AVPlayer）按无界直播流处理
+        final effectiveEnd =
+            _serveAsLiveStream ? sourceLength : (end ?? sourceLength);
         Stream<List<int>> responseStream;
         if (effectiveEnd != null && effectiveEnd <= _progress) {
           responseStream =
@@ -265,15 +369,26 @@ class LazyAudioSource extends StreamAudioSource {
             cacheResponse.controller.stream,
           ]);
         }
-        request.complete(StreamAudioResponse(
-          rangeRequestsSupported: originSupportsRangeRequests,
-          sourceLength: start != null ? sourceLength : null,
-          contentLength:
-              effectiveEnd != null ? effectiveEnd - effectiveStart : null,
-          offset: start,
-          contentType: mimeType,
-          stream: responseStream.asBroadcastStream(),
-        ));
+        if (_serveAsLiveStream) {
+          request.complete(StreamAudioResponse(
+            rangeRequestsSupported: false,
+            sourceLength: null,
+            contentLength: null,
+            offset: null,
+            contentType: mimeType,
+            stream: responseStream.asBroadcastStream(),
+          ));
+        } else {
+          request.complete(StreamAudioResponse(
+            rangeRequestsSupported: originSupportsRangeRequests,
+            sourceLength: start != null ? sourceLength : null,
+            contentLength:
+                effectiveEnd != null ? effectiveEnd - effectiveStart : null,
+            offset: start,
+            contentType: mimeType,
+            stream: responseStream.asBroadcastStream(),
+          ));
+        }
       }
       subscription.resume();
       // Process any requests that start beyond the cache.
@@ -308,6 +423,7 @@ class LazyAudioSource extends StreamAudioSource {
         });
       }
     }, onDone: () async {
+      _logger.info('[$bvid:$cid] fetch: download complete (${sw.elapsed})');
       if (sourceLength == null) {
         updateProgress(100);
       }
@@ -317,6 +433,8 @@ class LazyAudioSource extends StreamAudioSource {
         }
       }
       (await _partialCacheFile).renameSync(localFile.path);
+      // 最终确定的 mime（可能来自内容嗅探）在下载完成后写入
+      await (await _mimeFile).writeAsString(mimeType);
       await subscription.cancel();
       httpClient.close();
       _downloading = false;
@@ -349,6 +467,7 @@ class LazyAudioSource extends StreamAudioSource {
 
   @override
   Future<StreamAudioResponse> request([int? start, int? end]) async {
+    _logger.info('[$bvid:$cid] proxy request: start=$start end=$end');
     final file = await localFile;
     if (file.existsSync()) {
       final sourceLength = file.lengthSync();

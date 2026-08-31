@@ -590,8 +590,16 @@ class DatabaseManager {
       }
 
       if (results.isNotEmpty) {
-        _logger.info('Found cached audio for bvid: $bvid, cid: $cid');
         final filePath = results.first['filePath'] as String;
+        // 缓存路径可能来自旧的安装（容器路径失效），存在性校验失败时
+        // 忽略缓存记录，让调用方回退到网络解析。
+        final file = File(filePath);
+        if (!file.existsSync()) {
+          _logger.warning(
+              'Cached audio file missing (path invalid): $filePath');
+          return null;
+        }
+        _logger.info('Found cached audio for bvid: $bvid, cid: $cid');
         final entities = await getEntities(bvid);
         final entity =
             entities.firstWhere((e) => e.bvid == bvid && e.cid == cid);
@@ -610,7 +618,6 @@ class DatabaseManager {
               'raw_title': entity.bvidTitle,
               'cached': true
             });
-        final file = File(filePath);
         return LazyAudioSource(bvid, cid, localFile: file, tag: tag);
       } else {
         _logger.info('No cached audio found for bvid: $bvid, cid: $cid');
@@ -624,14 +631,83 @@ class DatabaseManager {
 
   static Future<File> prepareFileForCaching(String bvid, int cid) async {
     String directory;
-    if (Platform.isLinux || Platform.isWindows) {
-      directory = (await getApplicationCacheDirectory()).path;
-    } else {
+    if (Platform.isAndroid) {
+      // Android 历史缓存都在 Documents，为兼容旧数据不迁移目录
       directory = (await getApplicationDocumentsDirectory()).path;
+    } else {
+      // iOS/macOS 遵循 Apple 存储规范：可重新下载的缓存放 Library/Caches，
+      // 不占 iCloud 备份，系统存储紧张时可自动清理（播放路径有存在性
+      // 校验兜底，被清理后自动回退网络解析）。Linux/Windows 本就如此。
+      directory = (await getApplicationCacheDirectory()).path;
     }
     final fileName = '$bvid-$cid.m4a';
     final filePath = join(directory, fileName);
     return File(filePath);
+  }
+
+  /// 返回当前不应被缓存清理删除的文件路径集合（如正在播放的缓存文件）。
+  /// 由 AudioService 注册，避免 database_manager 反向依赖 audio_service。
+  static Future<Set<String>> Function()? cacheFileGuard;
+
+  /// 删除缓存主文件及其伴生文件（.mime / .part），不存在的文件静默跳过。
+  static Future<void> deleteCacheFiles(String filePath) async {
+    for (final path in [filePath, '$filePath.mime', '$filePath.part']) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (e) {
+        _logger.warning('Failed to delete cache file: $path, error: $e');
+      }
+    }
+  }
+
+  /// 扫描缓存目录，删除无 DB 记录的孤儿文件：下载中断残留的 .part、
+  /// 主文件已删的 .mime，以及任何无记录的主文件，防止磁盘泄漏。
+  static Future<void> sweepOrphanCacheFiles() async {
+    try {
+      final db = await database;
+      final rows = await db.query(cacheTable, columns: ['filePath']);
+      final knownPaths = rows.map((r) => r['filePath'] as String).toSet();
+
+      final cacheFilePattern =
+          RegExp(r'^BV[^/\\]+-\d+\.m4a(\.(mime|part))?$');
+      // 10 分钟内修改的文件可能正在下载中，跳过避免误删
+      final recentThreshold =
+          DateTime.now().subtract(const Duration(minutes: 10));
+
+      final dirs = <String>{
+        (await getApplicationCacheDirectory()).path,
+        // 旧版本 iOS/Android 缓存目录，一并扫描
+        (await getApplicationDocumentsDirectory()).path,
+      };
+      for (final dirPath in dirs) {
+        final dir = Directory(dirPath);
+        if (!dir.existsSync()) continue;
+        await for (final entity in dir.list()) {
+          if (entity is! File) continue;
+          if (!cacheFilePattern.hasMatch(basename(entity.path))) continue;
+          final stat = await entity.stat();
+          if (stat.modified.isAfter(recentThreshold)) continue;
+          final mainPath = entity.path.endsWith('.mime') ||
+                  entity.path.endsWith('.part')
+              ? entity.path.substring(0, entity.path.lastIndexOf('.'))
+              : entity.path;
+          if (!knownPaths.contains(mainPath)) {
+            _logger.info('Removing orphan cache file: ${entity.path}');
+            try {
+              await entity.delete();
+            } catch (e) {
+              _logger.warning(
+                  'Failed to remove orphan cache file: ${entity.path}, $e');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      _logger.warning('sweepOrphanCacheFiles failed: $e');
+    }
   }
 
   static Future<void> saveCacheMetadata(String bvid, int cid, File file) async {
@@ -675,14 +751,23 @@ class DatabaseManager {
   static Future<int> getCacheTotalSize() async {
     try {
       final db = await database;
-      int totalSize = 0;
-
-      await db.transaction((txn) async {
-        final result = await txn
-            .rawQuery('SELECT SUM(fileSize) as total FROM $cacheTable');
-        totalSize = (result.first['total'] as int?) ?? 0;
-      });
-
+      final rows = await db.query(cacheTable,
+          columns: ['bvid', 'cid', 'filePath', 'fileSize']);
+      var totalSize = 0;
+      for (final row in rows) {
+        final filePath = row['filePath'] as String;
+        if (await File(filePath).exists()) {
+          totalSize += (row['fileSize'] as int?) ?? 0;
+        } else {
+          // 文件已被系统清理（如 iOS purge Caches）或路径失效，
+          // 顺手清除失效记录及伴生文件，保持统计与界面一致
+          _logger.info('Pruning stale cache record: $filePath');
+          await db.delete(cacheTable,
+              where: 'bvid = ? AND cid = ?',
+              whereArgs: [row['bvid'], row['cid']]);
+          await deleteCacheFiles(filePath);
+        }
+      }
       return totalSize;
     } catch (e, stackTrace) {
       _logger.severe('Failed to get cache total size', e, stackTrace);
@@ -737,9 +822,16 @@ class DatabaseManager {
       files.sort(
           (a, b) => (a['score'] as double).compareTo(b['score'] as double));
 
+      // 受保护路径：刚下载完的文件 + 正在播放的缓存文件（iOS 经本地代理
+      // 流式读文件，删除会立即中断播放）
+      final protectedPaths = <String>{
+        if (ignoreFile != null) ignoreFile.path,
+        ...?await cacheFileGuard?.call(),
+      };
+
       int removedSize = 0;
       for (var file in files) {
-        if (ignoreFile != null && file['filePath'] == ignoreFile.path) {
+        if (protectedPaths.contains(file['filePath'])) {
           continue;
         }
         if (currentSize - removedSize <= maxCacheSize) {
@@ -747,11 +839,8 @@ class DatabaseManager {
         }
 
         final filePath = file['filePath'] as String;
-        final fileObj = File(filePath);
         try {
-          if (await fileObj.exists()) {
-            await fileObj.delete();
-          }
+          await deleteCacheFiles(filePath);
 
           await txn.delete(
             cacheTable,
@@ -770,20 +859,46 @@ class DatabaseManager {
     });
   }
 
+  /// 删除单个分 P 的缓存（文件 + DB 记录）。
+  /// [force] 为 true 时跳过播放中保护（用于播放中切换音质的场景，
+  /// 调用方需保证已暂停并即将替换播放源）。
+  static Future<void> removeCacheEntry(String bvid, int cid,
+      {bool force = false}) async {
+    final db = await database;
+    final rows = await db.query(cacheTable,
+        where: 'bvid = ? AND cid = ?', whereArgs: [bvid, cid]);
+    final protectedPaths =
+        force ? const <String>{} : <String>{...?await cacheFileGuard?.call()};
+    for (final row in rows) {
+      final filePath = row['filePath'] as String;
+      if (protectedPaths.contains(filePath)) {
+        _logger.warning(
+            'Skip removing cache file in use (playing): $filePath');
+        continue;
+      }
+      await deleteCacheFiles(filePath);
+      await db.delete(cacheTable,
+          where: 'bvid = ? AND cid = ?', whereArgs: [bvid, cid]);
+    }
+  }
+
   static Future<void> removeCache(String bvid) async {
     final db = await database;
-    List<Map<String, dynamic>> files = [];
-    await db.transaction((txn) async {
-      files = await txn.query(cacheTable, where: 'bvid = ?', whereArgs: [bvid]);
-      await txn.delete(cacheTable, where: 'bvid = ?', whereArgs: [bvid]);
-    });
+    final files = await db.query(cacheTable, where: 'bvid = ?', whereArgs: [bvid]);
+    final protectedPaths = <String>{...?await cacheFileGuard?.call()};
     for (final fileData in files) {
-      _logger.info("Removing cache file for bvid $bvid");
-      final filePath = fileData['filePath'];
-      final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
+      final filePath = fileData['filePath'] as String;
+      if (protectedPaths.contains(filePath)) {
+        _logger.warning(
+            'Skip removing cache file in use (playing): $filePath');
+        continue;
       }
+      _logger.info("Removing cache file for bvid $bvid");
+      await deleteCacheFiles(filePath);
+      // 仅删除已成功清理文件的记录，受保护文件保留记录以便后续清理
+      await db.delete(cacheTable,
+          where: 'bvid = ? AND cid = ?',
+          whereArgs: [fileData['bvid'], fileData['cid']]);
     }
   }
 

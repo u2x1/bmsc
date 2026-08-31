@@ -46,6 +46,22 @@ class LoggerUtils {
   static List<LogRecord> get logs => _logs;
   static Stream<LogRecord> get logStream => _logStream.stream;
 
+  /// 将日志格式化为纯文本（按时间正序），可传入子集（如选中范围）。
+  static String formatLogs([Iterable<LogRecord>? records]) {
+    final buffer = StringBuffer();
+    for (final record in records ?? _logs) {
+      buffer.writeln(
+          '${record.time} [${record.level.name}] [${record.loggerName}] ${record.message}');
+      if (record.error != null) {
+        buffer.writeln('Error: ${record.error}');
+      }
+      if (record.stackTrace != null) {
+        buffer.writeln('Stack trace:\n${record.stackTrace}');
+      }
+    }
+    return buffer.toString();
+  }
+
   static void clear() {
     _logs.clear();
   }

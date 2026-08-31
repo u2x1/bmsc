@@ -20,7 +20,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _hiResFirst = false;
+  int _audioQuality = SharedPreferencesService.kAudioQualityAuto;
   bool _reactToInterruption = true;
   bool _historyReported = true;
   int _reportHistoryInterval = 10;
@@ -37,7 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _loadPrefs() async {
-    final hiResFirst = await SharedPreferencesService.getHiResFirst();
+    final audioQuality = await SharedPreferencesService.getAudioQuality();
     final reactToInterruption =
         await SharedPreferencesService.getReactToInterruption();
     final historyReported = await SharedPreferencesService.getHistoryReported();
@@ -54,7 +54,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         await SharedPreferencesService.getReadFromClipboard();
     if (mounted) {
       setState(() {
-        _hiResFirst = hiResFirst;
+        _audioQuality = audioQuality;
         _reactToInterruption = reactToInterruption;
         _historyReported = historyReported;
         _reportHistoryInterval = reportHistoryInterval;
@@ -77,6 +77,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
           fontWeight: FontWeight.bold,
           color: Theme.of(context).colorScheme.primary,
         ),
+      ),
+    );
+  }
+
+  String _audioQualityLabel(int quality) =>
+      SharedPreferencesService.audioQualityLabels[quality] ??
+      SharedPreferencesService
+          .audioQualityLabels[SharedPreferencesService.kAudioQualityAuto]!;
+
+  void _showAudioQualityPicker() {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => SimpleDialog(
+        title: const Text('播放音质'),
+        children: [
+          RadioGroup<int>(
+            groupValue: _audioQuality,
+            onChanged: (value) async {
+              if (value == null) return;
+              await SharedPreferencesService.setAudioQuality(value);
+              setState(() {
+                _audioQuality = value;
+              });
+              if (dialogContext.mounted) {
+                Navigator.of(dialogContext).pop();
+              }
+            },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: SharedPreferencesService.audioQualityLabels.entries
+                  .map((entry) => RadioListTile<int>(
+                        title: Text(entry.value),
+                        value: entry.key,
+                      ))
+                  .toList(),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -290,17 +328,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildThemeModeTile(),
           ] else ...[
             _buildSectionTitle('音质'),
-            SwitchListTile(
-              title: const Text('高音质'),
-              secondary: const Icon(Icons.music_note),
-              subtitle: const Text('优先选择 Hi-Res 无损音质'),
-              value: _hiResFirst,
-              onChanged: (bool value) async {
-                await SharedPreferencesService.setHiResFirst(value);
-                setState(() {
-                  _hiResFirst = value;
-                });
-              },
+            ListTile(
+              leading: const Icon(Icons.music_note),
+              title: const Text('播放音质'),
+              subtitle: Text(_audioQualityLabel(_audioQuality)),
+              onTap: _showAudioQualityPicker,
             ),
             _buildSectionTitle('播放'),
             SwitchListTile(

@@ -1,0 +1,35 @@
+PODS:
+  - Flutter (1.0.0)
+  - gt3_flutter_plugin (0.0.9):
+    - Flutter
+    - GT3Captcha-iOS
+  - GT3Captcha-iOS (0.15.9)
+  - permission_handler_apple (9.3.0):
+    - Flutter
+
+DEPENDENCIES:
+  - Flutter (from `Flutter`)
+  - gt3_flutter_plugin (from `.symlinks/plugins/gt3_flutter_plugin/ios`)
+  - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
+
+SPEC REPOS:
+  trunk:
+    - GT3Captcha-iOS
+
+EXTERNAL SOURCES:
+  Flutter:
+    :path: Flutter
+  gt3_flutter_plugin:
+    :path: ".symlinks/plugins/gt3_flutter_plugin/ios"
+  permission_handler_apple:
+    :path: ".symlinks/plugins/permission_handler_apple/ios"
+
+SPEC CHECKSUMS:
+  Flutter: 71a624a5bc0c04062bf19101d501e466baf2fb47
+  gt3_flutter_plugin: 37090e5fa66ff2a52939eb9d208fc36fa49d36e5
+  GT3Captcha-iOS: aeb6fed2e8594099821430a89208679e5a55b740
+  permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
+
+PODFILE CHECKSUM: 53a6aebc29ccee84c41f92f409fc20cd4ca011f1
+
+COCOAPODS: 1.17.0

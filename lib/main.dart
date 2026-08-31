@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:bmsc/component/track_tile.dart';
+import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/screen/dynamic_screen.dart';
 import 'package:bmsc/screen/fav_screen.dart';
@@ -31,8 +33,8 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await LoggerUtils.init();
 
-  if (Platform.isAndroid) {
-    _logger.info('Android version: ${Platform.operatingSystemVersion}');
+  if (Platform.isAndroid || Platform.isIOS) {
+    _logger.info('audio platform: ${Platform.operatingSystem}');
 
     await JustAudioBackground.init(
       androidNotificationChannelId: 'org.u2x1.bmsc.channel.audio',
@@ -46,6 +48,9 @@ Future<void> main() async {
   }
 
   await ThemeProvider.instance.init();
+  // 后台扫描并删除无 DB 记录的孤儿缓存文件（.part 残留、失效 .mime 等），
+  // 不阻塞启动。
+  unawaited(DatabaseManager.sweepOrphanCacheFiles());
   if (!kDebugMode) _setupErrorHandlers();
   runApp(const MyApp());
 }

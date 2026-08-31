@@ -111,16 +111,23 @@ class _CacheScreenState extends State<CacheScreen> {
   Future<int> deleteCaches(List<Map<String, dynamic>> fileDatas) async {
     final itemsToRemove = <Map<String, dynamic>>[];
     var failedCount = 0;
+    // 正在播放的缓存文件受保护（iOS 经本地代理流式读文件，删除会中断播放）
+    final protectedPaths = <String>{
+      ...?await DatabaseManager.cacheFileGuard?.call()
+    };
 
     for (var fileData in fileDatas) {
       final bvid = fileData['bvid'];
       final cid = fileData['cid'];
+      final filePath = fileData['filePath'] as String;
+      if (protectedPaths.contains(filePath)) {
+        failedCount++;
+        _logger.warning('Skip deleting cache in use (playing): $filePath');
+        continue;
+      }
       try {
-        final filePath = fileData['filePath'];
-        final file = File(filePath);
-        if (await file.exists()) {
-          await file.delete();
-        }
+        // 主文件 + .mime + .part 伴生文件一并删除
+        await DatabaseManager.deleteCacheFiles(filePath);
 
         final db = await DatabaseManager.database;
         await db.delete(

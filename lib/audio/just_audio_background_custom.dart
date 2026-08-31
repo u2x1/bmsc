@@ -608,6 +608,11 @@ class _PlayerAudioHandler extends BaseAudioHandler
 
   void _updateShuffleIndices() {
     _shuffleIndices = _source?.shuffleIndices ?? [];
+    // playlist 动态修改期间 shuffleOrder 可能比 sequence 长，截断保证
+    // _effectiveIndicesInv 等下游计算不越界。
+    if (_shuffleIndices.length > sequence.length) {
+      _shuffleIndices = _shuffleIndices.sublist(0, sequence.length);
+    }
     _effectiveIndices = _shuffleMode != AudioServiceShuffleMode.none
         ? _shuffleIndices
         : List.generate(sequence.length, (i) => i);
@@ -943,6 +948,12 @@ extension AudioSourceExtension on AudioSourceMessage {
       }
       final indices = <int>[];
       for (final index in self.shuffleOrder) {
+        if (index < 0 || index >= childIndicesList.length) {
+          // playlist 动态修改（clear/insertAll/removeRange）期间
+          // shuffleOrder 可能暂时与 children 数量不同步，越界的索引
+          // 直接跳过，避免 RangeError 破坏播放流程。
+          continue;
+        }
         indices.addAll(childIndicesList[index]);
       }
       return indices;

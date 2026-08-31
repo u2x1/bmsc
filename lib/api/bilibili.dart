@@ -426,8 +426,26 @@ class BilibiliAPI {
         callback: (data) => VidResult.fromJson(data));
   }
 
+  /// 按音质偏好排序候选音频流：偏好音质排首位（LazyAudioSource 取 first 播放），
+  /// 其余保持 API 返回顺序作为回退（_fetch 重试会遍历全部候选）。
+  /// preferredId 为 0（自动）时 Hi-Res（若可用）优先，其次按 API 顺序。
+  static List<Audio> _orderAudioByQuality(Dash dash, int preferredId) {
+    final candidates = <Audio>[
+      if (dash.flac?.audio != null) dash.flac!.audio!,
+      ...dash.audio,
+    ];
+    if (preferredId != SharedPreferencesService.kAudioQualityAuto) {
+      final index = candidates.indexWhere((a) => a.id == preferredId);
+      if (index > 0) {
+        final preferred = candidates.removeAt(index);
+        candidates.insert(0, preferred);
+      }
+    }
+    return candidates;
+  }
+
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
-    final hires = await SharedPreferencesService.getHiResFirst();
+    final quality = await SharedPreferencesService.getAudioQuality();
     final params = await crypto.encodeParams({
       'bvid': bvid,
       'cid': cid,
@@ -436,14 +454,9 @@ class BilibiliAPI {
       'fourk': '1',
     });
     if (params == null) return null;
-    return _callAPI(apiAudioUrl, queryParameters: params, callback: (data) {
-      final dash = TrackResult.fromJson(data).dash;
-      if (hires && dash.flac?.audio != null) {
-        return [dash.flac!.audio!] + dash.audio;
-      } else {
-        return dash.audio;
-      }
-    });
+    return _callAPI(apiAudioUrl, queryParameters: params,
+        callback: (data) =>
+            _orderAudioByQuality(TrackResult.fromJson(data).dash, quality));
   }
 
   /// App 端 playurl（appkey 签名 + access_key，对齐 BiliPai）。
@@ -451,13 +464,17 @@ class BilibiliAPI {
   Future<List<Audio>?> getAudioApp(String bvid, int cid,
       {String? accessToken}) async {
     if (accessToken == null || accessToken.isEmpty) return null;
-    final hires = await SharedPreferencesService.getHiResFirst();
+    final quality = await SharedPreferencesService.getAudioQuality();
     final usesTv = await SharedPreferencesService.getAccessTokenPlatform() ==
         'tv';
     final params = <String, String>{
       'bvid': bvid,
       'cid': cid.toString(),
-      'qn': hires ? '127' : '64',
+      // qn=127 才会返回 Hi-Res 流；指定低档位音质时无需请求
+      'qn': (quality == SharedPreferencesService.kAudioQualityAuto ||
+              quality == SharedPreferencesService.kAudioQualityHiRes)
+          ? '127'
+          : '64',
       // fnval=16（MP4 基础格式，兼容 TV/Android 两组 appkey 签名）
       // 注意：BiliPai 视频场景的 20432(Web DASH + APP-only HDR) 在
       // App 端 playurl 会返回 -400，音频场景用 16 即可拿到 DASH audio
@@ -485,11 +502,8 @@ class BilibiliAPI {
         return null;
       }
       // 与 web 版一致：TrackResult 解析的是 data 子对象（非整个响应体）
-      final dash = TrackResult.fromJson(body['data']).dash;
-      if (hires && dash.flac?.audio != null) {
-        return [dash.flac!.audio!] + dash.audio;
-      }
-      return dash.audio;
+      return _orderAudioByQuality(
+          TrackResult.fromJson(body['data']).dash, quality);
     } catch (e) {
       _logger.severe('getAudioApp error: $e');
       return null;

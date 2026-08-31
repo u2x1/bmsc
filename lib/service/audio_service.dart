@@ -1,17 +1,41 @@
+import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/meta.dart';
+import 'package:bmsc/model/track.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
+import 'package:bmsc/util/silent_audio.dart';
 import 'package:rxdart/rxdart.dart';
-import 'dart:async';
 
 final _logger = LoggerUtils.getLogger('AudioService');
+
+/// 一个可用音质档位及其存储占用。
+class AudioQualityInfo {
+  final int id;
+  final String label;
+
+  /// 该档位音频文件的精确大小（字节），通过 Range 请求读取；
+  /// 读取失败为 null。
+  final int? sizeBytes;
+
+  /// 是否为当前播放流实际使用的音质。
+  final bool isCurrent;
+
+  const AudioQualityInfo({
+    required this.id,
+    required this.label,
+    required this.sizeBytes,
+    required this.isCurrent,
+  });
+}
 
 class AudioService {
   static final instance = _init();
@@ -21,7 +45,20 @@ class AudioService {
     useLazyPreparation: true,
     children: [],
   );
-  final player = AudioPlayer(handleInterruptions: false);
+  final player = AudioPlayer(
+    handleInterruptions: false,
+    audioLoadConfiguration: AudioLoadConfiguration(
+      darwinLoadControl: DarwinLoadControl(
+        // localhost 代理带宽被 AVPlayer 估计为近乎无限，默认策略会尝试缓冲
+        // 整个文件才开播（LazyAudioSource 无法边下边播）。限制前向缓冲为
+        // 3 秒，playbackLikelyToMinimizeStalling 提前满足，缓冲约 3 秒即开播；
+        // 同时关闭自动等待避免多曲队列预加载互相阻塞。音频码率低
+        // （192K 时 3s ≈ 72KB），本地代理 + CDN 补缓冲很快，欠载风险小。
+        automaticallyWaitsToMinimizeStalling: false,
+        preferredForwardBufferDuration: const Duration(seconds: 3),
+      ),
+    ),
+  );
   late AudioSession session;
   Timer? _historyReportTimer;
   Timer? _playPositionTimer;
@@ -55,16 +92,41 @@ class AudioService {
       if (restored != null) {
         await x.playlist.addAll(restored.$1);
       }
-      await x.player.setAudioSource(x.playlist);
+      // iOS 上对空 playlist 调 setAudioSource(preload: true) 会因原生端不再
+      // 广播 ProcessingState.ready 而永久挂起（just_audio 0.10.5 iOS bug）。
+      // 但完全不调用则 playlist 不会 attach 到 player，后续 addAll 不会传播、
+      // play() 的 completer 永不完成，首次播放直接卡死。因此空列表时以
+      // preload: false 挂载：不触发原生 load，又保证 playlist 修改正常传播。
+      await x.player.setAudioSource(x.playlist,
+          preload: x.playlist.children.isNotEmpty);
       final position = await SharedPreferencesService.getPlayPosition();
       if (restored != null && restored.$2 < x.playlist.length) {
-        await x.player.seek(null, index: restored.$2);
-        // 等待播放器就绪后再恢复进度，最多兜底 3 秒
-        await x.player.processingStateStream
-            .firstWhere((s) => s == ProcessingState.ready)
-            .timeout(const Duration(seconds: 3),
-                onTimeout: () => ProcessingState.ready);
-        await x.player.seek(Duration(seconds: position));
+        // 以下 seek 在 iOS 上曾因 AVPlayer 等待流数据而挂起，现已有
+        // 兜底超时保护：恢复失败只记录警告，不阻塞初始化。
+        try {
+          await x.player
+              .seek(null, index: restored.$2)
+              .timeout(const Duration(seconds: 2));
+        } catch (e) {
+          _logger.warning('AudioService._init: seek index failed, skip restore');
+        }
+        // 等待播放器就绪后再恢复进度。iOS 上曾因 AVPlayer 等待流数据而
+        // 挂起，缩短兜底为 1 秒；Android 保留 3 秒避免慢网络下频繁超时。
+        try {
+          await x.player.processingStateStream
+              .firstWhere((s) => s == ProcessingState.ready)
+              .timeout(Duration(seconds: Platform.isIOS ? 1 : 3),
+                  onTimeout: () => ProcessingState.ready);
+        } catch (e) {
+          _logger.warning('AudioService._init: wait ready failed');
+        }
+        try {
+          await x.player
+              .seek(Duration(seconds: position))
+              .timeout(const Duration(seconds: 2));
+        } catch (e) {
+          _logger.warning('AudioService._init: seek position failed');
+        }
       }
       await x.restorePlayMode();
 
@@ -86,14 +148,148 @@ class AudioService {
     } catch (e) {
       _logger.severe('Failed to restore playlist', e);
     }
-    x.session = await AudioSession.instance;
-    await x.session.configure(const AudioSessionConfiguration.music());
-    await x.hookEvents();
+    try {
+      x.session = await AudioSession.instance;
+      await x.session.configure(const AudioSessionConfiguration.music());
+      // 注：automaticallyWaitsToMinimizeStalling / preferredForwardBufferDuration
+      // 已在 AudioPlayer 构造时通过 darwinLoadControl 配置（见 player 定义）。
+      await x.hookEvents();
+    } catch (e) {
+      _logger.severe('AudioService._init: session setup failed', e);
+    }
+    // 注册缓存清理保护：正在播放的本地缓存文件不被删除（iOS 经本地代理
+    // 流式读文件，删除会立即中断播放）
+    DatabaseManager.cacheFileGuard = () async {
+      final source = x.player.sequenceState.currentSource;
+      if (source is LazyAudioSource && source.isLocal) {
+        return {(await source.localFile).path};
+      }
+      return <String>{};
+    };
     return x;
   }
 
-  UriAudioSource getDummyAudioSource(Meta x) {
-    final silenceUri = Uri(scheme: 'asset', path: '/assets/silent.m4a');
+  /// 通过 `Range: bytes=0-0` 请求读取 Content-Range 获得音频文件的
+  /// 精确大小（字节）。失败返回 null。
+  Future<int?> _fetchExactSize(Uri url) async {
+    final client = HttpClient();
+    try {
+      final headers = (await BilibiliService.instance).headers;
+      final request = await client.getUrl(url);
+      headers?.forEach(request.headers.set);
+      request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
+      final response =
+          await request.close().timeout(const Duration(seconds: 5));
+      int? total;
+      if (response.statusCode == HttpStatus.partialContent) {
+        // Content-Range: bytes 0-0/12345678
+        final contentRange =
+            response.headers.value(HttpHeaders.contentRangeHeader);
+        if (contentRange != null && contentRange.contains('/')) {
+          total = int.tryParse(contentRange.split('/').last);
+        }
+      } else if (response.statusCode == HttpStatus.ok &&
+          response.contentLength > 0) {
+        total = response.contentLength;
+      }
+      await response.drain();
+      return total;
+    } catch (e) {
+      _logger.warning('fetch exact audio size failed: $e');
+      return null;
+    } finally {
+      client.close();
+    }
+  }
+
+  /// 当前曲目的可用音质列表（含每档精确存储占用，读取失败则该档无大小）。
+  /// 返回 null 表示当前无有效播放曲目或仍为 dummy 源（真实源未加载）。
+  Future<List<AudioQualityInfo>?> getCurrentTrackQualities() async {
+    final source = player.sequenceState.currentSource;
+    final tag = source?.tag;
+    final extras = tag?.extras;
+    if (tag == null || extras == null || extras['dummy'] == true) return null;
+    final bvid = extras['bvid'];
+    final cid = extras['cid'];
+    if (bvid == null || cid == null) return null;
+    final audios = await (await BilibiliService.instance).getAudio(bvid, cid);
+    if (audios == null || audios.isEmpty) return null;
+    final currentId = source is LazyAudioSource ? source.qualityId : null;
+    final seen = <int>{};
+    final uniqueAudios = [
+      for (final Audio a in audios)
+        if (seen.add(a.id)) a,
+    ];
+    // 并发读取各档位精确大小
+    final sizes = await Future.wait(uniqueAudios.map(
+        (a) => a.baseUrl.isNotEmpty ? _fetchExactSize(Uri.parse(a.baseUrl)) : Future<int?>.value()));
+    final infos = [
+      for (var i = 0; i < uniqueAudios.length; i++)
+        AudioQualityInfo(
+          id: uniqueAudios[i].id,
+          label: SharedPreferencesService.audioQualityLabels[uniqueAudios[i].id] ??
+              '未知音质 (${uniqueAudios[i].id})',
+          sizeBytes: sizes[i],
+          isCurrent: uniqueAudios[i].id == currentId,
+        ),
+    ];
+    // 按大小降序，未知大小排最后
+    infos.sort((a, b) =>
+        (b.sizeBytes ?? -1).compareTo(a.sizeBytes ?? -1));
+    return infos;
+  }
+
+  /// 切换正在播放曲目的音质：更新全局偏好并立即重建当前播放源，
+  /// 保持播放位置与播放状态。返回是否切换成功。
+  Future<bool> switchCurrentTrackQuality(int qualityId) async {
+    final index = player.currentIndex;
+    final source = player.sequenceState.currentSource;
+    final tag = source?.tag;
+    final extras = tag?.extras;
+    if (index == null || tag == null || extras == null) return false;
+    if (extras['dummy'] == true) return false;
+    final bvid = extras['bvid'];
+    final cid = extras['cid'];
+    if (bvid == null || cid == null) return false;
+
+    await SharedPreferencesService.setAudioQuality(qualityId);
+
+    final position = player.position;
+    final wasPlaying = player.playing;
+    await player.pause();
+
+    // 删除旧音质缓存（同一路径将被新源复用），强制走网络按新偏好解析
+    await DatabaseManager.removeCacheEntry(bvid, cid, force: true);
+    final newSource = LazyAudioSource(
+      bvid,
+      cid,
+      localFile: null,
+      tag: MediaItem(
+        id: tag.id,
+        title: tag.title,
+        artist: tag.artist,
+        artUri: tag.artUri,
+        duration: tag.duration,
+        extras: {...extras, 'cached': false},
+      ),
+    );
+    _hijacking = true;
+    try {
+      await doAndSavePlaylist(() async {
+        await playlist.insertAll(index + 1, [newSource]);
+        await playlist.removeAt(index);
+      });
+    } finally {
+      _hijacking = false;
+    }
+    await player.seek(position, index: index);
+    if (wasPlaying) await player.play();
+    _logger.info('Switched quality to $qualityId for $bvid:$cid');
+    return true;
+  }
+
+  Future<UriAudioSource> getDummyAudioSource(Meta x) async {
+    final silenceUri = await resolveSilentAudioUri();
     return AudioSource.uri(silenceUri,
         tag: MediaItem(
             id: x.bvid,
@@ -189,6 +385,19 @@ class AudioService {
         final prefs = await SharedPreferencesService.instance;
         await prefs.setInt('currentIndex', index);
         await _hijackDummySource(index: index);
+      }
+    });
+
+    // iOS 直播流实验：未缓存源以直播流形式播放时 duration/seek 不可用，
+    // 下载完成后无缝替换为本地文件源，恢复完整能力（见
+    // LazyAudioSource.liveStreamExperimentEnabled）。
+    player.sequenceStateStream.listen((state) {
+      final source = state.currentSource;
+      if (source is LazyAudioSource &&
+          !source.isLocal &&
+          LazyAudioSource.liveStreamExperimentEnabled &&
+          Platform.isIOS) {
+        _swapToCachedFileWhenDone(source);
       }
     });
 
@@ -377,6 +586,54 @@ class AudioService {
   // 获取当前定时器剩余时间（秒）
   int? get sleepTimerRemainingSeconds => _sleepTimerSubject.valueOrNull;
 
+  LazyAudioSource? _swapWatchingSource;
+
+  /// 监听未缓存源（iOS 直播流模式）的下载进度，下载完成时若它仍是当前
+  /// 播放源，则在原位置无缝替换为本地文件源（恢复 duration/拖动能力）。
+  void _swapToCachedFileWhenDone(LazyAudioSource source) {
+    if (_swapWatchingSource == source) return;
+    _swapWatchingSource = source;
+    source.downloadProgressStream
+        .firstWhere((p) => p >= 1.0)
+        .then((_) async {
+      if (_swapWatchingSource == source) _swapWatchingSource = null;
+      if (player.sequenceState.currentSource != source) return;
+      final index = player.currentIndex;
+      if (index == null || index >= playlist.length) return;
+      final file = await source.localFile;
+      if (!file.existsSync()) return;
+      final tag = source.tag as MediaItem;
+      final position = player.position;
+      final wasPlaying = player.playing;
+      _logger.info(
+          'Download finished, swapping to local file source at $position');
+      final cachedSource = AudioSource.uri(
+        Uri.file(file.path),
+        tag: MediaItem(
+          id: tag.id,
+          title: tag.title,
+          artist: tag.artist,
+          artUri: tag.artUri,
+          duration: tag.duration,
+          extras: {...?tag.extras, 'cached': true},
+        ),
+      );
+      _hijacking = true;
+      try {
+        await doAndSavePlaylist(() async {
+          await playlist.insertAll(index + 1, [cachedSource]);
+          await playlist.removeAt(index);
+        });
+      } finally {
+        _hijacking = false;
+      }
+      await player.seek(position, index: index);
+      if (wasPlaying) await player.play();
+    }).catchError((_) {
+      // 下载失败/中断：不做替换，直播流自然结束
+    });
+  }
+
   Future<void> _hijackDummySource({int? index}) async {
     if (_hijacking) {
       return;
@@ -486,7 +743,10 @@ class AudioService {
       return;
     }
     final metas = await DatabaseManager.getMetas(bvids);
-    final srcs = metas.map(getDummyAudioSource).toList();
+    final srcs = <UriAudioSource>[];
+    for (final meta in metas) {
+      srcs.add(await getDummyAudioSource(meta));
+    }
     await player.pause();
     _hijacking = true;
     await doAndSavePlaylist(() async {
@@ -497,7 +757,6 @@ class AudioService {
     _hijackDummySource(index: index);
     await player.seek(Duration.zero, index: index);
     await player.play();
-    _logger.info('playByBvids done');
   }
 
   Future<void> playLocalAudio(String bvid, int cid) async {

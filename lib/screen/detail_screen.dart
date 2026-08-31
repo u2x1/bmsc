@@ -33,7 +33,8 @@ class DetailScreen extends StatefulWidget {
   State<StatefulWidget> createState() => _DetailScreenState();
 }
 
-class _DetailScreenState extends State<DetailScreen> {
+class _DetailScreenState extends State<DetailScreen>
+    with SingleTickerProviderStateMixin {
   bool? _isFavorite;
   String? _currentBvid;
   bool _showSubtitles = false;
@@ -138,21 +139,79 @@ class _DetailScreenState extends State<DetailScreen> {
     return diagonal < 900 || screenSize.shortestSide < 360;
   }
 
+  // ---- 下滑关闭手势 ----
+  // iOS 上 fullscreenDialog 转场不支持系统手势返回，模拟 Apple Music
+  // 「播放中」页的下滑关闭：拖拽实时下移页面，释放时超过阈值或快速下滑
+  // 则 pop（fullscreenDialog 反向转场本身即下滑退出，视觉连贯），否则回弹。
+  double _dismissDragOffset = 0;
+  AnimationController? _dismissAnimController;
+
+  void _onDismissDragStart(DragStartDetails details) {
+    _dismissAnimController?.stop();
+    _dismissAnimController?.dispose();
+    _dismissAnimController = null;
+  }
+
+  void _onDismissDragUpdate(DragUpdateDetails details) {
+    final offset = _dismissDragOffset + details.delta.dy;
+    if (offset < 0 && _dismissDragOffset == 0) return;
+    setState(() {
+      _dismissDragOffset = offset.clamp(0.0, double.infinity);
+    });
+  }
+
+  void _onDismissDragEnd(DragEndDetails details) {
+    if (_dismissDragOffset == 0) return;
+    final screenHeight = MediaQuery.of(context).size.height;
+    final velocity = details.velocity.pixelsPerSecond.dy;
+    if (_dismissDragOffset > screenHeight * 0.25 || velocity > 700) {
+      // 保持当前偏移直接 pop：反向转场从当前位置继续下滑退出
+      Navigator.of(context).pop();
+    } else {
+      final controller = AnimationController(
+        vsync: this,
+        duration: const Duration(milliseconds: 200),
+      );
+      _dismissAnimController = controller;
+      final animation =
+          Tween<double>(begin: _dismissDragOffset, end: 0).animate(
+              CurvedAnimation(parent: controller, curve: Curves.easeOut));
+      animation.addListener(() {
+        setState(() {
+          _dismissDragOffset = animation.value;
+        });
+      });
+      controller.forward().whenComplete(() {
+        if (_dismissAnimController == controller) {
+          _dismissAnimController = null;
+        }
+        controller.dispose();
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
 
-    return Scaffold(
-      resizeToAvoidBottomInset: false,
-      appBar: AppBar(
-        title: const Text('正在播放'),
-        forceMaterialTransparency: true,
-        actions: [
-          _buildShareButton(),
-        ],
-      ),
-      body: _isAudioServiceLoading
+    return GestureDetector(
+      onVerticalDragStart: _onDismissDragStart,
+      onVerticalDragUpdate: _onDismissDragUpdate,
+      onVerticalDragEnd: _onDismissDragEnd,
+      child: Transform.translate(
+        offset: Offset(0, _dismissDragOffset),
+        child: Scaffold(
+          resizeToAvoidBottomInset: false,
+          appBar: AppBar(
+            title: const Text('正在播放'),
+            forceMaterialTransparency: true,
+            actions: [
+              _buildQualityButton(),
+              _buildShareButton(),
+            ],
+          ),
+          body: _isAudioServiceLoading
           ? const Center(child: CircularProgressIndicator())
           : SafeArea(
               child: Center(
@@ -166,6 +225,90 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
             ),
+        ),
+      ),
+    );
+  }
+
+  static String _formatSize(int bytes) {
+    if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    }
+    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
+  }
+
+  Widget _buildQualityButton() {
+    if (_isAudioServiceLoading || ThemeProvider.instance.elderMode) {
+      return const SizedBox.shrink();
+    }
+
+    final src = _currentSequenceState?.currentSource;
+    return IconButton(
+      icon: const Icon(Icons.music_note),
+      tooltip: '切换音质',
+      onPressed: src == null ? null : _showQualitySheet,
+    );
+  }
+
+  /// 展示当前曲目的可用音质列表（含每档精确存储占用，按大小降序），
+  /// 点击立即切换。
+  Future<void> _showQualitySheet() async {
+    final service = _audioService;
+    if (service == null || !mounted) return;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      builder: (sheetContext) => SafeArea(
+        child: FutureBuilder<List<AudioQualityInfo>?>(
+          future: service.getCurrentTrackQualities(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const SizedBox(
+                height: 120,
+                child: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final qualities = snapshot.data;
+            if (qualities == null || qualities.isEmpty) {
+              return const SizedBox(
+                height: 120,
+                child: Center(child: Text('当前曲目暂不支持切换音质')),
+              );
+            }
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                  child: Text('播放音质',
+                      style: Theme.of(context).textTheme.titleMedium),
+                ),
+                ...qualities.map((q) => ListTile(
+                      title: Text(q.label),
+                      subtitle: q.sizeBytes != null
+                          ? Text(_formatSize(q.sizeBytes!))
+                          : null,
+                      trailing: q.isCurrent
+                          ? Icon(Icons.check,
+                              color: Theme.of(context).colorScheme.primary)
+                          : null,
+                      onTap: () async {
+                        Navigator.of(sheetContext).pop();
+                        final messenger = ScaffoldMessenger.of(this.context);
+                        final ok =
+                            await service.switchCurrentTrackQuality(q.id);
+                        messenger.showSnackBar(SnackBar(
+                            content: Text(ok
+                                ? '已切换为 ${q.label}'
+                                : '切换音质失败，请稍后重试')));
+                      },
+                    )),
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 
@@ -1709,6 +1852,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   void dispose() {
+    _dismissAnimController?.dispose();
     _sequenceStateSubscription?.cancel();
     _commentCache.clear();
     _subtitleScrollController.dispose();

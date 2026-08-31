@@ -6,9 +6,12 @@ import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/model/myinfo.dart';
 import 'package:bmsc/model/playlist_data.dart';
 import 'package:bmsc/util/logger.dart';
+import 'package:bmsc/util/silent_audio.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import 'package:rxdart/subjects.dart';
 
 final _logger = LoggerUtils.getLogger('SharedPreferencesService');
@@ -41,8 +44,22 @@ class SharedPreferencesService {
 
   static Future<String> getDownloadPath() async {
     final prefs = await instance;
-    final value =
-        prefs.getString('downloadPath') ?? '/storage/emulated/0/Download/BMSC';
+    var value = prefs.getString('downloadPath');
+    if (value == null || value.isEmpty) {
+      // Android 默认下载目录；其余平台（iOS/macOS/Windows/Linux）用
+      // 各自可写的应用文档目录，避免访问 /storage 等无效路径。
+      if (Platform.isAndroid) {
+        value = '/storage/emulated/0/Download/BMSC';
+      } else if (Platform.isIOS) {
+        value =
+            p.join((await getApplicationDocumentsDirectory()).path, 'Downloads');
+      } else if (Platform.isWindows) {
+        value = p.join((await getDownloadsDirectory())?.path ?? '.', 'BMSC');
+      } else {
+        value = p.join(
+            (await getApplicationSupportDirectory()).path, 'Download');
+      }
+    }
     return value;
   }
 
@@ -222,12 +239,17 @@ class SharedPreferencesService {
         final tag = (source as IndexedAudioSource).tag as MediaItem;
 
         final dummy = tag.extras?['dummy'] ?? false;
+        // dummy 源保存实际 uri（iOS 上是 file:// 临时文件，Android 是
+        // asset://），恢复时直接用，避免 iOS 上恢复 asset:// 无法加载。
+        final dummyUri = (source is UriAudioSource && uri.isNotEmpty)
+            ? uri
+            : 'asset:///assets/silent.m4a';
         return PlaylistData(
           id: tag.id,
           title: tag.title,
           artist: tag.artist ?? '',
           artUri: tag.artUri?.toString() ?? '',
-          audioUri: dummy ? 'asset:///assets/silent.m4a' : uri.toString(),
+          audioUri: dummy ? dummyUri : uri.toString(),
           bvid: tag.extras?['bvid'] ?? '',
           aid: tag.extras?['aid'] ?? 0,
           cid: tag.extras?['cid'] ?? 0,
@@ -261,10 +283,15 @@ class SharedPreferencesService {
     }
 
     final List<dynamic> playlistData = jsonDecode(playlistJson);
+    // dummy 源不信任持久化的 uri：iOS 上是 tmp 目录下的 silent.m4a，可能
+    // 被系统清理或容器路径失效，恢复时统一重新生成，避免加载失败卡死。
+    final dummyUri = playlistData.any((item) => item['dummy'] == true)
+        ? await resolveSilentAudioUri()
+        : null;
     final sources = (playlistData.map((item) {
       final data = PlaylistData.fromJson(item);
       if (data.dummy) {
-        return AudioSource.uri(Uri.parse(data.audioUri),
+        return AudioSource.uri(dummyUri!,
             tag: MediaItem(
               id: data.id,
               title: data.title,
@@ -277,9 +304,34 @@ class SharedPreferencesService {
             ));
       } else {
         final uri = data.audioUri == "" ? null : Uri.parse(data.audioUri);
-        final file =
-            uri != null && uri.isScheme('file') ? File(uri.path) : null;
-
+        final file = uri != null && uri.isScheme('file') ? File(uri.path) : null;
+        // 恢复的本地文件可能来自旧安装（容器路径失效），失效时回退为
+        // 网络源（localFile 置 null），避免 iOS 上创建文件时抛权限异常。
+        if (file != null && !file.existsSync()) {
+          _logger.warning(
+              'Restored cached file missing, fallback to network: ${file.path}');
+          return LazyAudioSource(
+            data.bvid,
+            data.cid,
+            localFile: null,
+            tag: MediaItem(
+              id: data.id,
+              title: data.title,
+              artist: data.artist,
+              artUri: Uri.parse(data.artUri),
+              duration: Duration(seconds: data.duration),
+              extras: {
+                'bvid': data.bvid,
+                'cid': data.cid,
+                'aid': data.aid,
+                'multi': data.multi,
+                'raw_title': data.rawTitle,
+                'mid': data.mid,
+                'cached': false,
+              },
+            ),
+          );
+        }
         return LazyAudioSource(
           data.bvid,
           data.cid,
@@ -398,14 +450,35 @@ class SharedPreferencesService {
     return Set.from(list);
   }
 
-  static Future<void> setHiResFirst(bool value) async {
+  /// B 站音频流音质 id（dash.audio[].id）
+  static const int kAudioQualityAuto = 0; // 自动（最高可用音质）
+  static const int kAudioQualityHiRes = 30251; // Hi-Res 无损
+  static const int kAudioQuality192K = 30280; // 高音质 192K
+  static const int kAudioQuality132K = 30232; // 标准 132K
+  static const int kAudioQuality64K = 30216; // 流畅 64K
+
+  /// 音质 id -> 展示名称
+  static const Map<int, String> audioQualityLabels = {
+    kAudioQualityAuto: '自动（最高可用音质）',
+    kAudioQualityHiRes: 'Hi-Res 无损',
+    kAudioQuality192K: '高音质 192K',
+    kAudioQuality132K: '标准 132K',
+    kAudioQuality64K: '流畅 64K',
+  };
+
+  static Future<void> setAudioQuality(int value) async {
     final prefs = await SharedPreferencesService.instance;
-    await prefs.setBool('hi_res_first', value);
+    await prefs.setInt('audio_quality', value);
   }
 
-  static Future<bool> getHiResFirst() async {
+  static Future<int> getAudioQuality() async {
     final prefs = await SharedPreferencesService.instance;
-    return prefs.getBool('hi_res_first') ?? false;
+    final value = prefs.getInt('audio_quality');
+    if (value != null) return value;
+    // 迁移旧的 hi_res_first 布尔偏好：开过高音质 -> Hi-Res，否则自动
+    return (prefs.getBool('hi_res_first') ?? false)
+        ? kAudioQualityHiRes
+        : kAudioQualityAuto;
   }
 
   static Future<void> setReactToInterruption(bool value) async {
