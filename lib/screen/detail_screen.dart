@@ -40,7 +40,12 @@ class _DetailScreenState extends State<DetailScreen>
   bool _showSubtitles = false;
   List<BilibiliSubtitle>? _subtitles;
   final AutoScrollController _subtitleScrollController = AutoScrollController();
+  // 字幕数据缓存，key 为字幕文件 URL
   final Map<String, List<BilibiliSubtitle>> _subtitleCache = {};
+  // 可用字幕轨道缓存，key 为 '${aid}_$cid'，值为 (语言名, 字幕 URL) 列表
+  final Map<String, List<(String, String)>> _subtitleTracksCache = {};
+  // 每个视频记住用户选择的字幕轨道下标，key 为 '${aid}_$cid'
+  final Map<String, int> _subtitleTrackIndexCache = {};
   String? currentKey;
   final Map<String, CommentData?> _commentCache = {};
 
@@ -173,9 +178,8 @@ class _DetailScreenState extends State<DetailScreen>
         duration: const Duration(milliseconds: 200),
       );
       _dismissAnimController = controller;
-      final animation =
-          Tween<double>(begin: _dismissDragOffset, end: 0).animate(
-              CurvedAnimation(parent: controller, curve: Curves.easeOut));
+      final animation = Tween<double>(begin: _dismissDragOffset, end: 0)
+          .animate(CurvedAnimation(parent: controller, curve: Curves.easeOut));
       animation.addListener(() {
         setState(() {
           _dismissDragOffset = animation.value;
@@ -212,19 +216,19 @@ class _DetailScreenState extends State<DetailScreen>
             ],
           ),
           body: _isAudioServiceLoading
-          ? const Center(child: CircularProgressIndicator())
-          : SafeArea(
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(
-                    maxWidth: 800,
+              ? const Center(child: CircularProgressIndicator())
+              : SafeArea(
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(
+                        maxWidth: 800,
+                      ),
+                      child: isLandscape
+                          ? _buildLandscapeLayout(context)
+                          : _buildPortraitLayout(context),
+                    ),
                   ),
-                  child: isLandscape
-                      ? _buildLandscapeLayout(context)
-                      : _buildPortraitLayout(context),
                 ),
-              ),
-            ),
         ),
       ),
     );
@@ -299,9 +303,8 @@ class _DetailScreenState extends State<DetailScreen>
                         final ok =
                             await service.switchCurrentTrackQuality(q.id);
                         messenger.showSnackBar(SnackBar(
-                            content: Text(ok
-                                ? '已切换为 ${q.label}'
-                                : '切换音质失败，请稍后重试')));
+                            content:
+                                Text(ok ? '已切换为 ${q.label}' : '切换音质失败，请稍后重试')));
                       },
                     )),
               ],
@@ -1656,33 +1659,36 @@ class _DetailScreenState extends State<DetailScreen>
   Future<void> _loadSubtitles(int aid, int cid) async {
     final token = ++_subtitleLoadToken;
     final subtitleKey = '${aid}_$cid';
-    if (_subtitleCache.containsKey(subtitleKey)) {
-      // 使用缓存的字幕数据
-      setState(() {
-        _subtitles = _subtitleCache[subtitleKey];
-        _showSubtitles = true;
-      });
+
+    final cachedTracks = _subtitleTracksCache[subtitleKey];
+    if (cachedTracks != null) {
+      if (cachedTracks.isEmpty) {
+        setState(() {
+          _subtitles = [];
+          _showSubtitles = true;
+        });
+        return;
+      }
+      await _loadSubtitleTrack(
+          cachedTracks, _subtitleTrackIndexCache[subtitleKey] ?? 0, token);
       return;
     }
 
     final bilibiliService = await BilibiliService.instance;
-    final subtitles = await bilibiliService.getSubTitleInfo(aid, cid);
+    final tracks = await bilibiliService.getSubTitleInfo(aid, cid);
 
     if (!mounted || token != _subtitleLoadToken) return;
 
-    if (subtitles != null && subtitles.isNotEmpty) {
-      final subtitleData =
-          await bilibiliService.getSubTitleData(subtitles.last.$2);
-      if (subtitleData != null && mounted && token == _subtitleLoadToken) {
-        // 缓存字幕数据
-        _subtitleCache[subtitleKey] = subtitleData;
-        setState(() {
-          _subtitles = subtitleData;
-          _showSubtitles = true;
-        });
-      }
+    if (tracks != null && tracks.isNotEmpty) {
+      _subtitleTracksCache[subtitleKey] = tracks;
+      // 默认优先选择人工上传字幕；AI 自动生成字幕会把音乐识别为
+      // “♪音乐♪”，只有没有人工字幕时才回退到它（issue #13）
+      var defaultIndex = tracks.indexWhere((t) => !t.$1.contains('自动生成'));
+      if (defaultIndex == -1) defaultIndex = tracks.length - 1;
+      _subtitleTrackIndexCache[subtitleKey] = defaultIndex;
+      await _loadSubtitleTrack(tracks, defaultIndex, token);
     } else {
-      _subtitleCache[subtitleKey] = [];
+      _subtitleTracksCache[subtitleKey] = [];
       setState(() {
         _subtitles = [];
       });
@@ -1695,6 +1701,90 @@ class _DetailScreenState extends State<DetailScreen>
         );
       }
     }
+  }
+
+  /// 加载指定字幕轨道的数据
+  Future<void> _loadSubtitleTrack(
+      List<(String, String)> tracks, int index, int token) async {
+    if (index < 0 || index >= tracks.length) return;
+    final url = tracks[index].$2;
+    final cached = _subtitleCache[url];
+    if (cached != null) {
+      setState(() {
+        _subtitles = cached;
+        _showSubtitles = true;
+      });
+      return;
+    }
+    final bilibiliService = await BilibiliService.instance;
+    final subtitleData = await bilibiliService.getSubTitleData(url);
+    if (subtitleData != null && mounted && token == _subtitleLoadToken) {
+      _subtitleCache[url] = subtitleData;
+      setState(() {
+        _subtitles = subtitleData;
+        _showSubtitles = true;
+      });
+    }
+  }
+
+  /// 切换当前视频的字幕轨道（issue #13）
+  Future<void> _switchSubtitleTrack(int index) async {
+    final key = currentKey;
+    if (key == null) return;
+    final tracks = _subtitleTracksCache[key];
+    if (tracks == null || index < 0 || index >= tracks.length) return;
+    if (_subtitleTrackIndexCache[key] == index && _subtitles != null) return;
+    _subtitleTrackIndexCache[key] = index;
+    final token = ++_subtitleLoadToken;
+    setState(() {
+      _subtitles = null;
+    });
+    await _loadSubtitleTrack(tracks, index, token);
+  }
+
+  /// 字幕轨道选择器（多轨字幕时显示在歌词上方）
+  Widget _buildSubtitleTrackSelector(List<(String, String)> tracks) {
+    final key = currentKey ?? '';
+    final selected = _subtitleTrackIndexCache[key] ?? 0;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(Icons.subtitles_outlined, size: 16, color: colorScheme.secondary),
+        const SizedBox(width: 4),
+        PopupMenuButton<int>(
+          tooltip: '选择字幕',
+          onSelected: (index) => _switchSubtitleTrack(index),
+          itemBuilder: (context) => [
+            for (var i = 0; i < tracks.length; i++)
+              PopupMenuItem<int>(
+                value: i,
+                child: Row(
+                  children: [
+                    i == selected
+                        ? Icon(Icons.check,
+                            size: 18, color: colorScheme.primary)
+                        : const SizedBox(width: 18),
+                    const SizedBox(width: 8),
+                    Text(tracks[i].$1),
+                  ],
+                ),
+              ),
+          ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                selected < tracks.length ? tracks[selected].$1 : '',
+                style: TextStyle(fontSize: 13, color: colorScheme.secondary),
+              ),
+              Icon(Icons.arrow_drop_down,
+                  size: 18, color: colorScheme.secondary),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildSubtitlesView() {
@@ -1732,6 +1822,7 @@ class _DetailScreenState extends State<DetailScreen>
           }
         }
 
+        final tracks = _subtitleTracksCache[currentKey ?? ''];
         return GestureDetector(
           onTap: () {
             setState(() {
@@ -1739,111 +1830,126 @@ class _DetailScreenState extends State<DetailScreen>
               _subtitles = null;
             });
           },
-          child: StreamBuilder<Duration>(
-            stream: _audioService!.player.positionStream,
-            builder: (context, snapshot) {
-              final position = snapshot.data?.inMilliseconds ?? 0;
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 多轨字幕时提供切换入口（人工/AI/多语言，issue #13）
+              if (tracks != null && tracks.length > 1)
+                _buildSubtitleTrackSelector(tracks),
+              StreamBuilder<Duration>(
+                stream: _audioService!.player.positionStream,
+                builder: (context, snapshot) {
+                  final position = snapshot.data?.inMilliseconds ?? 0;
 
-              if (_subtitles == null || _subtitles!.isEmpty) {
-                return Center(
-                  child: Text(
-                    '暂无歌词',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withValues(alpha: 0.6),
-                    ),
-                  ),
-                );
-              }
-
-              const subTitleHeight = 36.0;
-
-              // 找到当前歌词索引
-              final currentIndex = _subtitles!.indexWhere((subtitle) =>
-                  position >= subtitle.from && position <= subtitle.to);
-
-              // 自动滚动到当前歌词
-              if (currentIndex != -1) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (!_subtitleScrollController.hasClients) return;
-                  if (_subtitleScrollController
-                      .position.isScrollingNotifier.value) {
-                    return;
+                  if (_subtitles == null) {
+                    return const Center(
+                      child: CircularProgressIndicator(),
+                    );
                   }
 
-                  _subtitleScrollController.scrollToIndex(
-                    currentIndex,
-                    preferPosition: AutoScrollPosition.middle,
-                    duration: const Duration(milliseconds: 300),
-                  );
-                });
-              }
-
-              return SizedBox(
-                height: MediaQuery.of(context).size.height * 0.5,
-                child: ListView.builder(
-                  controller: _subtitleScrollController,
-                  padding: const EdgeInsets.symmetric(vertical: 80),
-                  itemCount: _subtitles!.length,
-                  physics: const ClampingScrollPhysics(),
-                  itemBuilder: (context, index) {
-                    final subtitle = _subtitles![index];
-                    final isActive =
-                        position >= subtitle.from && position <= subtitle.to;
-                    final isNext = index == currentIndex + 1;
-
-                    return AutoScrollTag(
-                      key: ValueKey(index),
-                      index: index,
-                      controller: _subtitleScrollController,
-                      child: Container(
-                        constraints:
-                            const BoxConstraints(minHeight: subTitleHeight),
-                        padding: const EdgeInsets.symmetric(
-                            vertical: 8, horizontal: 24),
-                        child: AnimatedDefaultTextStyle(
-                          duration: const Duration(milliseconds: 300),
-                          style: TextStyle(
-                            fontSize: isActive ? 18 : (isNext ? 15 : 14),
-                            fontWeight:
-                                isActive ? FontWeight.w600 : FontWeight.normal,
-                            color: isActive
-                                ? Theme.of(context).colorScheme.primary
-                                : (isNext
-                                    ? Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.8)
-                                    : Theme.of(context)
-                                        .colorScheme
-                                        .onSurface
-                                        .withValues(alpha: 0.5)),
-                            height: 1.2,
-                          ),
-                          child: Center(
-                              child: GestureDetector(
-                            onTap: () {
-                              // 点击歌词跳转到对应时间
-                              _audioService!.player
-                                  .seek(Duration(milliseconds: subtitle.from));
-                            },
-                            child: Text(
-                              subtitle.content,
-                              textAlign: TextAlign.center,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          )),
+                  if (_subtitles!.isEmpty) {
+                    return Center(
+                      child: Text(
+                        '暂无歌词',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withValues(alpha: 0.6),
                         ),
                       ),
                     );
-                  },
-                ),
-              );
-            },
+                  }
+
+                  const subTitleHeight = 36.0;
+
+                  // 找到当前歌词索引
+                  final currentIndex = _subtitles!.indexWhere((subtitle) =>
+                      position >= subtitle.from && position <= subtitle.to);
+
+                  // 自动滚动到当前歌词
+                  if (currentIndex != -1) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (!_subtitleScrollController.hasClients) return;
+                      if (_subtitleScrollController
+                          .position.isScrollingNotifier.value) {
+                        return;
+                      }
+
+                      _subtitleScrollController.scrollToIndex(
+                        currentIndex,
+                        preferPosition: AutoScrollPosition.middle,
+                        duration: const Duration(milliseconds: 300),
+                      );
+                    });
+                  }
+
+                  return SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.5,
+                    child: ListView.builder(
+                      controller: _subtitleScrollController,
+                      padding: const EdgeInsets.symmetric(vertical: 80),
+                      itemCount: _subtitles!.length,
+                      physics: const ClampingScrollPhysics(),
+                      itemBuilder: (context, index) {
+                        final subtitle = _subtitles![index];
+                        final isActive = position >= subtitle.from &&
+                            position <= subtitle.to;
+                        final isNext = index == currentIndex + 1;
+
+                        return AutoScrollTag(
+                          key: ValueKey(index),
+                          index: index,
+                          controller: _subtitleScrollController,
+                          child: Container(
+                            constraints:
+                                const BoxConstraints(minHeight: subTitleHeight),
+                            padding: const EdgeInsets.symmetric(
+                                vertical: 8, horizontal: 24),
+                            child: AnimatedDefaultTextStyle(
+                              duration: const Duration(milliseconds: 300),
+                              style: TextStyle(
+                                fontSize: isActive ? 18 : (isNext ? 15 : 14),
+                                fontWeight: isActive
+                                    ? FontWeight.w600
+                                    : FontWeight.normal,
+                                color: isActive
+                                    ? Theme.of(context).colorScheme.primary
+                                    : (isNext
+                                        ? Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.8)
+                                        : Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.5)),
+                                height: 1.2,
+                              ),
+                              child: Center(
+                                  child: GestureDetector(
+                                onTap: () {
+                                  // 点击歌词跳转到对应时间
+                                  _audioService!.player.seek(
+                                      Duration(milliseconds: subtitle.from));
+                                },
+                                child: Text(
+                                  subtitle.content,
+                                  textAlign: TextAlign.center,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              )),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         );
       },
