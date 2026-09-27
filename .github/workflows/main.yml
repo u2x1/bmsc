@@ -3,7 +3,11 @@ name: build release apks
 on:
   push:
     tags:
+      # 正式发版 vX.Y.Z：构建并创建 GitHub Release（用户会收到更新提示）
       - "v*.*.*"
+      # 测试构建 tag（如 v1.17.0-test.1，会被上面的 v*.*.* 匹配）：
+      # 只构建并上传 workflow artifact，不创建 Release、不触发用户更新提示
+      - "v*.*.*-*"
 
 jobs:
   test:
@@ -30,7 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Ninja
-        run: sudo apt-get -y install build-essential ninja-build cmake pkg-config libgtk-3-dev
+        # ubuntu-latest 镜像更新后 apt 缓存过期，不 update 会 404 (exit 100)
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install build-essential ninja-build cmake pkg-config libgtk-3-dev
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
@@ -99,7 +106,19 @@ jobs:
           zip -r ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-linux.zip .
           mv ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-linux.zip ../../../../../
 
+      - name: Determine release tag
+        id: rel
+        run: |
+          # 仅严格 vX.Y.Z 形式的 tag 创建 Release；
+          # 带后缀的测试 tag（vX.Y.Z-*）跳过发版，避免用户收到更新提示
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create Github Release
+        if: steps.rel.outputs.is_release == 'true'
         uses: ncipollo/release-action@v1
         with:
           allowUpdates: true
