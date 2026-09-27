@@ -51,10 +51,12 @@ const String apiCheckTvQrcodeStatusUrl =
     '$_passportUrl/x/passport-tv-login/qrcode/poll';
 const String apiTvTokenRefreshUrl =
     '$_passportUrl/x/passport-tv-login/h5/refresh';
+// App 端登录接口实际由 passport 域名服务（api.bilibili.com 上这些路径
+// 已 404；实测 passport 域名正常返回 JSON）。
 const String apiAppPasswordLoginUrl =
-    '$_baseUrl/x/passport-login/oauth2/login';
-const String apiAppSmsCaptchaUrl = '$_baseUrl/x/passport-login/sms/send';
-const String apiAppSmsLoginUrl = '$_baseUrl/x/passport-login/login/sms';
+    '$_passportUrl/x/passport-login/oauth2/login';
+const String apiAppSmsCaptchaUrl = '$_passportUrl/x/passport-login/sms/send';
+const String apiAppSmsLoginUrl = '$_passportUrl/x/passport-login/login/sms';
 const String apiAppPlayUrlUrl = '$_baseUrl/x/player/playurl';
 const String apiOauth2AccessTokenUrl =
     '$_passportUrl/x/passport-login/oauth2/access_token';

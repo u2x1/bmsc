@@ -34,6 +34,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:bmsc/util/art_cache.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_platform_interface/just_audio_platform_interface.dart';
@@ -411,6 +412,31 @@ class _PlayerAudioHandler extends BaseAudioHandler
   List<MediaItem> get currentQueue => queue.value;
   StreamSubscription<TrackInfo>? _trackInfoSubscription;
 
+  /// 广播 mediaItem，并在后台补齐 iOS 锁屏封面：audio_service 的 iOS 端
+  /// 不从 artUri 加载封面，只认 extras['artCacheFile'] 本地文件；下载完成
+  /// 且仍是当前曲目时更新队列副本并重新广播。
+  void _emitMediaItem(MediaItem item) {
+    mediaItem.add(item);
+    if (item.artUri == null) return;
+    if (item.extras?['artCacheFile'] != null) return;
+    resolveArtCacheFile(item.artUri).then((uri) {
+      if (uri == null) return;
+      // 必须是同一实例而非仅同 id：换源（swap）后队列同位置是同 id 的
+      // 新 MediaItem，旧 item 的回调若覆盖会短暂丢失新 extras
+      //（cached/qualityId）；新 item 自身的回调会负责它的封面。
+      if (!identical(currentMediaItem, item)) return;
+      final updated = item.copyWith(extras: {
+        ...?item.extras,
+        'artCacheFile': uri.toFilePath(),
+      });
+      final i = index;
+      if (i != null && i >= 0 && i < currentQueue.length) {
+        currentQueue[i] = updated;
+      }
+      mediaItem.add(updated);
+    }).catchError((_) {});
+  }
+
   Future<void> _initPlayer(InitRequest initRequest) =>
       _lock.synchronized(() async {
         final player = await _platform.init(initRequest);
@@ -448,7 +474,7 @@ class _PlayerAudioHandler extends BaseAudioHandler
                       currentQueue[index!].copyWith(duration: track.duration);
                   queue.add(currentQueue);
                 }
-                mediaItem.add(currentMediaItem!);
+                _emitMediaItem(currentMediaItem!);
               }
             }, onError: (Object e, [StackTrace? st]) {});
       });
@@ -468,7 +494,7 @@ class _PlayerAudioHandler extends BaseAudioHandler
         index != null &&
         index! >= 0 &&
         index! < queue.length) {
-      mediaItem.add(queue[index!]);
+      _emitMediaItem(queue[index!]);
     }
   }
 

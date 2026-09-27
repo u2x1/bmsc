@@ -428,17 +428,24 @@ class BilibiliAPI {
 
   /// 按音质偏好排序候选音频流：偏好音质排首位（LazyAudioSource 取 first 播放），
   /// 其余保持 API 返回顺序作为回退（_fetch 重试会遍历全部候选）。
-  /// preferredId 为 0（自动）时 Hi-Res（若可用）优先，其次按 API 顺序。
+  /// AUTO 不优先 Hi-Res：与旧版 hi_res_first=false 的默认行为一致，避免老用户
+  /// 迁移后默认消耗数倍流量与内存（Hi-Res 单首可达数十上百 MB）。非 Hi-Res
+  /// 偏好时 flac 追加到队尾，仅作 _fetch 重试的最后手段与音质列表展示。
   static List<Audio> _orderAudioByQuality(Dash dash, int preferredId) {
-    final candidates = <Audio>[
-      if (dash.flac?.audio != null) dash.flac!.audio!,
-      ...dash.audio,
-    ];
-    if (preferredId != SharedPreferencesService.kAudioQualityAuto) {
+    final candidates = [...dash.audio];
+    if (preferredId != SharedPreferencesService.kAudioQualityAuto &&
+        preferredId != SharedPreferencesService.kAudioQualityHiRes) {
       final index = candidates.indexWhere((a) => a.id == preferredId);
       if (index > 0) {
         final preferred = candidates.removeAt(index);
         candidates.insert(0, preferred);
+      }
+    }
+    if (dash.flac?.audio != null) {
+      if (preferredId == SharedPreferencesService.kAudioQualityHiRes) {
+        candidates.insert(0, dash.flac!.audio!);
+      } else {
+        candidates.add(dash.flac!.audio!);
       }
     }
     return candidates;

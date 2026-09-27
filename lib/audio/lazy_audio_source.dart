@@ -3,8 +3,10 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:async/async.dart';
+import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/util/logger.dart';
@@ -32,14 +34,63 @@ class LazyAudioSource extends StreamAudioSource {
   int? qualityId;
 
   /// 实验：iOS 上把未缓存内容以「直播流」形式喂给 AVPlayer（200 chunked，
-  /// 无 Content-Length/Content-Range）。AVPlayer 对 localhost 渐进式 MP4
-  /// 会等全量下载完才开播（实测 moov 前置、MIME 正确均无效），伪装成
-  /// 无界直播流可使其收到 moov 和片段后即开播。下载完成后由
-  /// AudioService 无缝替换为本地文件源，恢复完整时长与拖动能力。
-  static bool liveStreamExperimentEnabled = true;
+  /// 无 Content-Length/Content-Range）。
+  ///
+  /// ⚠️ 真机实测（iPhone, iOS 27）该模式不可播：AVPlayer 对 localhost
+  ///  chunked 无界流始终不开播（进度恒 0），下载虽在后台完成（产生缓存），
+  /// 播放却永久卡住。已默认关闭——未缓存内容改走与缓存文件完全一致的
+  /// 渐进式响应（正确 MIME + 长度 + range），由 DarwinLoadControl 的
+  /// 3 秒前向缓冲控制开播延迟。保留开关仅供后续排查参考。
+  static bool liveStreamExperimentEnabled = false;
 
-  static bool get _serveAsLiveStream =>
-      Platform.isIOS && liveStreamExperimentEnabled;
+  /// 直播流模式的最大文件体积。直播流模式下 AVPlayer 只超前消费前向
+  /// 缓冲（3s），其余已下载数据全部堆在代理的内存缓冲
+  ///（_InProgressCacheResponse 的 ReplaySubject）里，峰值 ≈ 文件大小
+  /// × 并发流数。超过阈值（如 Hi-Res 大文件）回退为带长度 + range 的
+  /// 渐进式响应，由 DarwinLoadControl 的 3 秒前向缓冲控制开播延迟，
+  /// 以开播延迟换取内存峰值上限，避免触发 jetsam。
+  static int liveStreamMaxBytes = 32 * 1024 * 1024;
+
+  /// iOS 开播加速：对外宣告的资源长度上限。真机实测（日志佐证）：
+  /// AVPlayer 对 localhost 渐进式 MP4 一律吞完整资源才 readyToPlay，
+  /// preferredForwardBufferDuration / preferredPeakBitRate 均无效
+  ///（76MB 文件播前等 ~12s 全量下载）。既然它按宣告长度全量吞，就把
+  /// 宣告长度截断为前 N MB——moov 前置时长信息完整，吞 N MB 即开播；
+  /// 后台下载完成后由 AudioService 换入完整文件源，恢复真实长度与
+  /// 全程拖动。仅对 moov 前置内容启用（moov 在尾部时截断会让
+  /// AVPlayer 找不到 moov，回退为不截断）。
+  static int advertisedLengthCapBytes = 4 * 1024 * 1024;
+
+  /// 本次下载是否以直播流形式服务。响应头到达后按文件体积决定
+  ///（见 _fetch），决定后本次下载内保持不变。
+  bool _serveAsLiveStream = false;
+
+  static bool _shouldServeAsLiveStream(int? sourceLength) =>
+      Platform.isIOS &&
+      liveStreamExperimentEnabled &&
+      (sourceLength == null || sourceLength <= liveStreamMaxBytes);
+
+  /// 下载完整结束（.part 已改名为主文件、元数据已落库）时完成；
+  /// 下载失败/被取消时以错误完成。不能用 downloadProgressStream 的
+  /// 1.0 事件代替：该事件在最后一个数据块回调中同步发出，早于 onDone
+  /// 中的 renameSync——此时监听者检查主文件必然不存在（microtask
+  /// 时序竞态，已实测复现）。
+  final _downloadCompleteCompleter = Completer<void>();
+  Future<void> get downloadComplete => _downloadCompleteCompleter.future;
+
+  /// 全局下载互斥：同一 bvid:cid 同时只允许一个实例下载。重复源（收藏夹
+  /// 中同一视频出现两次、看门狗克隆与 hijack 撞车等）若并发写同一
+  /// .part，内容互相污染，且先完成的 onDone 改名后后者 rename 必炸
+  ///（真机 SEVERE 日志实证）。键用 bvid:cid 而非文件路径：路径需要
+  /// await 才能得到，无法保证「检查+占位」的原子性。
+  static final Map<String, Future<void>> _inflightDownloads = {};
+
+  String get _downloadKey => '$bvid:$cid';
+
+  StreamSubscription<List<int>>? _subscription;
+  HttpClient? _httpClient;
+  IOSink? _sink;
+  final _inProgressResponses = <_InProgressCacheResponse>[];
 
   /// Creates a [LockCachingAudioSource] to that provides [uri] to the player
   /// while simultaneously caching it to [file]. If no cache file is
@@ -56,6 +107,8 @@ class LazyAudioSource extends StreamAudioSource {
             ? Future.value(localFile)
             : DatabaseManager.prepareFileForCaching(bvid, cid),
         isLocal = localFile != null {
+    // 避免 downloadComplete 在无监听者时以错误完成触发 unhandled error
+    _downloadCompleteCompleter.future.ignore();
     _init();
   }
 
@@ -70,7 +123,14 @@ class LazyAudioSource extends StreamAudioSource {
 
   Future<void> _init() async {
     final file = await localFile;
-    _downloadProgressSubject.add(file.existsSync() ? 1.0 : 0.0);
+    if (file.existsSync()) {
+      _downloadProgressSubject.add(1.0);
+      if (!_downloadCompleteCompleter.isCompleted) {
+        _downloadCompleteCompleter.complete();
+      }
+    } else {
+      _downloadProgressSubject.add(0.0);
+    }
   }
 
   /// Returns a [UriAudioSource] resolving directly to the cache file if it
@@ -95,6 +155,58 @@ class LazyAudioSource extends StreamAudioSource {
     await DatabaseManager.deleteCacheFiles((await localFile).path);
     _progress = 0;
     _downloadProgressSubject.add(0.0);
+  }
+
+  /// 取消进行中的下载并清理半成品（.part、内存缓冲、挂起请求）。
+  /// 用于播放中切换音质等需要立即废弃当前下载的场景：旧下载若不取消，
+  /// 会与新源的下载写同一 .part 路径，内容互相污染。调用后可通过
+  /// request() 重新开始下载（downloadComplete 已完成，不会再次触发）。
+  Future<void> cancelDownload() async {
+    if (!_downloading) return;
+    _downloading = false;
+    final subscription = _subscription;
+    _subscription = null;
+    try {
+      await subscription?.cancel();
+    } catch (_) {}
+    try {
+      await _sink?.flush();
+      await _sink?.close();
+    } catch (_) {}
+    _sink = null;
+    try {
+      _httpClient?.close(force: true);
+    } catch (_) {}
+    _httpClient = null;
+    for (final req in _requests) {
+      req.fail(Exception('download cancelled'));
+    }
+    _requests.clear();
+    for (final res in _inProgressResponses) {
+      if (!res.controller.isClosed) {
+        res.controller.addError(Exception('download cancelled'));
+        res.controller.close();
+      }
+    }
+    _inProgressResponses.clear();
+    try {
+      final part = await _partialCacheFile;
+      if (part.existsSync()) await part.delete();
+    } catch (_) {}
+    // onDone 可能在 await 窗口内已完整跑完（rename + 落库 + completer
+    // 成功完成）：此时缓存实际已成功，不能把进度重置为 0。
+    if (!_downloadCompleteCompleter.isCompleted) {
+      _progress = 0;
+      _downloadProgressSubject.add(0.0);
+    }
+    _response = null;
+    if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+      _inflightDownloads.remove(_downloadKey);
+    }
+    if (!_downloadCompleteCompleter.isCompleted) {
+      _downloadCompleteCompleter
+          .completeError(Exception('download cancelled'));
+    }
   }
 
   Future<File> get _partialCacheFile async =>
@@ -139,6 +251,10 @@ class LazyAudioSource extends StreamAudioSource {
     bool eq(int i, int c) => header[i] == c;
     // ftyp box（MP4/M4A/m4s）：第 4-7 字节为 'ftyp'
     if (eq(4, 0x66) && eq(5, 0x74) && eq(6, 0x79) && eq(7, 0x70)) {
+      return 'audio/mp4';
+    }
+    // styp box（DASH 分片开头）：同为 fMP4 结构
+    if (eq(4, 0x73) && eq(5, 0x74) && eq(6, 0x79) && eq(7, 0x70)) {
       return 'audio/mp4';
     }
     // 'ID3' 标签或 MP3 帧同步字（0xFFEx）
@@ -217,7 +333,7 @@ class LazyAudioSource extends StreamAudioSource {
     _logger.info('[$bvid:$cid] fetch: playurl resolved (${sw.elapsed})');
     final headers = (await BilibiliService.instance).headers;
 
-    final httpClient = HttpClient();
+    final httpClient = _httpClient = HttpClient();
     var httpRequest = await _getUrl(httpClient, uri, headers: headers);
     var response = await httpRequest.close();
     _logger.info(
@@ -230,28 +346,30 @@ class LazyAudioSource extends StreamAudioSource {
       final service = await BilibiliService.instance;
       final audio = await service.getAudio(bvid, cid);
       final candidates = audio ?? <dynamic>[];
-      // 新解析结果的 baseUrl 优先，其次 backupUrl 列表
-      final retryUrls = <Uri>[
+      // 新解析结果的 baseUrl 优先，其次 backupUrl 列表；记录每个候选
+      // 对应的音质 id，重试落到其他音质流时同步更正 qualityId。
+      final retryCandidates = <({Uri url, int id})>[
         for (final a in candidates)
-          if (a.baseUrl.isNotEmpty) Uri.parse(a.baseUrl),
+          if (a.baseUrl.isNotEmpty) (url: Uri.parse(a.baseUrl), id: a.id as int),
         for (final a in candidates)
-          ...?a.backupUrl?.map((u) => Uri.parse(u)),
+          ...?a.backupUrl?.map((u) => (url: Uri.parse(u), id: a.id as int)),
       ];
       Uri? retried;
-      for (final u in retryUrls) {
-        if (u == uri) continue;
-        httpRequest = await _getUrl(httpClient, u, headers: headers);
+      for (final c in retryCandidates) {
+        if (c.url == uri) continue;
+        httpRequest = await _getUrl(httpClient, c.url, headers: headers);
         response = await httpRequest.close();
         if (response.statusCode == 200 || response.statusCode == 206) {
-          retried = u;
-          uri = u;
+          retried = c.url;
+          uri = c.url;
+          qualityId = c.id;
           break;
         }
         await response.drain<void>();
       }
-      if (retried == null && retryUrls.isNotEmpty) {
+      if (retried == null && retryCandidates.isNotEmpty) {
         // 所有候选取不到 200：最后一次响应留给下方统一报错
-        uri = retryUrls.first;
+        uri = retryCandidates.first.url;
         httpRequest = await _getUrl(httpClient, uri, headers: headers);
         response = await httpRequest.close();
         if (response.statusCode != 200 && response.statusCode != 206) {
@@ -266,9 +384,11 @@ class LazyAudioSource extends StreamAudioSource {
     (await _partialCacheFile).createSync(recursive: true);
     // TODO: Should close sink after done, but it throws an error.
     // ignore: close_sinks
-    final sink = (await _partialCacheFile).openWrite();
+    final sink = _sink = (await _partialCacheFile).openWrite();
     final sourceLength =
         response.contentLength == -1 ? null : response.contentLength;
+    // 响应头到达后按文件体积决定本次下载是否以直播流形式服务
+    _serveAsLiveStream = _shouldServeAsLiveStream(sourceLength);
     final rawMimeType = response.headers.contentType.toString();
     // iOS AVPlayer 不认 octet-stream：优先按 URL 扩展名推断；URL 无扩展名
     // 时留空，待首个数据块到达后按文件头魔数嗅探（B 站 CDN URL 通常无
@@ -277,7 +397,7 @@ class LazyAudioSource extends StreamAudioSource {
     final acceptRanges = response.headers.value(HttpHeaders.acceptRangesHeader);
     final originSupportsRangeRequests =
         acceptRanges != null && acceptRanges != 'none';
-    final inProgressResponses = <_InProgressCacheResponse>[];
+    final inProgressResponses = _inProgressResponses;
     late StreamSubscription<List<int>> subscription;
     var percentProgress = 0;
     void updateProgress(int newPercentProgress) {
@@ -288,16 +408,95 @@ class LazyAudioSource extends StreamAudioSource {
     }
 
     _progress = 0;
-    subscription = response.listen((data) async {
+    /// 实际宣告的截断长度：静态上限 advertisedLengthCapBytes，且至少覆盖
+    /// 约 45s 可播时长（按 tag 时长与真实大小折算码率）——否则慢网络下
+    /// AVPlayer 播完宣告的数据而完整下载未竟，item 会提前结束或卡死
+    ///（如 Hi-Res：4MB 仅约 16s，下载需 >5MB/s 才能赶在播完前完成）。
+    /// 普通 192K 文件 4MB 已覆盖约 170s，行为不变。
+    int advertisedLengthCap(int realLength) {
+      var cap = advertisedLengthCapBytes;
+      final t = tag;
+      final duration = t is MediaItem ? t.duration : null;
+      final seconds = duration?.inSeconds ?? 0;
+      if (seconds > 45) {
+        final bytesFor45s = realLength * 45 ~/ seconds;
+        if (bytesFor45s > cap) cap = bytesFor45s;
+      }
+      return min(cap, realLength);
+    }
+
+    // iOS 截断宣告的 moov 位置探测：逐个数据块走过顶层 box，
+    // moov 先于 mdat 出现才允许截断宣告（见 advertisedLengthCapBytes）。
+    final moovProbe = BytesBuilder(copy: false);
+    var moovFront = false;
+    var moovTail = false;
+    void probeMoovPosition(List<int> data) {
+      if (moovFront || moovTail) return;
+      moovProbe.add(data);
+      final bytes = moovProbe.toBytes();
+      final bd = ByteData.sublistView(bytes);
+      var offset = 0;
+      while (offset + 8 <= bytes.length) {
+        final size32 = bd.getUint32(offset);
+        final type = String.fromCharCodes(bytes.sublist(offset + 4, offset + 8));
+        if (type == 'moov') {
+          moovFront = true;
+          final real = sourceLength;
+          if (real != null && real > advertisedLengthCapBytes) {
+            _logger.info('[$bvid:$cid] moov front: advertising length cap '
+                '${advertisedLengthCap(real)}/$real');
+          }
+          return;
+        }
+        if (type == 'mdat') {
+          moovTail = true;
+          return;
+        }
+        int advance;
+        if (size32 == 1) {
+          if (offset + 16 > bytes.length) return;
+          advance = bd.getUint64(offset + 8);
+        } else if (size32 == 0) {
+          return; // box 延伸至 EOF，无法继续扫描
+        } else {
+          advance = size32;
+        }
+        if (advance < 8) return;
+        offset += advance;
+      }
+      // 1MB 内未见到 moov/mdat：保守按 moov 在尾部处理，不做截断
+      if (moovProbe.length > 1024 * 1024) moovTail = true;
+    }
+
+    /// 对客户端（AVPlayer）宣告的资源长度：moov 前置的大文件截断为
+    /// advertisedLengthCap(real)，使其吞 N MB 即开播；其余情况如实。
+    int? advertisedSourceLength() {
+      final real = sourceLength;
+      if (Platform.isIOS &&
+          moovFront &&
+          real != null &&
+          real > advertisedLengthCapBytes) {
+        return advertisedLengthCap(real);
+      }
+      return real;
+    }
+
+    subscription = _subscription = response.listen((data) async {
       if (_progress == 0) {
-        // 首个数据块：URL 嗅探落空时按内容魔数定格式
-        if (mimeType.isEmpty) {
-          mimeType = sniffMimeFromBytes(data) ?? 'audio/mpeg';
+        // 首个数据块：内容魔数最权威，总是覆盖响应头/URL 推断（CDN 可能
+        // 把 fMP4 错标为 audio/mpeg，AVPlayer 会用 MP3 解析器扫全文件，
+        // 拖到快下完才开播）；魔数无法识别时才回退到既有推断。
+        final sniffed = sniffMimeFromBytes(data);
+        if (sniffed != null) {
+          mimeType = sniffed;
+        } else if (mimeType.isEmpty) {
+          mimeType = 'audio/mpeg';
         }
         _logger.info(
             '[$bvid:$cid] fetch: first chunk ${data.length}B (${sw.elapsed}), '
             'mime=$mimeType, pendingRequests=${_requests.length}');
       }
+      probeMoovPosition(data);
       _progress += data.length;
       final newPercentProgress = (sourceLength == null)
           ? 0
@@ -351,9 +550,17 @@ class LazyAudioSource extends StreamAudioSource {
         }
         final effectiveStart = start ?? 0;
         // 直播流模式：始终向文件尾流式输出，但响应头不携带长度/偏移，
-        // 客户端（AVPlayer）按无界直播流处理
-        final effectiveEnd =
-            _serveAsLiveStream ? sourceLength : (end ?? sourceLength);
+        // 客户端（AVPlayer）按无界直播流处理；
+        // 渐进式模式：对外宣告的长度可能被截断（见 advertisedLengthCapBytes），
+        // 数据服务范围同步钳制在宣告长度内（宣告范围内的数据随下载按序到达）。
+        final advertised = advertisedSourceLength();
+        var effectiveEnd = _serveAsLiveStream ? sourceLength : (end ?? advertised);
+        if (!_serveAsLiveStream &&
+            effectiveEnd != null &&
+            advertised != null &&
+            effectiveEnd > advertised) {
+          effectiveEnd = advertised;
+        }
         Stream<List<int>> responseStream;
         if (effectiveEnd != null && effectiveEnd <= _progress) {
           responseStream =
@@ -381,7 +588,7 @@ class LazyAudioSource extends StreamAudioSource {
         } else {
           request.complete(StreamAudioResponse(
             rangeRequestsSupported: originSupportsRangeRequests,
-            sourceLength: start != null ? sourceLength : null,
+            sourceLength: start != null ? advertised : null,
             contentLength:
                 effectiveEnd != null ? effectiveEnd - effectiveStart : null,
             offset: start,
@@ -392,6 +599,9 @@ class LazyAudioSource extends StreamAudioSource {
       }
       subscription.resume();
       // Process any requests that start beyond the cache.
+      // 注：此处如实宣告真实 sourceLength（不做截断）——截断宣告后 AVPlayer
+      // 视资源为 N MB，只有拖动越过宣告边界时才可能产生这类请求，此时
+      // 如实服务才是正确行为。
       for (var request in notReadyRequests) {
         _requests.remove(request);
         final start = request.start!;
@@ -432,7 +642,31 @@ class LazyAudioSource extends StreamAudioSource {
           cacheResponse.controller.close();
         }
       }
-      (await _partialCacheFile).renameSync(localFile.path);
+      // 防御式改名：.part 可能已被并发清理（取消/其他实例）。主文件已
+      // 存在视为成功（同路径在途下载已完成并改名）；两者都不存在则
+      // 下载产物丢失，按失败收尾（不落库、以错误完成 completer）。
+      try {
+        final part = await _partialCacheFile;
+        if (part.existsSync()) {
+          part.renameSync(localFile.path);
+        }
+      } catch (e) {
+        _logger.warning('[$bvid:$cid] rename partial cache failed: $e');
+      }
+      if (!localFile.existsSync()) {
+        _logger.severe('[$bvid:$cid] download artifact missing after done');
+        _downloading = false;
+        if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+          _inflightDownloads.remove(_downloadKey);
+        }
+        if (!_downloadCompleteCompleter.isCompleted) {
+          _downloadCompleteCompleter
+              .completeError(StateError('download artifact missing'));
+        }
+        await subscription.cancel();
+        httpClient.close();
+        return;
+      }
       // 最终确定的 mime（可能来自内容嗅探）在下载完成后写入
       await (await _mimeFile).writeAsString(mimeType);
       await subscription.cancel();
@@ -441,6 +675,14 @@ class LazyAudioSource extends StreamAudioSource {
 
       // Save cache metadata first
       await DatabaseManager.saveCacheMetadata(bvid, cid, localFile);
+
+      // 文件已改名、元数据已落库：此刻起换源监听者可安全使用主文件
+      if (!_downloadCompleteCompleter.isCompleted) {
+        _downloadCompleteCompleter.complete();
+      }
+      if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+        _inflightDownloads.remove(_downloadKey);
+      }
 
       // Add a small delay before cleaning up cache to avoid database lock issues
       await Future.delayed(const Duration(milliseconds: 100));
@@ -461,6 +703,12 @@ class LazyAudioSource extends StreamAudioSource {
         res.controller.close();
       }
       _downloading = false;
+      if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+        _inflightDownloads.remove(_downloadKey);
+      }
+      if (!_downloadCompleteCompleter.isCompleted) {
+        _downloadCompleteCompleter.completeError(e, stackTrace);
+      }
     }, cancelOnError: true);
     return response;
   }
@@ -480,18 +728,50 @@ class LazyAudioSource extends StreamAudioSource {
         stream: file.openRead(start, end).asBroadcastStream(),
       );
     }
+    // 同 bvid:cid 的他方实例正在下载同一文件：等待其完成后改从文件
+    // 服务（他方失败则落空到下方自己的下载流程）
+    if (!_downloading) {
+      final inflight = _inflightDownloads[_downloadKey];
+      if (inflight != null && !identical(inflight, downloadComplete)) {
+        _logger.info('[$bvid:$cid] request: waiting for in-flight download');
+        try {
+          await inflight;
+        } catch (_) {}
+        if (file.existsSync()) {
+          _logger.info('[$bvid:$cid] request: serving from in-flight result');
+          _downloadProgressSubject.add(1.0);
+          if (!_downloadCompleteCompleter.isCompleted) {
+            _downloadCompleteCompleter.complete();
+          }
+          final sourceLength = file.lengthSync();
+          return StreamAudioResponse(
+            rangeRequestsSupported: true,
+            sourceLength: start != null ? sourceLength : null,
+            contentLength: (end ?? sourceLength) - (start ?? 0),
+            offset: start,
+            contentType: await _readCachedMimeType(),
+            stream: file.openRead(start, end).asBroadcastStream(),
+          );
+        }
+      }
+    }
     final byteRangeRequest = _StreamingByteRangeRequest(start, end);
     _requests.add(byteRangeRequest);
-    _response ??=
-        _fetch().catchError((dynamic error, StackTrace? stackTrace) async {
-      // So that we can restart later
-      _response = null;
-      // Cancel any pending request
-      for (final req in _requests) {
-        req.fail(error, stackTrace);
-      }
-      return Future<HttpClientResponse>.error(error as Object, stackTrace);
-    });
+    if (_response == null) {
+      // 占位注册与启动下载之间无 await，并发 request 在此原子交错：
+      // 后到者在上方 inflight 检查处必然看到占位并转为等待
+      _inflightDownloads[_downloadKey] ??= downloadComplete;
+      _response =
+          _fetch().catchError((dynamic error, StackTrace? stackTrace) async {
+        // So that we can restart later
+        _response = null;
+        // Cancel any pending request
+        for (final req in _requests) {
+          req.fail(error, stackTrace);
+        }
+        return Future<HttpClientResponse>.error(error as Object, stackTrace);
+      });
+    }
     return byteRangeRequest.future.then((response) {
       response.stream.listen((event) {}, onError: (Object e, StackTrace st) {
         // So that we can restart later

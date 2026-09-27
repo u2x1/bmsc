@@ -6,6 +6,7 @@ import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import '../service/shared_preferences_service.dart';
 import 'fav_detail_screen.dart';
+import 'login_screen.dart';
 import 'recommendation_screen.dart';
 import 'package:bmsc/util/logger.dart';
 
@@ -349,7 +350,49 @@ class FavScreenState extends State<FavScreen> {
               ],
       ),
       body: !signedin
-          ? const Center(child: Text('请先登录'))
+          ? Center(
+              // 未登录：点击直接进入登录页，登录成功后原地刷新收藏夹
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () async {
+                  final loggedIn = await Navigator.push<bool>(
+                    context,
+                    MaterialPageRoute<bool>(
+                        builder: (_) => const LoginScreen()),
+                  );
+                  if (loggedIn == true && mounted) {
+                    await refreshLoginState();
+                  }
+                },
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.lock_outline,
+                          size: 48, color: Colors.grey),
+                      const SizedBox(height: 12),
+                      Text(
+                        '请先登录',
+                        style: TextStyle(
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.secondary,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '点击登录',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            )
           : loadFailed && favList.isEmpty && collectedFavList.isEmpty
               ? Center(
                   child: Column(

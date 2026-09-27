@@ -211,7 +211,6 @@ class _DetailScreenState extends State<DetailScreen>
             title: const Text('正在播放'),
             forceMaterialTransparency: true,
             actions: [
-              _buildQualityButton(),
               _buildShareButton(),
             ],
           ),
@@ -241,16 +240,39 @@ class _DetailScreenState extends State<DetailScreen>
     return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 
-  Widget _buildQualityButton() {
+  /// 音质切换按钮（底部控制行风格：图标 + 文字标签，置于下载按钮旁）。
+  Widget _buildQualityButton(BuildContext context, bool isSmallScreen) {
     if (_isAudioServiceLoading || ThemeProvider.instance.elderMode) {
       return const SizedBox.shrink();
     }
 
     final src = _currentSequenceState?.currentSource;
-    return IconButton(
-      icon: const Icon(Icons.music_note),
-      tooltip: '切换音质',
-      onPressed: src == null ? null : _showQualitySheet,
+    return InkWell(
+      onTap: src == null ? null : _showQualitySheet,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.music_note,
+              size: isSmallScreen ? 22 : 24,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              '音质',
+              style: TextStyle(
+                fontSize: isSmallScreen ? 8 : 10,
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.6),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -988,6 +1010,7 @@ class _DetailScreenState extends State<DetailScreen>
       children: [
         _buildSleepTimerButton(context, isSmallScreen),
         _buildPlaybackSpeedButton(context, isSmallScreen),
+        _buildQualityButton(context, isSmallScreen),
         _buildDownloadButton(context, isSmallScreen),
         _buildPlaylistButton(context, isSmallScreen),
         _buildCommentButton(context, isSmallScreen),

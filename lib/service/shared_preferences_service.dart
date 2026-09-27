@@ -459,7 +459,7 @@ class SharedPreferencesService {
 
   /// 音质 id -> 展示名称
   static const Map<int, String> audioQualityLabels = {
-    kAudioQualityAuto: '自动（最高可用音质）',
+    kAudioQualityAuto: '自动（不含 Hi-Res）',
     kAudioQualityHiRes: 'Hi-Res 无损',
     kAudioQuality192K: '高音质 192K',
     kAudioQuality132K: '标准 132K',
