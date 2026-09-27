@@ -28,6 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _maxConcurrentDownloads = 3;
   int _cacheLimitSize = 300;
   bool _showDailyRecommendations = true;
+  bool _showRecentListening = true;
   bool _readFromClipboard = true;
 
   @override
@@ -50,6 +51,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferencesService.instance;
     final showDailyRecommendations =
         prefs.getBool('show_daily_recommendations') ?? true;
+    final showRecentListening =
+        prefs.getBool('show_recent_listening') ?? true;
     final readFromClipboard =
         await SharedPreferencesService.getReadFromClipboard();
     if (mounted) {
@@ -62,6 +65,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _maxConcurrentDownloads = maxConcurrentDownloads;
         _cacheLimitSize = cacheLimitSize;
         _showDailyRecommendations = showDailyRecommendations;
+        _showRecentListening = showRecentListening;
         _readFromClipboard = readFromClipboard;
       });
     }
@@ -577,6 +581,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 await prefs.setBool('show_daily_recommendations', value);
                 setState(() {
                   _showDailyRecommendations = value;
+                });
+              },
+            ),
+            SwitchListTile(
+              title: const Text('显示最近在听'),
+              secondary: const Icon(Icons.history),
+              subtitle: const Text('在收藏夹页面显示最近在听'),
+              value: _showRecentListening,
+              onChanged: (bool value) async {
+                final prefs = await SharedPreferencesService.instance;
+                await prefs.setBool('show_recent_listening', value);
+                setState(() {
+                  _showRecentListening = value;
                 });
               },
             ),

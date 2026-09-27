@@ -249,11 +249,20 @@ class BilibiliAPI {
   }
 
   /// 获取收藏夹列表
-  /// rid: 视频稿件 avid ，检查收藏夹是否包含该稿件
+  /// rid: 视频稿件 avid ，检查收藏夹是否包含该稿件。
+  /// rid 为空时用分页接口 created/list（返回收藏夹封面，供主页网格
+  /// 封面兜底）；rid 非空沿用 list-all（ fav_state 标记包含关系）。
   Future<List<Fav>?> getFavs(int uid, {int? rid}) async {
-    return _callAPI(apiFavsUrl,
-        queryParameters: {'up_mid': uid, 'rid': rid},
-        callback: (data) => FavResult.fromJson(data).list);
+    if (rid != null) {
+      return _callAPI(apiFavsUrl,
+          queryParameters: {'up_mid': uid, 'rid': rid},
+          callback: (data) => FavResult.fromJson(data).list);
+    }
+    return _callAPIMultiPage(apiFavListUrl,
+        params: (pn) => {'up_mid': uid, 'pn': pn, 'ps': 50, 'platform': 'web'},
+        extract: (data) =>
+            (data['list'] as List).map((x) => Fav.fromJson(x)).toList(),
+        hasMoreCheck: (data, len) => len < (data['count'] as int? ?? 0));
   }
 
   Future<List<Fav>?> getCollection(int uid) async {
@@ -271,21 +280,29 @@ class BilibiliAPI {
               'ps': 20,
               'pn': pn,
             },
-        extract: (data) {
-          return (data['medias'] as List)
-              .map((x) => Meta(
-                    bvid: x['bvid'],
-                    title: x['title'],
-                    artist: x['upper']['name'],
-                    mid: x['upper']['mid'],
-                    aid: x['id'],
-                    duration: x['duration'],
-                    artUri: x['cover'],
-                  ))
-              .toList();
-        },
+        extract: (data) => _extractCollectionMetas(data),
         hasMoreCheck: (data, len) => len < (data['info']['media_count'] ?? 1));
   }
+
+  /// 只拉取收藏的合集第一页内容（主页封面堆叠的轻量兜底）
+  Future<List<Meta>?> getCollectionMetasFirstPage(int mid) async {
+    final data = await _callAPI(apiCollectionMetasUrl,
+        queryParameters: {'season_id': mid, 'ps': 20, 'pn': 1});
+    if (data == null) return null;
+    return _extractCollectionMetas(data);
+  }
+
+  List<Meta> _extractCollectionMetas(dynamic data) => (data['medias'] as List)
+      .map((x) => Meta(
+            bvid: x['bvid'],
+            title: x['title'],
+            artist: x['upper']['name'],
+            mid: x['upper']['mid'],
+            aid: x['id'],
+            duration: x['duration'],
+            artUri: x['cover'],
+          ))
+      .toList();
 
   Future<List<Meta>?> getFavMetas(int mid) async {
     return _callAPIMultiPage(apiFavMetasUrl,
@@ -294,20 +311,30 @@ class BilibiliAPI {
               'ps': 40,
               'pn': pn,
             },
-        extract: (data) => (data['medias'] as List)
-            .map((x) => Meta(
-                  bvid: x['bvid'],
-                  title: x['title'],
-                  artist: x['upper']['name'],
-                  mid: x['upper']['mid'],
-                  aid: x['id'],
-                  duration: x['duration'],
-                  artUri: x['cover'],
-                  parts: x['page'],
-                ))
-            .toList(),
+        extract: (data) => _extractFavMetas(data),
         hasMoreCheck: (data, _) => data['has_more'] as bool);
   }
+
+  /// 只拉取收藏夹第一页内容（主页封面堆叠的轻量兜底，不拉全量分页）
+  Future<List<Meta>?> getFavMetasFirstPage(int mid) async {
+    final data = await _callAPI(apiFavMetasUrl,
+        queryParameters: {'media_id': mid, 'ps': 20, 'pn': 1});
+    if (data == null) return null;
+    return _extractFavMetas(data);
+  }
+
+  List<Meta> _extractFavMetas(dynamic data) => (data['medias'] as List)
+      .map((x) => Meta(
+            bvid: x['bvid'],
+            title: x['title'],
+            artist: x['upper']['name'],
+            mid: x['upper']['mid'],
+            aid: x['id'],
+            duration: x['duration'],
+            artUri: x['cover'],
+            parts: x['page'],
+          ))
+      .toList();
 
   Future<UserInfoResult?> getUserInfo(int mid) {
     return _callAPI(apiUserInfoUrl,

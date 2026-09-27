@@ -279,7 +279,8 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
                 MaterialPageRoute<Widget>(
                     builder: (_) => const DynamicScreen()),
               ),
-              icon: const Icon(Icons.dynamic_feed),
+              // B 站「动态」官方图标为风车造型
+              icon: const Icon(Icons.wind_power_outlined),
             ),
             IconButton(
               onPressed: () => _pushThrottled<Widget>(
@@ -290,14 +291,14 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
             ),
           ],
           IconButton(
+            // 从设置页返回时总是刷新主页，使「显示每日推荐」等
+            // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
             onPressed: () => _pushThrottled<bool>(
               MaterialPageRoute<bool>(
                 builder: (_) => const SettingsScreen(),
               ),
-            )?.then((shouldRefresh) async {
-              if (shouldRefresh == true) {
-                await _favScreenState?.refreshLoginState();
-              }
+            )?.then((_) async {
+              await _favScreenState?.refreshLoginState();
             }),
             icon: const Icon(Icons.settings_outlined),
           ),

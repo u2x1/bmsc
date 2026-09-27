@@ -178,6 +178,27 @@ class BilibiliService {
     return ret;
   }
 
+  /// 只拉取收藏夹第一页内容并增量缓存——主页封面堆叠的轻量兜底，
+  /// 不拉全量分页，也不覆盖已有的完整缓存
+  Future<void> cacheFavFirstPageMetas(int mid) async {
+    final ret = await _bilibiliAPI.getFavMetasFirstPage(mid);
+    if (ret != null) {
+      DatabaseManager.cacheMetas(ret);
+      DatabaseManager.mergeCacheFavListVideo(
+          ret.map((x) => x.bvid).toList(), mid);
+    }
+  }
+
+  /// 只拉取收藏的合集第一页内容并增量缓存（主页封面堆叠兜底）
+  Future<void> cacheCollectionFirstPageMetas(int mid) async {
+    final ret = await _bilibiliAPI.getCollectionMetasFirstPage(mid);
+    if (ret != null) {
+      DatabaseManager.cacheMetas(ret);
+      DatabaseManager.mergeCacheCollectedFavListVideo(
+          ret.map((x) => x.bvid).toList(), mid);
+    }
+  }
+
   Future<SearchResult?> search(String value, int pn) {
     return _bilibiliAPI.search(value, pn);
   }

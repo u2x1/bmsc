@@ -7,6 +7,7 @@ const String apiCommentsOfCommentUrl = '$_baseUrl/x/v2/reply/reply';
 const String apiUserUploadsUrl = '$_baseUrl/x/space/wbi/arc/search';
 const String apiMyInfoUrl = '$_baseUrl/x/space/myinfo';
 const String apiFavsUrl = '$_baseUrl/x/v3/fav/folder/created/list-all';
+const String apiFavListUrl = '$_baseUrl/x/v3/fav/folder/created/list';
 const String apiCollectionUrl = '$_baseUrl/x/v3/fav/folder/collected/list';
 const String apiCollectionMetasUrl = '$_baseUrl/x/space/fav/season/list';
 const String apiFavMetasUrl = '$_baseUrl/x/v3/fav/resource/list';

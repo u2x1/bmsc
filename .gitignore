@@ -13,6 +13,11 @@
 migrate_working_dir/
 devtools_options.yaml
 
+# VM Service 截图脚本的产物（脚本本身入库，见 tools/screenshot/*.dart）
+tools/screenshot/*.png
+tools/screenshot/iso.txt
+tools/screenshot/root.txt
+
 # IntelliJ related
 *.iml
 *.ipr

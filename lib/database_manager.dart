@@ -11,6 +11,7 @@ import '../model/fav.dart';
 import '../model/fav_detail.dart';
 import '../model/meta.dart';
 import '../model/play_stat.dart';
+import '../util/recent_picks.dart';
 import 'dart:math' as math;
 import 'package:bmsc/util/logger.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -69,7 +70,7 @@ class DatabaseManager {
     try {
       final db = await openDatabase(
         path,
-        version: 6,
+        version: 7,
         onCreate: (db, version) async {
           _logger.info('Creating new database tables...');
           await db.execute('''
@@ -135,6 +136,7 @@ class DatabaseManager {
             id INTEGER PRIMARY KEY,
             title TEXT,
             mediaCount INTEGER,
+            cover TEXT,
             list_order INTEGER
           )
         ''');
@@ -160,6 +162,7 @@ class DatabaseManager {
             id INTEGER PRIMARY KEY,
             title TEXT,
             mediaCount INTEGER,
+            cover TEXT,
             list_order INTEGER
           )
         ''');
@@ -204,6 +207,14 @@ class DatabaseManager {
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           _logger.info('Upgrading database from v$oldVersion to v$newVersion');
+
+          if (oldVersion <= 6) {
+            // 收藏夹列表新增 cover 列：缓存列表 API 返回的收藏夹自身封面，
+            // 供主页网格拼贴兜底
+            await db.execute('ALTER TABLE $favListTable ADD COLUMN cover TEXT');
+            await db.execute(
+                'ALTER TABLE $collectedFavListTable ADD COLUMN cover TEXT');
+          }
 
           if (oldVersion <= 5) {
             await db.execute('''
@@ -916,6 +927,7 @@ class DatabaseManager {
           'id': favs[i].id,
           'title': favs[i].title,
           'mediaCount': favs[i].mediaCount,
+          'cover': favs[i].cover,
           'list_order': i,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
@@ -940,6 +952,7 @@ class DatabaseManager {
           'id': favs[i].id,
           'title': favs[i].title,
           'mediaCount': favs[i].mediaCount,
+          'cover': favs[i].cover,
           'list_order': i,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
@@ -960,6 +973,7 @@ class DatabaseManager {
               id: row['id'] as int,
               title: row['title'] as String,
               mediaCount: row['mediaCount'] as int,
+              cover: row['cover'] as String?,
             ))
         .toList();
   }
@@ -975,6 +989,20 @@ class DatabaseManager {
     }
     await batch.commit();
     _logger.info('cached ${bvids.length} collected fav list videos');
+  }
+
+  /// 增量合并收藏的合集视频缓存（不删除已有记录）——用于主页封面
+  /// 堆叠兜底的第一页补拉
+  static Future<void> mergeCacheCollectedFavListVideo(
+      List<String> bvids, int mid) async {
+    final db = await database;
+    final batch = db.batch();
+    for (var bvid in bvids) {
+      batch.insert(collectedFavListVideoTable, {'bvid': bvid, 'mid': mid},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    await batch.commit();
+    _logger.info('merged ${bvids.length} collected fav list videos');
   }
 
   static Future<List<String>> getCachedCollectionBvids(int mid) async {
@@ -1067,6 +1095,7 @@ class DatabaseManager {
               id: row['id'] as int,
               title: row['title'] as String,
               mediaCount: row['mediaCount'] as int,
+              cover: row['cover'] as String?,
             ))
         .toList();
   }
@@ -1080,6 +1109,20 @@ class DatabaseManager {
     }
     await batch.commit();
     _logger.info('cached ${bvids.length} fav list videos');
+  }
+
+  /// 增量合并收藏夹视频缓存（不删除已有记录）——用于主页封面
+  /// 堆叠兜底的第一页补拉，避免覆盖掉之前缓存的完整列表
+  static Future<void> mergeCacheFavListVideo(
+      List<String> bvids, int mid) async {
+    final db = await database;
+    final batch = db.batch();
+    for (var bvid in bvids) {
+      batch.insert(favListVideoTable, {'bvid': bvid, 'mid': mid},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
+    }
+    await batch.commit();
+    _logger.info('merged ${bvids.length} fav list videos');
   }
 
   static Future<List<String>> getCachedFavBvids(int mid) async {
@@ -1103,6 +1146,92 @@ class DatabaseManager {
       whereArgs: [bvid],
     );
     return results.isNotEmpty;
+  }
+
+  /// 主页收藏夹网格的封面堆叠：每个收藏夹取前 [perFav] 张本地缓存的
+  /// 歌曲封面。仅查本地 DB（收藏夹视频表 JOIN meta_cache.artUri 与
+  /// play_stat），不访问网络；无缓存的收藏夹不在返回 map 中（UI 走
+  /// 收藏夹自身封面兜底或占位图）。
+  ///
+  /// 封面顺序不是简单按夹内顺序，而是按播放统计打分（见
+  /// recent_picks.playStatScore：最近播放 + 播放次数 + 累计时长）
+  /// 降序挑选——堆叠最上层的主体封面是用户最近常听、最有辨识度的
+  /// 那首；从未播放过的歌曲分值为 0，按夹内原顺序垫底。
+  static Future<Map<int, List<String>>> getFavCoverPreviews(
+    List<int> favIds,
+    List<int> collectedFavIds, {
+    int perFav = 3,
+  }) async {
+    final db = await database;
+    final result = <int, List<String>>{};
+
+    // rows: fav_id, cover, last_played, total_play_time, play_count
+    void collectScored(List<Map<String, Object?>> rows) {
+      // 按收藏夹分组，保留夹内原始顺序（行号）用于同分兜底
+      final byFav = <int, List<(int, Map<String, Object?>)>>{};
+      for (var i = 0; i < rows.length; i++) {
+        final id = rows[i]['fav_id'] as int;
+        byFav.putIfAbsent(id, () => []).add((i, rows[i]));
+      }
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final entry in byFav.entries) {
+        final candidates = entry.value;
+        final maxCount = candidates.fold(
+            0, (m, e) => math.max(m, (e.$2['play_count'] as int?) ?? 0));
+        final maxTime = candidates.fold(
+            0, (m, e) => math.max(m, (e.$2['total_play_time'] as int?) ?? 0));
+        final scored = <(String cover, double score, int order)>[];
+        for (final (order, row) in candidates) {
+          final cover = row['cover'] as String?;
+          if (cover == null || cover.isEmpty) continue;
+          scored.add((
+            cover,
+            playStatScore(
+              lastPlayed: (row['last_played'] as int?) ?? 0,
+              playCount: (row['play_count'] as int?) ?? 0,
+              totalPlayTime: (row['total_play_time'] as int?) ?? 0,
+              maxCount: maxCount,
+              maxTime: maxTime,
+              nowMs: now,
+            ),
+            order,
+          ));
+        }
+        // 分值降序，同分保持夹内原顺序
+        scored.sort((a, b) =>
+            b.$2 != a.$2 ? b.$2.compareTo(a.$2) : a.$3.compareTo(b.$3));
+        final covers = <String>[];
+        for (final s in scored) {
+          if (covers.length >= perFav) break;
+          if (!covers.contains(s.$1)) covers.add(s.$1);
+        }
+        if (covers.isNotEmpty) result[entry.key] = covers;
+      }
+    }
+
+    if (favIds.isNotEmpty) {
+      final placeholders = List.filled(favIds.length, '?').join(',');
+      collectScored(await db.rawQuery('''
+        SELECT v.mid AS fav_id, m.artUri AS cover,
+               s.last_played, s.total_play_time, s.play_count
+        FROM $favListVideoTable v
+        LEFT JOIN $metaTable m ON v.bvid = m.bvid
+        LEFT JOIN $statTable s ON v.bvid = s.bvid
+        WHERE v.mid IN ($placeholders)
+      ''', favIds));
+    }
+    if (collectedFavIds.isNotEmpty) {
+      final placeholders = List.filled(collectedFavIds.length, '?').join(',');
+      collectScored(await db.rawQuery('''
+        SELECT v.mid AS fav_id, m.artUri AS cover,
+               s.last_played, s.total_play_time, s.play_count
+        FROM $collectedFavListVideoTable v
+        LEFT JOIN $metaTable m ON v.bvid = m.bvid
+        LEFT JOIN $statTable s ON v.bvid = s.bvid
+        WHERE v.mid IN ($placeholders)
+      ''', collectedFavIds));
+    }
+    return result;
   }
 
   static Future<void> rmFav(String bvid, {int? mid}) async {
