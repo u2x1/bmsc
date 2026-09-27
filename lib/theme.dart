@@ -23,11 +23,16 @@ class ThemeProvider extends ChangeNotifier {
   bool _elderMode = false;
   bool get elderMode => _elderMode;
 
+  /// OLED 纯黑模式：深色主题下背景使用 #000000（issue #15）
+  bool _pureBlack = false;
+  bool get pureBlack => _pureBlack;
+
   Future<void> init() async {
     final prefs = await SharedPreferencesService.instance;
     _commentFontSize =
         prefs.getInt('comment_font_size') ?? _defaultCommentFontSize;
     _elderMode = prefs.getBool('elder_mode') ?? false;
+    _pureBlack = prefs.getBool('pure_black_mode') ?? false;
     switch (prefs.getString('theme_mode') ?? '') {
       case 'light':
         _themeMode = ThemeMode.light;
@@ -68,6 +73,15 @@ class ThemeProvider extends ChangeNotifier {
       _elderMode = enabled;
       final prefs = await SharedPreferencesService.instance;
       await prefs.setBool('elder_mode', enabled);
+      notifyListeners();
+    }
+  }
+
+  Future<void> setPureBlack(bool enabled) async {
+    if (_pureBlack != enabled) {
+      _pureBlack = enabled;
+      final prefs = await SharedPreferencesService.instance;
+      await prefs.setBool('pure_black_mode', enabled);
       notifyListeners();
     }
   }
@@ -123,4 +137,24 @@ class ThemeProvider extends ChangeNotifier {
       bodySmall: TextStyle(color: Color(0xFFBDBDBD)),
     ),
   );
+
+  /// OLED 纯黑配色：背景层为纯黑 #000000，容器层保留微弱亮度以区分层级
+  static final ColorScheme _oledColorScheme = _darkColorScheme.copyWith(
+    surface: Colors.black,
+    surfaceDim: Colors.black,
+    surfaceBright: const Color(0xFF2C2C2C),
+    surfaceContainerLowest: Colors.black,
+    surfaceContainerLow: const Color(0xFF0D0D0D),
+    surfaceContainer: const Color(0xFF141414),
+    surfaceContainerHigh: const Color(0xFF1C1C1C),
+    surfaceContainerHighest: const Color(0xFF262626),
+  );
+
+  static final ThemeData darkThemeOled = darkTheme.copyWith(
+    colorScheme: _oledColorScheme,
+    scaffoldBackgroundColor: Colors.black,
+  );
+
+  /// 当前应使用的深色主题（根据纯黑模式开关）
+  ThemeData get activeDarkTheme => _pureBlack ? darkThemeOled : darkTheme;
 }

@@ -52,7 +52,18 @@ Future<void> main() async {
   // 不阻塞启动。
   unawaited(DatabaseManager.sweepOrphanCacheFiles());
   if (!kDebugMode) _setupErrorHandlers();
-  runApp(const MyApp());
+  // 捕获第三方库（just_audio 等）内部 print 输出到应用日志。just_audio
+  // 的代理请求失败只走 print，release 下不可见，诊断代理问题必需。
+  runZonedGuarded(
+    () => runApp(const MyApp()),
+    (error, stack) => _logger.severe('zone error', error, stack),
+    zoneSpecification: ZoneSpecification(
+      print: (self, parent, zone, line) {
+        parent.print(zone, line);
+        _logger.info('[print] $line');
+      },
+    ),
+  );
 }
 
 void _setupErrorHandlers() {
@@ -78,7 +89,7 @@ class MyApp extends StatelessWidget {
         return MaterialApp(
           navigatorKey: ErrorHandler.navigatorKey,
           theme: ThemeProvider.lightTheme,
-          darkTheme: ThemeProvider.darkTheme,
+          darkTheme: ThemeProvider.instance.activeDarkTheme,
           themeMode: ThemeProvider.instance.themeMode,
           builder: (context, child) {
             // 长辈模式：在系统字体缩放基础上整体放大
@@ -163,7 +174,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
             MediaQuery.platformBrightnessOf(context) == Brightness.dark);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle(
       systemNavigationBarColor: isDarkMode
-          ? ThemeProvider.darkTheme.colorScheme.surfaceContainer
+          ? ThemeProvider.instance.activeDarkTheme.colorScheme.surfaceContainer
           : ThemeProvider.lightTheme.colorScheme.surfaceContainer,
     ));
   }

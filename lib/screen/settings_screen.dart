@@ -310,6 +310,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  /// OLED 纯黑模式开关：深色主题下背景使用 #000000（issue #15）
+  Widget _buildPureBlackTile() {
+    return SwitchListTile(
+      title: const Text('纯黑模式 (OLED)'),
+      secondary: const Icon(Icons.contrast),
+      subtitle: const Text('深色主题使用纯黑背景，OLED 屏幕更省电'),
+      value: ThemeProvider.instance.pureBlack,
+      onChanged: (bool value) async {
+        await ThemeProvider.instance.setPureBlack(value);
+        setState(() {});
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final elderMode = ThemeProvider.instance.elderMode;
@@ -326,6 +340,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             _buildSectionTitle('显示'),
             _buildElderModeTile(),
             _buildThemeModeTile(),
+            _buildPureBlackTile(),
           ] else ...[
             _buildSectionTitle('音质'),
             ListTile(
@@ -478,6 +493,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               },
             ),
             _buildThemeModeTile(),
+            _buildPureBlackTile(),
             ListTile(
               title: const Text('评论字体大小'),
               subtitle: Text('${ThemeProvider.instance.commentFontSize}'),
