@@ -610,12 +610,21 @@ class BilibiliService {
     final lastUpdate =
         lastUpdateStr != null ? DateTime.parse(lastUpdateStr) : null;
     final now = DateTime.now();
+
+    final defaultFavFolder =
+        await SharedPreferencesService.getDefaultFavFolder();
+    // 缓存的推荐属于哪个收藏夹；与当前默认收藏夹不一致（用户切换过）
+    // 时必须重新生成，否则会一直显示上一个收藏夹的推荐
+    final cachedFolderId = prefs.getInt('daily_recommendations_folder');
+    final folderChanged = defaultFavFolder != null &&
+        cachedFolderId != null &&
+        cachedFolderId != defaultFavFolder.$1;
+
     if (lastUpdate == null ||
         !DateUtils.isSameDay(now, lastUpdate) ||
         recommendations == null ||
-        force == true) {
-      final defaultFavFolder =
-          await SharedPreferencesService.getDefaultFavFolder();
+        force == true ||
+        folderChanged) {
       if (defaultFavFolder == null) return null;
 
       var favVideos =
@@ -634,6 +643,8 @@ class BilibiliService {
 
       await prefs.setString(
           'last_recommendations_update', now.toIso8601String());
+      await prefs.setInt(
+          'daily_recommendations_folder', defaultFavFolder.$1);
       await prefs.setString('daily_recommendations',
           jsonEncode(recommendedVideos.map((v) => v.toJson()).toList()));
 
