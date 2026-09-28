@@ -10,11 +10,11 @@ import '../audio/audio_player_ext.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'playlist_bottom_sheet.dart';
 
-/// 「正在播放」页路由：类 Apple Music 的底部滑入模态。
-/// MaterialPageRoute(fullscreenDialog: true) 仅在 iOS 上是底部滑入，
-/// Android 等平台走平台默认转场（侧向/淡入淡出），系统返回时与
-/// 页内的下滑关闭手势方向不一致；这里统一为非 iOS 平台也使用
-/// 纵向滑入/滑出，保证系统返回与下滑手势视觉连贯。
+/// 「正在播放」页路由：各平台使用与自身返回手势一致的内置转场——
+/// - Android：平台默认转场（支持系统预测性返回，横向进入/退出），
+///   页内不提供下滑关闭手势（见 DetailScreen.build）；
+/// - iOS：原生底部模态转场 + 页内下滑关闭手势；
+/// - 桌面：无系统返回手势，使用纵向滑入/滑出模态，与下滑手势连贯。
 class _NowPlayingRoute extends MaterialPageRoute<void> {
   _NowPlayingRoute()
       : super(
@@ -29,8 +29,8 @@ class _NowPlayingRoute extends MaterialPageRoute<void> {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    if (Theme.of(context).platform == TargetPlatform.iOS) {
-      // iOS 保留原生模态转场（底部滑入 + 背景压暗）
+    final platform = Theme.of(context).platform;
+    if (platform == TargetPlatform.android || platform == TargetPlatform.iOS) {
       return super.buildTransitions(
           context, animation, secondaryAnimation, child);
     }

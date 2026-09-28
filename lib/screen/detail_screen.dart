@@ -144,7 +144,7 @@ class _DetailScreenState extends State<DetailScreen>
     return diagonal < 900 || screenSize.shortestSide < 360;
   }
 
-  // ---- 下滑关闭手势 ----
+  // ---- 下滑关闭手势（Android 不启用，见 build） ----
   // 模拟 Apple Music「播放中」页的下滑关闭：拖拽实时下移页面，释放时
   // 超过阈值或快速下滑则 pop（路由反向转场本身即纵向下滑退出，见
   // playing_card.dart 的 _NowPlayingRoute，与手势视觉连贯），否则回弹。
@@ -198,37 +198,45 @@ class _DetailScreenState extends State<DetailScreen>
   Widget build(BuildContext context) {
     final isLandscape =
         MediaQuery.of(context).orientation == Orientation.landscape;
+    // Android：不用下滑手势，返回完全交给系统（预测性返回 + 平台
+    // 转场，横向进出）；iOS/桌面：保留下滑关闭手势，与 _NowPlayingRoute
+    // 的纵向转场视觉连贯
+    final swipeDismissEnabled =
+        Theme.of(context).platform != TargetPlatform.android;
 
+    final page = Scaffold(
+      resizeToAvoidBottomInset: false,
+      appBar: AppBar(
+        title: const Text('正在播放'),
+        forceMaterialTransparency: true,
+        actions: [
+          _buildShareButton(),
+        ],
+      ),
+      body: _isAudioServiceLoading
+          ? const Center(child: CircularProgressIndicator())
+          : SafeArea(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(
+                    maxWidth: 800,
+                  ),
+                  child: isLandscape
+                      ? _buildLandscapeLayout(context)
+                      : _buildPortraitLayout(context),
+                ),
+              ),
+            ),
+    );
+
+    if (!swipeDismissEnabled) return page;
     return GestureDetector(
       onVerticalDragStart: _onDismissDragStart,
       onVerticalDragUpdate: _onDismissDragUpdate,
       onVerticalDragEnd: _onDismissDragEnd,
       child: Transform.translate(
         offset: Offset(0, _dismissDragOffset),
-        child: Scaffold(
-          resizeToAvoidBottomInset: false,
-          appBar: AppBar(
-            title: const Text('正在播放'),
-            forceMaterialTransparency: true,
-            actions: [
-              _buildShareButton(),
-            ],
-          ),
-          body: _isAudioServiceLoading
-              ? const Center(child: CircularProgressIndicator())
-              : SafeArea(
-                  child: Center(
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(
-                        maxWidth: 800,
-                      ),
-                      child: isLandscape
-                          ? _buildLandscapeLayout(context)
-                          : _buildPortraitLayout(context),
-                    ),
-                  ),
-                ),
-        ),
+        child: page,
       ),
     );
   }
