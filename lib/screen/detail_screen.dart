@@ -145,9 +145,9 @@ class _DetailScreenState extends State<DetailScreen>
   }
 
   // ---- 下滑关闭手势 ----
-  // iOS 上 fullscreenDialog 转场不支持系统手势返回，模拟 Apple Music
-  // 「播放中」页的下滑关闭：拖拽实时下移页面，释放时超过阈值或快速下滑
-  // 则 pop（fullscreenDialog 反向转场本身即下滑退出，视觉连贯），否则回弹。
+  // 模拟 Apple Music「播放中」页的下滑关闭：拖拽实时下移页面，释放时
+  // 超过阈值或快速下滑则 pop（路由反向转场本身即纵向下滑退出，见
+  // playing_card.dart 的 _NowPlayingRoute，与手势视觉连贯），否则回弹。
   double _dismissDragOffset = 0;
   AnimationController? _dismissAnimController;
 

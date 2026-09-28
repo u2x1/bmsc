@@ -10,6 +10,43 @@ import '../audio/audio_player_ext.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'playlist_bottom_sheet.dart';
 
+/// 「正在播放」页路由：类 Apple Music 的底部滑入模态。
+/// MaterialPageRoute(fullscreenDialog: true) 仅在 iOS 上是底部滑入，
+/// Android 等平台走平台默认转场（侧向/淡入淡出），系统返回时与
+/// 页内的下滑关闭手势方向不一致；这里统一为非 iOS 平台也使用
+/// 纵向滑入/滑出，保证系统返回与下滑手势视觉连贯。
+class _NowPlayingRoute extends MaterialPageRoute<void> {
+  _NowPlayingRoute()
+      : super(
+          builder: (context) => const DetailScreen(),
+          fullscreenDialog: true,
+        );
+
+  @override
+  Widget buildTransitions(
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    if (Theme.of(context).platform == TargetPlatform.iOS) {
+      // iOS 保留原生模态转场（底部滑入 + 背景压暗）
+      return super.buildTransitions(
+          context, animation, secondaryAnimation, child);
+    }
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return SlideTransition(
+      position: Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero)
+          .animate(curved),
+      child: child,
+    );
+  }
+}
+
 class PlayingCard extends StatefulWidget {
   const PlayingCard({super.key});
 
@@ -27,15 +64,9 @@ class _PlayingCardState extends State<PlayingCard> {
     }
     _navigating = true;
     try {
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => const DetailScreen(),
-          // 底部滑入模态样式（类 Apple Music「播放中」页）；iOS 上该转场
-          // 不支持左缘手势返回，由 DetailScreen 自行实现下滑关闭手势。
-          fullscreenDialog: true,
-        ),
-      );
+      // 底部滑入模态样式（类 Apple Music「播放中」页），各平台一致；
+      // 不支持左缘手势返回，由 DetailScreen 自行实现下滑关闭手势
+      await Navigator.push(context, _NowPlayingRoute());
     } finally {
       _navigating = false;
     }
