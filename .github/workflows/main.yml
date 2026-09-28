@@ -1,4 +1,4 @@
-name: build release apks
+name: build release artifacts
 
 on:
   push:
@@ -140,3 +140,80 @@ jobs:
             build/app/outputs/flutter-apk/${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-arm32.apk
             build/app/outputs/flutter-apk/${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-x64.apk
             ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-linux.zip
+
+  build-ios:
+    name: Build Unsigned IPA
+    needs: test # 与 build 并行；iOS 构建不需要 Android keystore 等机密
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.47.2' # 与本地开发环境一致
+          cache: true
+
+      - uses: olegtarasov/get-tag@v2.1.4
+        id: tagName
+        with:
+          tagRegex: 'v([0-9]+.[0-9]+.[0-9]+)'
+          tagRegexGroup: 1
+
+      - name: Replace YAML version with tag version
+        # 不替换的话 App 内 package_info 读到占位版本 99.99.99，
+        # 更新检查会误报；macOS 的 sed 需要 -i ''
+        run: |
+          sed -i '' "s/99.99.99/${GIT_TAG_NAME}/g" pubspec.yaml
+          echo "Tag used version: ${GIT_TAG_NAME}"
+
+      - name: Pub Get Packages
+        run: flutter pub get
+
+      - name: Build ios (no codesign)
+        # 未签名构建：不配置证书/provisioning，产出 Runner.app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned ipa
+        # 标准 IPA 结构：Payload/Runner.app 打包为 zip；
+        # 供 AltStore/SideStore/Sideloadly/TrollStore 等重签名后侧载
+        run: |
+          mkdir -p Payload
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          zip -qr ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-unsigned.ipa Payload
+
+      - name: Determine release tag
+        id: rel
+        run: |
+          # 仅严格 vX.Y.Z 形式附到 Release；测试 tag 只传 workflow artifact
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach ipa to release
+        # 与 build job 并行执行，Release 由 build job 创建；
+        # 轮询等待 Release 出现后再追加 ipa（gh 追加不触碰其他产物）
+        if: steps.rel.outputs.is_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PERSONAL_RELEASE_TOKEN }}
+        run: |
+          for i in $(seq 1 60); do
+            if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+              gh release upload "$GITHUB_REF_NAME" \
+                ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-unsigned.ipa --clobber
+              exit 0
+            fi
+            echo "waiting for release $GITHUB_REF_NAME ... ($i/60)"
+            sleep 10
+          done
+          echo "release not found after waiting" >&2
+          exit 1
+
+      - name: Save artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: ${{ github.event.repository.name }}-v${{ steps.tagName.outputs.tag }}-unsigned.ipa
