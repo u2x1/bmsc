@@ -17,12 +17,6 @@ class ThemeProvider extends ChangeNotifier {
   int _commentFontSize = _defaultCommentFontSize;
   int get commentFontSize => _commentFontSize;
 
-  /// 长辈模式：全局大字体 + 简化界面
-  static const double elderTextScale = 1.4;
-
-  bool _elderMode = false;
-  bool get elderMode => _elderMode;
-
   /// OLED 纯黑模式：深色主题下背景使用 #000000（issue #15）
   bool _pureBlack = false;
   bool get pureBlack => _pureBlack;
@@ -31,7 +25,6 @@ class ThemeProvider extends ChangeNotifier {
     final prefs = await SharedPreferencesService.instance;
     _commentFontSize =
         prefs.getInt('comment_font_size') ?? _defaultCommentFontSize;
-    _elderMode = prefs.getBool('elder_mode') ?? false;
     _pureBlack = prefs.getBool('pure_black_mode') ?? false;
     switch (prefs.getString('theme_mode') ?? '') {
       case 'light':
@@ -64,15 +57,6 @@ class ThemeProvider extends ChangeNotifier {
       _commentFontSize = size;
       final prefs = await SharedPreferencesService.instance;
       await prefs.setInt('comment_font_size', size);
-      notifyListeners();
-    }
-  }
-
-  Future<void> setElderMode(bool enabled) async {
-    if (_elderMode != enabled) {
-      _elderMode = enabled;
-      final prefs = await SharedPreferencesService.instance;
-      await prefs.setBool('elder_mode', enabled);
       notifyListeners();
     }
   }

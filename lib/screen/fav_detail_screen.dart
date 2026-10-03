@@ -1,11 +1,9 @@
-import 'package:flutter/rendering.dart';
 import 'package:bmsc/component/download_parts_dialog.dart';
 import 'package:bmsc/screen/comment_screen.dart';
 import 'package:bmsc/screen/user_detail_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/download_manager.dart';
-import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:bmsc/model/fav.dart';
 import '../component/track_tile.dart';
@@ -146,17 +144,13 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
   }
 
   Future<void> _loadItemInfos() async {
-    final entries = await Future.wait(rawFavInfo.map((m) async => MapEntry(
-          m.bvid,
-          (
-            await DatabaseManager.getExcludedParts(m.bvid),
-            await DatabaseManager.cachedCount(m.bvid),
-            await DatabaseManager.downloadedCount(m.bvid),
-          ),
-        )));
+    // 一次性聚合查询（3 条），替代每视频 3 条的 N+1 查询爆发
+    //（496 个视频的收藏夹原需 1488 条查询）
+    final infos = await DatabaseManager.getItemInfos(
+        rawFavInfo.map((m) => m.bvid).toList());
     if (!mounted) return;
     setState(() {
-      _itemInfoCache = Map.fromEntries(entries);
+      _itemInfoCache = infos;
     });
   }
 
@@ -209,7 +203,6 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final elderMode = ThemeProvider.instance.elderMode;
     return PopScope(
       canPop: !isSelectionMode,
       onPopInvokedWithResult: (didPop, result) {
@@ -275,11 +268,10 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                   });
                 },
               ),
-            if (!elderMode)
-              IconButton(
-                icon: Icon(isSearching ? Icons.close : Icons.search),
-                onPressed: _toggleSearch,
-              ),
+            IconButton(
+              icon: Icon(isSearching ? Icons.close : Icons.search),
+              onPressed: _toggleSearch,
+            ),
           ],
         ),
         body: RefreshIndicator(
@@ -308,57 +300,15 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                   ],
                 )
               : ListView.builder(
-                  scrollCacheExtent: ScrollCacheExtent.pixels(10000),
-                  itemCount: favInfo.length +
-                      (ThemeProvider.instance.elderMode ? 1 : 0),
+                  // 使用默认 cacheExtent（250px）：原 10000px 会让打开
+                  // 收藏夹的首帧一口气预建上百个 TrackTile，造成瞬间卡顿
+                  itemCount: favInfo.length,
                   itemBuilder: (context, index) {
-                    if (ThemeProvider.instance.elderMode) {
-                      if (index == 0) return _buildElderPlayAllButton();
-                      return favDetailListTileView(index - 1);
-                    }
                     return favDetailListTileView(index);
                   },
                 ),
         ),
         bottomNavigationBar: const PlayingCard(),
-      ),
-    );
-  }
-
-  /// 长辈模式：整宽「播放全部」大按钮，放列表顶部
-  Widget _buildElderPlayAllButton() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: FilledButton.icon(
-        style: FilledButton.styleFrom(
-          padding: const EdgeInsets.symmetric(vertical: 18),
-          minimumSize: const Size.fromHeight(56),
-        ),
-        icon: const Icon(Icons.play_arrow, size: 32),
-        label: Text(
-          '播放全部 (${favInfo.length} 首)',
-          style: const TextStyle(fontWeight: FontWeight.w600),
-        ),
-        onPressed: () async {
-          try {
-            _logger.info('Playing whole fav list ${widget.fav.id}');
-            final bvids = widget.isCollected
-                ? await DatabaseManager.getCachedCollectionBvids(widget.fav.id)
-                : await DatabaseManager.getCachedFavBvids(widget.fav.id);
-            if (bvids.isEmpty) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('本地缓存为空，请先下拉刷新加载内容')),
-                );
-              }
-              return;
-            }
-            await AudioService.instance
-                .then((x) => x.playByBvids(bvids, index: 0));
-          } catch (e, stackTrace) {
-            _logger.severe('Error playing whole fav list', e, stackTrace);
-          }
-        },
       ),
     );
   }
@@ -431,7 +381,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                 .then((x) => x.appendCachedPlaylist(favInfo[index].bvid));
           }
         },
-        onLongPress: isSelectionMode || ThemeProvider.instance.elderMode
+        onLongPress: isSelectionMode
             ? null
             : () async {
                 if (!context.mounted) return;

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/model/entity.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
@@ -35,6 +36,11 @@ class DatabaseManager {
   static const String downloadTaskTable = 'download_tasks';
   static const String excludedPartsTable = 'excluded_parts';
   static const String statTable = 'play_stat';
+
+  /// 收藏夹内容变更版本号：addFav/rmFav 实际改库后自增。
+  /// 主页收藏夹列表监听它重读本地缓存，使收藏/取消收藏后
+  /// 收藏夹的媒体计数与封面堆叠无需网络刷新即即时更新
+  static final ValueNotifier<int> favListVersion = ValueNotifier(0);
 
   static Future<Database> get database async {
     if (_database != null) return _database!;
@@ -512,6 +518,54 @@ class DatabaseManager {
       [bvid],
     );
     return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// 批量获取多个视频的「排除分P / 已缓存数 / 已下载数」，
+  /// 供收藏夹详情页一次性加载，替代每视频 3 条查询的 N+1 模式。
+  /// IN 查询按 500 个 bvid 分块，避免超出 SQLite 变量上限。
+  static Future<Map<String, (List<int>, int, int)>> getItemInfos(
+      List<String> bvids) async {
+    final result = <String, (List<int>, int, int)>{};
+    if (bvids.isEmpty) return result;
+    final db = await database;
+    final excludedMap = <String, List<int>>{};
+    final cachedMap = <String, int>{};
+    final downloadedMap = <String, int>{};
+
+    const chunkSize = 500;
+    for (var i = 0; i < bvids.length; i += chunkSize) {
+      final chunk = bvids.sublist(i, math.min(i + chunkSize, bvids.length));
+      final placeholders = List.filled(chunk.length, '?').join(',');
+      for (final row in await db.rawQuery(
+        'SELECT bvid, cid FROM $excludedPartsTable WHERE bvid IN ($placeholders)',
+        chunk,
+      )) {
+        excludedMap
+            .putIfAbsent(row['bvid'] as String, () => [])
+            .add(row['cid'] as int);
+      }
+      for (final row in await db.rawQuery(
+        'SELECT bvid, COUNT(*) AS count FROM $cacheTable WHERE bvid IN ($placeholders) GROUP BY bvid',
+        chunk,
+      )) {
+        cachedMap[row['bvid'] as String] = row['count'] as int;
+      }
+      for (final row in await db.rawQuery(
+        'SELECT bvid, COUNT(*) AS count FROM $downloadTable WHERE bvid IN ($placeholders) GROUP BY bvid',
+        chunk,
+      )) {
+        downloadedMap[row['bvid'] as String] = row['count'] as int;
+      }
+    }
+
+    for (final bvid in bvids) {
+      result[bvid] = (
+        excludedMap[bvid] ?? const [],
+        cachedMap[bvid] ?? 0,
+        downloadedMap[bvid] ?? 0,
+      );
+    }
+    return result;
   }
 
   static Future<String?> getCachedPath(String bvid, int cid) async {
@@ -1236,9 +1290,27 @@ class DatabaseManager {
 
   static Future<void> rmFav(String bvid, {int? mid}) async {
     final db = await database;
-    await db.delete(favListVideoTable,
+    // 删除前先按收藏夹统计将删行数，用于同步 fav_list 的 mediaCount
+    final counts = await db.rawQuery(
+      'SELECT mid, COUNT(*) AS c FROM $favListVideoTable '
+      'WHERE bvid = ? ${mid != null ? 'AND mid = ?' : ''} GROUP BY mid',
+      mid != null ? [bvid, mid] : [bvid],
+    );
+    final deleted = await db.delete(favListVideoTable,
         where: 'bvid = ? ${mid != null ? 'AND mid = ?' : ''}',
         whereArgs: mid != null ? [bvid, mid] : [bvid]);
+    if (deleted > 0) {
+      final batch = db.batch();
+      for (final row in counts) {
+        batch.rawUpdate(
+          'UPDATE $favListTable SET mediaCount = MAX(mediaCount - ?, 0) '
+          'WHERE id = ?',
+          [row['c'], row['mid']],
+        );
+      }
+      await batch.commit(noResult: true);
+      favListVersion.value++;
+    }
     _logger.info(
         'removed fav $bvid ${mid != null ? 'and mid $mid' : ''} from database');
   }
@@ -1246,6 +1318,7 @@ class DatabaseManager {
   // TODO: low performance
   static Future<void> addFav(String bvid, int mid) async {
     final db = await database;
+    var inserted = false;
     await db.transaction((txn) async {
       final existing = await txn.query(
         favListVideoTable,
@@ -1273,9 +1346,19 @@ class DatabaseManager {
 
         await txn.execute('DROP TABLE temp_fav');
 
+        // 同步收藏夹的媒体计数，主页无需等待网络刷新即显示最新值
+        await txn.rawUpdate(
+          'UPDATE $favListTable SET mediaCount = mediaCount + 1 WHERE id = ?',
+          [mid],
+        );
+        inserted = true;
+
         _logger.info('added fav $bvid to database');
       }
     });
+    if (inserted) {
+      favListVersion.value++;
+    }
   }
 
   static Future<void> removeDownloaded(List<(String, int)> bvidscids) async {

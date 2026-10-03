@@ -1,6 +1,5 @@
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:bmsc/service/audio_service.dart';
-import 'package:bmsc/theme.dart';
 import 'package:bmsc/util/widget.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -31,8 +30,8 @@ class _NowPlayingRoute extends MaterialPageRoute<void> {
   ) {
     final platform = Theme.of(context).platform;
     if (platform == TargetPlatform.android || platform == TargetPlatform.iOS) {
-      return super.buildTransitions(
-          context, animation, secondaryAnimation, child);
+      return super
+          .buildTransitions(context, animation, secondaryAnimation, child);
     }
     final curved = CurvedAnimation(
       parent: animation,
@@ -57,6 +56,12 @@ class PlayingCard extends StatefulWidget {
 class _PlayingCardState extends State<PlayingCard> {
   bool _navigating = false;
 
+  /// AudioService 单例 future 缓存：build 中临时新建 Future 会让
+  /// FutureBuilder 回到 waiting 态，父级重建时迷你播放条闪烁并
+  /// 重建整棵子树
+  late final Future<AudioPlayer> _playerFuture =
+      AudioService.instance.then((x) => x.player);
+
   Future<void> _openDetail() async {
     // 防止重复点击 push 多个 DetailScreen
     if (_navigating) {
@@ -72,202 +77,26 @@ class _PlayingCardState extends State<PlayingCard> {
     }
   }
 
-  /// 长辈模式：两行布局——上行封面+歌名，下行三个带文字的超大按钮
-  Widget _buildElderLayout(
-    BuildContext context,
-    AudioPlayer player,
-    String artUri, {
-    required String title,
-    required String artist,
-    required Duration position,
-    required Duration duration,
-    required bool playing,
-    required bool isLoadingOrBuffering,
-  }) {
+  /// 进度条由高频 positionStream 单独驱动：每次位置更新只重建
+  /// ProgressBar 自身（RepaintBoundary 隔离重绘范围），封面/标题/
+  /// 按钮等静态部分不再随播放进度每秒重建数次
+  Widget _buildProgressBar(AudioPlayer player, Duration duration) {
     final colorScheme = Theme.of(context).colorScheme;
-    final labelStyle = Theme.of(context)
-        .textTheme
-        .bodyMedium
-        ?.copyWith(fontWeight: FontWeight.w600);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ProgressBar(
-          progress: position,
-          total: duration,
-          onSeek: player.seek,
-          barHeight: 6,
-          baseBarColor: colorScheme.surfaceDim,
-          progressBarColor: colorScheme.primary,
-          thumbRadius: 8,
-          thumbColor: colorScheme.primary,
-          timeLabelLocation: TimeLabelLocation.none,
-        ),
-        InkWell(
-          onTap: _openDetail,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-            child: Row(
-              children: [
-                shadow(
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: SizedBox(
-                      width: 64,
-                      height: 64,
-                      child: artUri == ""
-                          ? Container(
-                              color: colorScheme.surfaceContainerHighest,
-                              child: Icon(Icons.music_note,
-                                  size: 32, color: colorScheme.primary),
-                            )
-                          : CachedNetworkImage(
-                              imageUrl: "$artUri@256w_144h_1c",
-                              placeholder: (context, url) => Container(
-                                color: colorScheme.surfaceContainerHighest,
-                                child: Icon(Icons.music_note,
-                                    size: 32, color: colorScheme.primary),
-                              ),
-                              errorWidget: (context, url, error) => Container(
-                                color: colorScheme.surfaceContainerHighest,
-                                child: Icon(Icons.music_note,
-                                    size: 32, color: colorScheme.primary),
-                              ),
-                              fit: BoxFit.cover,
-                            ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        title,
-                        style: Theme.of(context)
-                            .textTheme
-                            .titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        artist,
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(Icons.chevron_right,
-                    size: 32, color: colorScheme.secondary),
-              ],
-            ),
-          ),
-        ),
-        // 三个带文字的超大按钮
-        Padding(
-          padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: _elderControlButton(
-                  icon: Icons.skip_previous,
-                  label: '上一首',
-                  iconSize: 36,
-                  labelStyle: labelStyle,
-                  onPressed: player.hasPrevious
-                      ? player.seekToPreviousRegardlessOfLoopMode
-                      : null,
-                ),
-              ),
-              Expanded(
-                child: _elderControlButton(
-                  icon: playing ? Icons.pause : Icons.play_arrow,
-                  label: isLoadingOrBuffering
-                      ? '加载中'
-                      : playing
-                          ? '暂停'
-                          : '播放',
-                  iconSize: 44,
-                  emphasized: true,
-                  labelStyle: labelStyle,
-                  onPressed: isLoadingOrBuffering
-                      ? null
-                      : playing
-                          ? player.pause
-                          : player.play,
-                ),
-              ),
-              Expanded(
-                child: _elderControlButton(
-                  icon: Icons.skip_next,
-                  label: '下一首',
-                  iconSize: 36,
-                  labelStyle: labelStyle,
-                  onPressed: player.hasNext
-                      ? player.seekToNextRegardlessOfLoopMode
-                      : null,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  /// 长辈模式大按钮：图标在上、文字在下，整块区域可点
-  Widget _elderControlButton({
-    required IconData icon,
-    required String label,
-    required double iconSize,
-    required TextStyle? labelStyle,
-    required VoidCallback? onPressed,
-    bool emphasized = false,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final enabled = onPressed != null;
-    final iconColor = !enabled
-        ? colorScheme.outline.withValues(alpha: 0.4)
-        : emphasized
-            ? colorScheme.onPrimary
-            : colorScheme.onSurface;
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onPressed,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            emphasized
-                ? Container(
-                    width: 68,
-                    height: 68,
-                    decoration: BoxDecoration(
-                      color: enabled
-                          ? colorScheme.primary
-                          : colorScheme.surfaceContainerHighest,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(icon, size: iconSize, color: iconColor),
-                  )
-                : Icon(icon, size: iconSize, color: iconColor),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: labelStyle?.copyWith(
-                color:
-                    enabled ? null : colorScheme.outline.withValues(alpha: 0.4),
-              ),
-            ),
-          ],
-        ),
+    return RepaintBoundary(
+      child: StreamBuilder<Duration>(
+        stream: player.positionStream,
+        builder: (context, snapshot) {
+          return ProgressBar(
+            progress: snapshot.data ?? Duration.zero,
+            total: duration,
+            onSeek: player.seek,
+            barHeight: 2,
+            baseBarColor: colorScheme.surfaceDim,
+            progressBarColor: colorScheme.primary,
+            thumbRadius: 0,
+            timeLabelLocation: TimeLabelLocation.none,
+          );
+        },
       ),
     );
   }
@@ -275,7 +104,7 @@ class _PlayingCardState extends State<PlayingCard> {
   @override
   Widget build(BuildContext context) {
     return FutureBuilder(
-        future: AudioService.instance.then((x) => x.player),
+        future: _playerFuture,
         builder: (context, snapshot) {
           final player = snapshot.data;
           if (player == null) {
@@ -291,14 +120,14 @@ class _PlayingCardState extends State<PlayingCard> {
             // 迷你播放条被手势条/三键导航遮挡（issue #14）
             child: SafeArea(
               top: false,
-              child: StreamBuilder<
-                  (SequenceState?, Duration, Duration?, PlayerState)>(
-                stream: Rx.combineLatest4(
+              // 低频流：仅切歌/时长/播放状态变化时发射；
+              // 播放进度的高频更新只重建 _buildProgressBar
+              child: StreamBuilder<(SequenceState?, Duration?, PlayerState)>(
+                stream: Rx.combineLatest3(
                   player.sequenceStateStream,
-                  player.positionStream,
                   player.durationStream,
                   player.playerStateStream,
-                  (a, b, c, d) => (a, b, c, d),
+                  (a, b, c) => (a, b, c),
                 ),
                 builder: (context, snapshot) {
                   final data = snapshot.data;
@@ -308,42 +137,18 @@ class _PlayingCardState extends State<PlayingCard> {
                   }
                   final artUri =
                       state?.currentSource?.tag.artUri?.toString() ?? "";
-                  final position = data?.$2 ?? Duration.zero;
-                  final duration = data?.$3 ?? Duration.zero;
-                  final playing = data?.$4.playing ?? false;
+                  final duration = data?.$2 ?? Duration.zero;
+                  final playing = data?.$3.playing ?? false;
                   final isLoadingOrBuffering = [
                     ProcessingState.loading,
                     ProcessingState.buffering
-                  ].contains(data?.$4.processingState);
-
-                  if (ThemeProvider.instance.elderMode) {
-                    return _buildElderLayout(
-                      context,
-                      player,
-                      artUri,
-                      title: state?.currentSource?.tag.title ?? "",
-                      artist: state?.currentSource?.tag.artist ?? "",
-                      position: position,
-                      duration: duration,
-                      playing: playing,
-                      isLoadingOrBuffering: isLoadingOrBuffering,
-                    );
-                  }
+                  ].contains(data?.$3.processingState);
+                  final progressBar = _buildProgressBar(player, duration);
 
                   return Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Progress bar
-                      ProgressBar(
-                        progress: position,
-                        total: duration,
-                        onSeek: player.seek,
-                        barHeight: 2,
-                        baseBarColor: Theme.of(context).colorScheme.surfaceDim,
-                        progressBarColor: Theme.of(context).colorScheme.primary,
-                        thumbRadius: 0,
-                        timeLabelLocation: TimeLabelLocation.none,
-                      ),
+                      progressBar,
 
                       // Main content
                       InkWell(

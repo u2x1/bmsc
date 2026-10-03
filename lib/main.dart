@@ -91,18 +91,6 @@ class MyApp extends StatelessWidget {
           theme: ThemeProvider.lightTheme,
           darkTheme: ThemeProvider.instance.activeDarkTheme,
           themeMode: ThemeProvider.instance.themeMode,
-          builder: (context, child) {
-            // 长辈模式：在系统字体缩放基础上整体放大
-            if (!ThemeProvider.instance.elderMode) return child!;
-            final systemFactor = MediaQuery.textScalerOf(context).scale(1.0);
-            return MediaQuery(
-              data: MediaQuery.of(context).copyWith(
-                textScaler: TextScaler.linear(
-                    systemFactor * ThemeProvider.elderTextScale),
-              ),
-              child: child!,
-            );
-          },
           home: Builder(builder: (context) {
             return Scaffold(
               body: MyHomePage(title: 'BiliMusic'),
@@ -267,29 +255,26 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
           ),
         ),
         actions: [
-          if (!ThemeProvider.instance.elderMode) ...[
-            IconButton(
-              onPressed: () => _pushThrottled<Widget>(
-                MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
-              ),
-              icon: const Icon(Icons.search),
+          IconButton(
+            onPressed: () => _pushThrottled<Widget>(
+              MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
             ),
-            IconButton(
-              onPressed: () => _pushThrottled<Widget>(
-                MaterialPageRoute<Widget>(
-                    builder: (_) => const DynamicScreen()),
-              ),
-              // B 站「动态」官方图标为风车造型
-              icon: const Icon(Icons.wind_power_outlined),
+            icon: const Icon(Icons.search),
+          ),
+          IconButton(
+            onPressed: () => _pushThrottled<Widget>(
+              MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()),
             ),
-            IconButton(
-              onPressed: () => _pushThrottled<Widget>(
-                MaterialPageRoute<Widget>(
-                    builder: (_) => const LocalHistoryScreen()),
-              ),
-              icon: const Icon(Icons.history_outlined),
+            // B 站「动态」官方图标为风车造型
+            icon: const Icon(Icons.wind_power_outlined),
+          ),
+          IconButton(
+            onPressed: () => _pushThrottled<Widget>(
+              MaterialPageRoute<Widget>(
+                  builder: (_) => const LocalHistoryScreen()),
             ),
-          ],
+            icon: const Icon(Icons.history_outlined),
+          ),
           IconButton(
             // 从设置页返回时总是刷新主页，使「显示每日推荐」等
             // 主页相关设置即时生效（设置页不会返回 shouldRefresh）

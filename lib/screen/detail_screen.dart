@@ -12,7 +12,6 @@ import 'package:bmsc/screen/user_detail_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
-import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
@@ -250,7 +249,7 @@ class _DetailScreenState extends State<DetailScreen>
 
   /// 音质切换按钮（底部控制行风格：图标 + 文字标签，置于下载按钮旁）。
   Widget _buildQualityButton(BuildContext context, bool isSmallScreen) {
-    if (_isAudioServiceLoading || ThemeProvider.instance.elderMode) {
+    if (_isAudioServiceLoading) {
       return const SizedBox.shrink();
     }
 
@@ -346,7 +345,7 @@ class _DetailScreenState extends State<DetailScreen>
   }
 
   Widget _buildShareButton() {
-    if (_isAudioServiceLoading || ThemeProvider.instance.elderMode) {
+    if (_isAudioServiceLoading) {
       return const SizedBox.shrink();
     }
 
@@ -424,15 +423,11 @@ class _DetailScreenState extends State<DetailScreen>
                         horizontal: isSmallScreen ? 8.0 : 16.0),
                     child: Column(
                       children: [
-                        if (!ThemeProvider.instance.elderMode) ...[
-                          _buildPlaybackControls(),
-                          SizedBox(height: isSmallScreen ? 8 : 16),
-                        ],
+                        _buildPlaybackControls(),
+                        SizedBox(height: isSmallScreen ? 8 : 16),
                         _buildTransportControls(),
-                        if (!ThemeProvider.instance.elderMode) ...[
-                          SizedBox(height: isSmallScreen ? 8 : 16),
-                          _buildAdditionalControls(context),
-                        ],
+                        SizedBox(height: isSmallScreen ? 8 : 16),
+                        _buildAdditionalControls(context),
                       ],
                     ),
                   ),
@@ -501,15 +496,11 @@ class _DetailScreenState extends State<DetailScreen>
                   padding: EdgeInsets.symmetric(horizontal: horizontalPadding),
                   child: Column(
                     children: [
-                      if (!ThemeProvider.instance.elderMode) ...[
-                        _buildPlaybackControls(),
-                        SizedBox(height: verticalSpacing),
-                      ],
+                      _buildPlaybackControls(),
+                      SizedBox(height: verticalSpacing),
                       _buildTransportControls(),
-                      if (!ThemeProvider.instance.elderMode) ...[
-                        SizedBox(height: verticalSpacing),
-                        _buildAdditionalControls(context),
-                      ],
+                      SizedBox(height: verticalSpacing),
+                      _buildAdditionalControls(context),
                     ],
                   ),
                 ),
@@ -662,7 +653,6 @@ class _DetailScreenState extends State<DetailScreen>
     return _PositionProgressBar(
       player: _audioService!.player,
       isSmallScreen: isSmallScreen,
-      elderMode: ThemeProvider.instance.elderMode,
     );
   }
 
@@ -851,64 +841,11 @@ class _DetailScreenState extends State<DetailScreen>
   Widget _buildTransportControls() {
     // 使用辅助方法判断小屏幕
     final isSmallScreen = _isSmallScreen(context);
-    final elderMode = ThemeProvider.instance.elderMode;
     final iconSize = isSmallScreen ? 30.0 : 36.0;
     final player = _audioService!.player;
     final hasPrevious = player.hasPrevious;
     final hasNext = player.hasNext;
     final playerState = player.playerState;
-
-    // 长辈模式：图标 + 文字标签，老人看得懂才点得准
-    if (elderMode) {
-      final labelStyle = Theme.of(context)
-          .textTheme
-          .bodyMedium
-          ?.copyWith(fontWeight: FontWeight.w600);
-      final processingState = playerState.processingState;
-      final isLoading = processingState == ProcessingState.loading ||
-          processingState == ProcessingState.buffering;
-      final playLabel = isLoading
-          ? '加载中'
-          : player.playing
-              ? '暂停'
-              : '播放';
-      return Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _elderTransportButton(
-            icon: Icons.skip_previous,
-            label: '上一首',
-            labelStyle: labelStyle,
-            onPressed:
-                hasPrevious ? player.seekToPreviousRegardlessOfLoopMode : null,
-          ),
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer,
-                  shape: BoxShape.circle,
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(12.0),
-                  child: _playPauseButton(
-                      playerState, player, context, isSmallScreen),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(playLabel, style: labelStyle),
-            ],
-          ),
-          _elderTransportButton(
-            icon: Icons.skip_next,
-            label: '下一首',
-            labelStyle: labelStyle,
-            onPressed: hasNext ? player.seekToNextRegardlessOfLoopMode : null,
-          ),
-        ],
-      );
-    }
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -937,40 +874,10 @@ class _DetailScreenState extends State<DetailScreen>
     );
   }
 
-  /// 长辈模式：图标在上、文字在下的传输大按钮
-  Widget _elderTransportButton({
-    required IconData icon,
-    required String label,
-    required TextStyle? labelStyle,
-    required VoidCallback? onPressed,
-  }) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final enabled = onPressed != null;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IconButton(
-          icon: Icon(icon, size: 48),
-          color: enabled
-              ? colorScheme.onSurface
-              : colorScheme.outline.withValues(alpha: 0.4),
-          onPressed: onPressed,
-        ),
-        Text(
-          label,
-          style: labelStyle?.copyWith(
-            color: enabled ? null : colorScheme.outline.withValues(alpha: 0.4),
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _playPauseButton(PlayerState? playerState, AudioPlayer player,
       BuildContext context, bool isSmallScreen) {
     final processingState = playerState?.processingState;
-    final iconSize =
-        ThemeProvider.instance.elderMode ? 56.0 : (isSmallScreen ? 34.0 : 40.0);
+    final iconSize = isSmallScreen ? 34.0 : 40.0;
 
     if (processingState == ProcessingState.loading ||
         processingState == ProcessingState.buffering) {
@@ -2000,12 +1907,10 @@ class _DetailScreenState extends State<DetailScreen>
 class _PositionProgressBar extends StatelessWidget {
   final AudioPlayer player;
   final bool isSmallScreen;
-  final bool elderMode;
 
   const _PositionProgressBar({
     required this.player,
     required this.isSmallScreen,
-    this.elderMode = false,
   });
 
   @override
@@ -2028,13 +1933,13 @@ class _PositionProgressBar extends StatelessWidget {
             buffered: state.$2,
             total: state.$3 ?? Duration.zero,
             onSeek: player.seek,
-            barHeight: elderMode ? 8 : 5,
+            barHeight: 5,
             timeLabelTextStyle: TextStyle(
               color: Theme.of(context).colorScheme.primary,
-              fontSize: elderMode ? 14 : 10,
+              fontSize: 10,
             ),
-            timeLabelPadding: elderMode ? 8 : 5,
-            thumbRadius: elderMode ? 10 : 5,
+            timeLabelPadding: 5,
+            thumbRadius: 5,
           );
         },
       ),

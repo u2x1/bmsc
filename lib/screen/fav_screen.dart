@@ -4,7 +4,6 @@ import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/fav.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
-import 'package:bmsc/theme.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
@@ -40,10 +39,28 @@ class FavScreenState extends State<FavScreen> {
   /// 各收藏夹的本地缓存封面（供网格拼贴缩略图），键为收藏夹 id
   Map<int, List<String>> favCovers = {};
 
+  /// 分区开关的偏好读取 future 缓存：build 内临时新建 Future 会让
+  /// FutureBuilder 每次 setState 都重新经历 waiting 态（吸顶 header
+  /// 闪烁并多一轮异步等待）；设置页返回时由 refreshLoginState 重新
+  /// 读取以应用变更
+  late Future<bool> _showRecentFuture;
+  late Future<bool> _showDailyFuture;
+
+  void _reloadSectionToggles() {
+    _showRecentFuture = SharedPreferencesService.instance
+        .then((prefs) => prefs.getBool('show_recent_listening') ?? true);
+    _showDailyFuture = SharedPreferencesService.instance
+        .then((prefs) => prefs.getBool('show_daily_recommendations') ?? true);
+  }
+
   @override
   void initState() {
     super.initState();
+    _reloadSectionToggles();
     widget.onInit?.call(this);
+    // 播放页收藏/取消收藏后本地库会 bump favListVersion，
+    // 此处重读本地缓存使主页收藏夹计数与封面即时更新
+    DatabaseManager.favListVersion.addListener(_onFavListChanged);
     BilibiliService.instance.then((x) {
       setState(() {
         signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
@@ -54,12 +71,19 @@ class FavScreenState extends State<FavScreen> {
     });
   }
 
+  void _onFavListChanged() {
+    loadFavorites(local: true);
+  }
+
   @override
   void dispose() {
+    DatabaseManager.favListVersion.removeListener(_onFavListChanged);
     super.dispose();
   }
 
   Future<void> refreshLoginState() async {
+    // 设置页可能修改了分区开关，重新读取
+    _reloadSectionToggles();
     final x = await BilibiliService.instance;
     if (!mounted) return;
     setState(() {
@@ -164,9 +188,7 @@ class FavScreenState extends State<FavScreen> {
     );
     for (final fav in [...favList, ...collectedFavList]) {
       final cover = fav.cover;
-      if ((covers[fav.id] ?? []).isEmpty &&
-          cover != null &&
-          cover.isNotEmpty) {
+      if ((covers[fav.id] ?? []).isEmpty && cover != null && cover.isNotEmpty) {
         covers[fav.id] = [cover];
       }
     }
@@ -395,30 +417,9 @@ class FavScreenState extends State<FavScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final elderMode = ThemeProvider.instance.elderMode;
     return Scaffold(
-      // 标准模式不再使用顶部「云收藏夹」栏，新建/刷新入口
-      // 移至「我的收藏夹」分区标题行；长辈模式保留大刷新按钮栏
-      appBar: !elderMode
-          ? null
-          : AppBar(
-              title: const Text('我的歌单',
-                  style:
-                      TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-              actions: !signedin
-                  ? []
-                  : [
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: TextButton.icon(
-                          icon: const Icon(Icons.refresh, size: 28),
-                          label: const Text('刷新',
-                              style: TextStyle(fontWeight: FontWeight.w600)),
-                          onPressed: loadFavorites,
-                        ),
-                      ),
-                    ],
-            ),
+      // 不使用顶部「云收藏夹」栏，新建/刷新入口
+      // 移至「我的收藏夹」分区标题行
       body: !signedin
           ? Center(
               // 未登录：点击直接进入登录页，登录成功后原地刷新收藏夹
@@ -490,13 +491,12 @@ class FavScreenState extends State<FavScreen> {
                   slivers: [
                     // 板块一：每日推荐（header 吸顶，整行可点击），
                     // 推荐基于收藏夹，无收藏夹时不显示
-                    if (!elderMode &&
-                        (favList.isNotEmpty || collectedFavList.isNotEmpty))
+                    if (favList.isNotEmpty || collectedFavList.isNotEmpty)
                       _buildDailyRecommendSection(),
 
                     // 板块二：最近在听（九宫格页卡，header 吸顶，
                     // 受「显示最近在听」设置开关控制）
-                    if (!elderMode) _buildRecentSection(),
+                    _buildRecentSection(),
 
                     // 板块三：我的收藏夹（header 吸顶 + 封面拼贴九宫格）。
                     // 标题行常驻，保证空列表时仍可从尾部按钮新建/刷新
@@ -504,13 +504,10 @@ class FavScreenState extends State<FavScreen> {
                       header: SectionHeader(
                         icon: Icons.folder_outlined,
                         title: '我的收藏夹',
-                        count:
-                            favList.isEmpty ? null : _visibleCount(favList),
-                        trailing: elderMode ? null : _buildFavActions(),
+                        count: favList.isEmpty ? null : _visibleCount(favList),
+                        trailing: _buildFavActions(),
                       ),
-                      sliver: SliverToBoxAdapter(
-                        child: _buildFavSectionBody(favList, true),
-                      ),
+                      sliver: _buildFavSectionBody(favList, true),
                     ),
 
                     // 板块四：收藏的收藏夹（header 吸顶 + 封面拼贴九宫格，
@@ -523,9 +520,7 @@ class FavScreenState extends State<FavScreen> {
                           title: '收藏的收藏夹',
                           count: _visibleCount(collectedFavList),
                         ),
-                        sliver: SliverToBoxAdapter(
-                          child: _buildFavSectionBody(collectedFavList, false),
-                        ),
+                        sliver: _buildFavSectionBody(collectedFavList, false),
                       ),
                     ],
                   ],
@@ -533,138 +528,44 @@ class FavScreenState extends State<FavScreen> {
     );
   }
 
-  /// 收藏夹板块内容：长辈模式为大卡片列表，标准为封面拼贴九宫格；
-  /// 两个板块都为空时显示占位提示
+  /// 收藏夹板块内容（返回 sliver）：封面拼贴九宫格；
+  /// 两个板块都为空时显示占位提示。
+  /// 使用懒加载 SliverGrid 替代原 shrinkWrap GridView：
+  /// 单元格按需构建，滚动经过时不再整区全量布局/重绘
   Widget _buildFavSectionBody(List<Fav> favs, bool isOwned) {
-    final elderMode = ThemeProvider.instance.elderMode;
     if (favList.isEmpty && collectedFavList.isEmpty) {
-      return SizedBox(
-        height: MediaQuery.of(context).size.height * 0.5,
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.folder_outlined, size: 64, color: Colors.grey),
-              const SizedBox(height: 16),
-              Text(
-                '暂无收藏夹',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Theme.of(context).colorScheme.secondary,
+      return SliverToBoxAdapter(
+        child: SizedBox(
+          height: MediaQuery.of(context).size.height * 0.5,
+          child: Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.folder_outlined, size: 64, color: Colors.grey),
+                const SizedBox(height: 16),
+                Text(
+                  '暂无收藏夹',
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Theme.of(context).colorScheme.secondary,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       );
     }
     final visible =
         favs.where((f) => hideFav == null || !hideFav!.contains(f.id)).toList();
-    if (elderMode) {
-      return Column(
-        children: [
-          for (final fav in visible) _buildElderFavCard(fav, isOwned),
-        ],
-      );
-    }
     return _buildFavGrid(visible, isOwned);
-  }
-
-  /// 长辈模式：一键播放整个收藏夹（缓存为空时联网加载兜底）
-  Future<void> _playWholeFav(Fav fav, bool isOwned) async {
-    final messenger = ScaffoldMessenger.of(context);
-    var bvids = isOwned
-        ? await DatabaseManager.getCachedFavBvids(fav.id)
-        : await DatabaseManager.getCachedCollectionBvids(fav.id);
-    if (bvids.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('正在加载歌曲…')));
-      final metas = isOwned
-          ? await BilibiliService.instance.then((x) => x.getFavMetas(fav.id))
-          : await BilibiliService.instance
-              .then((x) => x.getCollectionMetas(fav.id));
-      bvids = metas?.map((m) => m.bvid).toList() ?? [];
-    }
-    if (bvids.isEmpty) {
-      messenger.showSnackBar(const SnackBar(content: Text('加载失败，请检查网络后重试')));
-      return;
-    }
-    await AudioService.instance.then((x) => x.playByBvids(bvids));
-  }
-
-  /// 长辈模式大卡片：大图标 + 大字标题 + 「▶ 播放」大按钮，两步听歌
-  Widget _buildElderFavCard(Fav fav, bool isOwned) {
-    final colorScheme = Theme.of(context).colorScheme;
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => FavDetailScreen(
-                fav: fav,
-                isCollected: !isOwned,
-              ),
-            ),
-          );
-        },
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Icon(Icons.folder, size: 48, color: colorScheme.primary),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      fav.title,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleLarge
-                          ?.copyWith(fontWeight: FontWeight.w600),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${fav.mediaCount} 个视频',
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(color: colorScheme.secondary),
-                    ),
-                  ],
-                ),
-              ),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-                ),
-                icon: const Icon(Icons.play_arrow, size: 28),
-                label: const Text('播放',
-                    style: TextStyle(fontWeight: FontWeight.w600)),
-                onPressed: () => _playWholeFav(fav, isOwned),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
   }
 
   /// 板块二「最近在听」：受「显示最近在听」设置开关控制。
   /// 返回 sliver 供 CustomScrollView 使用。
   Widget _buildRecentSection() {
     return FutureBuilder<bool>(
-      future: SharedPreferencesService.instance
-          .then((prefs) => prefs.getBool('show_recent_listening') ?? true),
+      future: _showRecentFuture,
       builder: (context, snapshot) {
         if (!snapshot.hasData || !snapshot.data!) {
           return const SliverToBoxAdapter(child: SizedBox());
@@ -680,8 +581,7 @@ class FavScreenState extends State<FavScreen> {
   /// 返回 sliver 供 CustomScrollView 使用。
   Widget _buildDailyRecommendSection() {
     return FutureBuilder<bool>(
-      future: SharedPreferencesService.instance.then(
-          (prefs) => prefs.getBool('show_daily_recommendations') ?? true),
+      future: _showDailyFuture,
       builder: (context, snapshot) {
         if (!snapshot.hasData || !snapshot.data!) {
           return const SliverToBoxAdapter(child: SizedBox());
@@ -738,35 +638,29 @@ class FavScreenState extends State<FavScreen> {
   int _visibleCount(List<Fav> favs) =>
       favs.where((f) => hideFav == null || !hideFav!.contains(f.id)).length;
 
-  /// 收藏夹九宫格：与「最近在听」一致的 3 列网格布局，更紧凑；
-  /// 封面为夹内歌曲封面的 2×2 拼贴（本地缓存），点击进入收藏夹，
+  /// 收藏夹九宫格（返回 sliver）：与「最近在听」一致的 3 列网格布局，
+  /// 更紧凑；封面为夹内歌曲封面的堆叠拼贴（本地缓存），点击进入收藏夹，
   /// 封面右上角 ⋮ 按钮弹出操作菜单。
+  /// SliverGrid.builder 懒加载：仅构建可视区附近的格子。
   Widget _buildFavGrid(List<Fav> favs, bool isOwned) {
     const spacing = 10.0;
-    return Padding(
+    // 封面区高 = 主体封面（恰好 16:9）+ 两层固定步长探出；
+    // 格高 = 封面区高 + 间距 + 两行标题 + 一行计数
+    final cellWidth = (MediaQuery.sizeOf(context).width - 48 - spacing * 2) / 3;
+    final coverHeight =
+        (cellWidth - _favCoverStackStep * 2) * 9 / 16 + _favCoverStackStep * 2;
+    final cellHeight = coverHeight + 4 + 30 + 14;
+    return SliverPadding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          // 封面区高 = 主体封面（恰好 16:9）+ 两层固定步长探出；
-          // 格高 = 封面区高 + 间距 + 两行标题 + 一行计数
-          final cellWidth = (constraints.maxWidth - spacing * 2) / 3;
-          final coverHeight = (cellWidth - _favCoverStackStep * 2) * 9 / 16 +
-              _favCoverStackStep * 2;
-          final cellHeight = coverHeight + 4 + 30 + 14;
-          return GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            padding: EdgeInsets.zero,
-            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              mainAxisSpacing: spacing + 6,
-              crossAxisSpacing: spacing,
-              childAspectRatio: cellWidth / cellHeight,
-            ),
-            itemCount: favs.length,
-            itemBuilder: (context, i) => _buildFavCell(favs[i], isOwned),
-          );
-        },
+      sliver: SliverGrid.builder(
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          mainAxisSpacing: spacing + 6,
+          crossAxisSpacing: spacing,
+          childAspectRatio: cellWidth / cellHeight,
+        ),
+        itemCount: favs.length,
+        itemBuilder: (context, i) => _buildFavCell(favs[i], isOwned),
       ),
     );
   }
@@ -791,13 +685,10 @@ class FavScreenState extends State<FavScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 封面堆叠：三张 16:9 卡片按固定步长向 ↗ 错位
-          ClipRRect(
-            // 圆角 6px：占短边约 8%，与「最近在听」封面一致；
-            // 过大的圆角在矮卡片上显得笨重
-            borderRadius: BorderRadius.circular(6),
-            child: _buildFavCover(covers, scheme),
-          ),
+          // 封面堆叠：三张 16:9 卡片按固定步长向 ↗ 错位；
+          // 圆角 6px 由堆叠内部各层自裁剪（见 _buildFavCover），
+          // 不再包外层 ClipRRect（省一个 saveLayer）
+          _buildFavCover(covers, scheme),
           const SizedBox(height: 4),
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -826,8 +717,8 @@ class FavScreenState extends State<FavScreen> {
                 onTap: () => _showFavActions(fav, isOwned),
                 child: Padding(
                   padding: const EdgeInsets.all(2),
-                  child: Icon(Icons.more_vert,
-                      size: 16, color: scheme.secondary),
+                  child:
+                      Icon(Icons.more_vert, size: 16, color: scheme.secondary),
                 ),
               ),
             ],
@@ -849,21 +740,30 @@ class FavScreenState extends State<FavScreen> {
       child: Icon(Icons.folder_outlined, color: scheme.primary, size: 32),
     );
     if (covers.isEmpty) {
-      return AspectRatio(aspectRatio: 16 / 9, child: placeholder);
+      return AspectRatio(
+        aspectRatio: 16 / 9,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: placeholder,
+        ),
+      );
     }
 
-    // i 为 null 时用纯色卡片垫底，scrim 压暗分层次
+    // i 为 null 时用纯色卡片垫底，半透明黑罩压暗分层次；
+    // 黑罩替代 ColorFiltered(darken)：对半透明黑色两者效果一致
+    //（均为 (1-a)·I），但省去每层的 ColorFiltered saveLayer
     Widget layer(int? i, double scrim) => ClipRRect(
           borderRadius: BorderRadius.circular(6),
-          child: ColorFiltered(
-            colorFilter: ColorFilter.mode(
-              Colors.black.withValues(alpha: scrim),
-              BlendMode.darken,
-            ),
-            child: i != null
-                ? _coverImage(
-                    covers[i], Container(color: scheme.primaryContainer))
-                : Container(color: scheme.primaryContainer),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              i != null
+                  ? _coverImage(
+                      covers[i], Container(color: scheme.primaryContainer))
+                  : Container(color: scheme.primaryContainer),
+              if (scrim > 0)
+                Container(color: Colors.black.withValues(alpha: scrim)),
+            ],
           ),
         );
 
@@ -933,13 +833,11 @@ class FavScreenState extends State<FavScreen> {
                 title: const Text('添加到播放列表'),
                 onTap: () async {
                   Navigator.pop(context);
-                  final bvids =
-                      await DatabaseManager.getCachedFavBvids(fav.id);
+                  final bvids = await DatabaseManager.getCachedFavBvids(fav.id);
                   if (!context.mounted) return;
                   if (bvids.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                          content: Text('本地缓存为空，请先打开收藏夹加载内容')),
+                      const SnackBar(content: Text('本地缓存为空，请先打开收藏夹加载内容')),
                     );
                     return;
                   }

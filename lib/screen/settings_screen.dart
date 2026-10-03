@@ -51,8 +51,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final prefs = await SharedPreferencesService.instance;
     final showDailyRecommendations =
         prefs.getBool('show_daily_recommendations') ?? true;
-    final showRecentListening =
-        prefs.getBool('show_recent_listening') ?? true;
+    final showRecentListening = prefs.getBool('show_recent_listening') ?? true;
     final readFromClipboard =
         await SharedPreferencesService.getReadFromClipboard();
     if (mounted) {
@@ -120,21 +119,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ],
       ),
-    );
-  }
-
-  /// 长辈模式开关：置顶醒目显示
-  Widget _buildElderModeTile() {
-    final elderMode = ThemeProvider.instance.elderMode;
-    return SwitchListTile(
-      title: const Text('长辈模式'),
-      secondary: const Icon(Icons.accessibility_new),
-      subtitle: const Text('字体更大，界面更简单，适合长辈使用'),
-      value: elderMode,
-      onChanged: (bool value) async {
-        await ThemeProvider.instance.setElderMode(value);
-        setState(() {});
-      },
     );
   }
 
@@ -330,7 +314,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final elderMode = ThemeProvider.instance.elderMode;
     return Scaffold(
       appBar: AppBar(
         title: const Text('设置'),
@@ -339,302 +322,291 @@ class _SettingsScreenState extends State<SettingsScreen> {
         children: [
           _buildSectionTitle('账号'),
           _buildLoginTile(),
-          // 长辈模式下只保留核心设置项，避免误改
-          if (elderMode) ...[
-            _buildSectionTitle('显示'),
-            _buildElderModeTile(),
-            _buildThemeModeTile(),
-            _buildPureBlackTile(),
-          ] else ...[
-            _buildSectionTitle('音质'),
-            ListTile(
-              leading: const Icon(Icons.music_note),
-              title: const Text('播放音质'),
-              subtitle: Text(_audioQualityLabel(_audioQuality)),
-              onTap: _showAudioQualityPicker,
-            ),
-            _buildSectionTitle('播放'),
-            SwitchListTile(
-              title: const Text('忽略中断'),
-              secondary: const Icon(Icons.headset),
-              subtitle: const Text('允许与其他应用同时播放'),
-              value: !_reactToInterruption,
-              onChanged: (bool value) async {
-                await SharedPreferencesService.setReactToInterruption(!value);
-                (await AudioService.instance).setInterrupHandler(!value);
+          _buildSectionTitle('音质'),
+          ListTile(
+            leading: const Icon(Icons.music_note),
+            title: const Text('播放音质'),
+            subtitle: Text(_audioQualityLabel(_audioQuality)),
+            onTap: _showAudioQualityPicker,
+          ),
+          _buildSectionTitle('播放'),
+          SwitchListTile(
+            title: const Text('忽略中断'),
+            secondary: const Icon(Icons.headset),
+            subtitle: const Text('允许与其他应用同时播放'),
+            value: !_reactToInterruption,
+            onChanged: (bool value) async {
+              await SharedPreferencesService.setReactToInterruption(!value);
+              (await AudioService.instance).setInterrupHandler(!value);
+              setState(() {
+                _reactToInterruption = !value;
+              });
+            },
+          ),
+          _buildSectionTitle('数据'),
+          SwitchListTile(
+            title: const Text('播放记录上报'),
+            secondary: const Icon(Icons.history),
+            subtitle: const Text('上报记录到 B 站'),
+            value: _historyReported,
+            onChanged: (bool value) async {
+              await SharedPreferencesService.setHistoryReported(value);
+              setState(() {
+                _historyReported = value;
+              });
+            },
+          ),
+          ListTile(
+            title: const Text('上报间隔'),
+            leading: const Icon(Icons.timer),
+            subtitle: Text('$_reportHistoryInterval s'),
+            onTap: () async {
+              final newValue = await _showNumberInputDialog(
+                title: '设置上报间隔',
+                label: '上报间隔',
+                initial: _reportHistoryInterval,
+                min: 1,
+                max: 3600,
+                suffix: 's',
+              );
+              if (newValue != null) {
+                await SharedPreferencesService.setReportHistoryInterval(
+                    newValue);
                 setState(() {
-                  _reactToInterruption = !value;
+                  _reportHistoryInterval = newValue;
                 });
-              },
-            ),
-            _buildSectionTitle('数据'),
-            SwitchListTile(
-              title: const Text('播放记录上报'),
-              secondary: const Icon(Icons.history),
-              subtitle: const Text('上报记录到 B 站'),
-              value: _historyReported,
-              onChanged: (bool value) async {
-                await SharedPreferencesService.setHistoryReported(value);
+              }
+            },
+          ),
+          _buildSectionTitle('下载'),
+          ListTile(
+            title: const Text('下载管理'),
+            leading: const Icon(Icons.download),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<Widget>(
+                    builder: (_) => const DownloadScreen()),
+              );
+            },
+          ),
+          ListTile(
+            title: const Text('下载路径'),
+            subtitle: Text(_downloadPath),
+            leading: const Icon(Icons.folder),
+            onTap: () async {
+              String? selectedDirectory = await FilePicker.getDirectoryPath();
+              if (selectedDirectory != null) {
+                await SharedPreferencesService.setDownloadPath(
+                    selectedDirectory);
                 setState(() {
-                  _historyReported = value;
+                  _downloadPath = selectedDirectory;
                 });
-              },
-            ),
-            ListTile(
-              title: const Text('上报间隔'),
-              leading: const Icon(Icons.timer),
-              subtitle: Text('$_reportHistoryInterval s'),
-              onTap: () async {
-                final newValue = await _showNumberInputDialog(
-                  title: '设置上报间隔',
-                  label: '上报间隔',
-                  initial: _reportHistoryInterval,
-                  min: 1,
-                  max: 3600,
-                  suffix: 's',
-                );
-                if (newValue != null) {
-                  await SharedPreferencesService.setReportHistoryInterval(
-                      newValue);
-                  setState(() {
-                    _reportHistoryInterval = newValue;
-                  });
-                }
-              },
-            ),
-            _buildSectionTitle('下载'),
-            ListTile(
-              title: const Text('下载管理'),
-              leading: const Icon(Icons.download),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<Widget>(
-                      builder: (_) => const DownloadScreen()),
-                );
-              },
-            ),
-            ListTile(
-              title: const Text('下载路径'),
-              subtitle: Text(_downloadPath),
-              leading: const Icon(Icons.folder),
-              onTap: () async {
-                String? selectedDirectory = await FilePicker.getDirectoryPath();
-                if (selectedDirectory != null) {
-                  await SharedPreferencesService.setDownloadPath(
-                      selectedDirectory);
-                  setState(() {
-                    _downloadPath = selectedDirectory;
-                  });
-                }
-              },
-            ),
-            ListTile(
-              title: const Text('最大并发下载数'),
-              subtitle: Text('$_maxConcurrentDownloads'),
-              leading: const Icon(Icons.numbers),
-              onTap: () async {
-                final newValue = await _showNumberInputDialog(
-                  title: '设置最大并发下载数',
-                  label: '最大并发下载数',
-                  initial: _maxConcurrentDownloads,
-                  min: 1,
-                  max: 8,
-                );
-                if (newValue != null) {
-                  await SharedPreferencesService.setMaxConcurrentDownloads(
-                      newValue);
-                  setState(() {
-                    _maxConcurrentDownloads = newValue;
-                  });
-                }
-              },
-            ),
-            _buildSectionTitle('缓存'),
-            ListTile(
-              title: const Text('缓存管理'),
-              leading: const Icon(Icons.storage),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<Widget>(
-                      builder: (_) => const CacheScreen()),
-                );
-              },
-            ),
-            ListTile(
-              title: const Text('缓存大小限制'),
-              subtitle: Text('$_cacheLimitSize MB'),
-              leading: const Icon(Icons.folder),
-              onTap: () async {
-                final newValue = await _showNumberInputDialog(
-                  title: '设置缓存大小限制',
-                  label: '缓存大小',
-                  initial: _cacheLimitSize,
-                  min: 100,
-                  max: 10240,
-                  suffix: 'MB',
-                );
-                if (newValue != null) {
-                  await SharedPreferencesService.setCacheLimitSize(newValue);
-                  setState(() {
-                    _cacheLimitSize = newValue;
-                  });
-                }
-              },
-            ),
-            _buildSectionTitle('显示'),
-            _buildElderModeTile(),
-            ListTile(
-              title: const Text('隐藏收藏夹管理'),
-              leading: const Icon(Icons.folder),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<Widget>(
-                      builder: (_) => const HiddenFavScreen()),
-                );
-              },
-            ),
-            _buildThemeModeTile(),
-            _buildPureBlackTile(),
-            ListTile(
-              title: const Text('评论字体大小'),
-              subtitle: Text('${ThemeProvider.instance.commentFontSize}'),
-              leading: const Icon(Icons.format_size),
-              onTap: () {
-                final originalFontSize = ThemeProvider.instance.commentFontSize;
-                var fontSize = originalFontSize;
-                showDialog(
-                  context: context,
-                  builder: (context) => StatefulBuilder(
-                    builder: (context, setDialogState) => AlertDialog(
-                      title: const Text('评论字体大小'),
-                      content: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                        child: Row(
-                          children: [
-                            Text(
-                              '12',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.secondary,
-                                fontWeight: FontWeight.bold,
-                              ),
+              }
+            },
+          ),
+          ListTile(
+            title: const Text('最大并发下载数'),
+            subtitle: Text('$_maxConcurrentDownloads'),
+            leading: const Icon(Icons.numbers),
+            onTap: () async {
+              final newValue = await _showNumberInputDialog(
+                title: '设置最大并发下载数',
+                label: '最大并发下载数',
+                initial: _maxConcurrentDownloads,
+                min: 1,
+                max: 8,
+              );
+              if (newValue != null) {
+                await SharedPreferencesService.setMaxConcurrentDownloads(
+                    newValue);
+                setState(() {
+                  _maxConcurrentDownloads = newValue;
+                });
+              }
+            },
+          ),
+          _buildSectionTitle('缓存'),
+          ListTile(
+            title: const Text('缓存管理'),
+            leading: const Icon(Icons.storage),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<Widget>(builder: (_) => const CacheScreen()),
+              );
+            },
+          ),
+          ListTile(
+            title: const Text('缓存大小限制'),
+            subtitle: Text('$_cacheLimitSize MB'),
+            leading: const Icon(Icons.folder),
+            onTap: () async {
+              final newValue = await _showNumberInputDialog(
+                title: '设置缓存大小限制',
+                label: '缓存大小',
+                initial: _cacheLimitSize,
+                min: 100,
+                max: 10240,
+                suffix: 'MB',
+              );
+              if (newValue != null) {
+                await SharedPreferencesService.setCacheLimitSize(newValue);
+                setState(() {
+                  _cacheLimitSize = newValue;
+                });
+              }
+            },
+          ),
+          _buildSectionTitle('显示'),
+          ListTile(
+            title: const Text('隐藏收藏夹管理'),
+            leading: const Icon(Icons.folder),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<Widget>(
+                    builder: (_) => const HiddenFavScreen()),
+              );
+            },
+          ),
+          _buildThemeModeTile(),
+          _buildPureBlackTile(),
+          ListTile(
+            title: const Text('评论字体大小'),
+            subtitle: Text('${ThemeProvider.instance.commentFontSize}'),
+            leading: const Icon(Icons.format_size),
+            onTap: () {
+              final originalFontSize = ThemeProvider.instance.commentFontSize;
+              var fontSize = originalFontSize;
+              showDialog(
+                context: context,
+                builder: (context) => StatefulBuilder(
+                  builder: (context, setDialogState) => AlertDialog(
+                    title: const Text('评论字体大小'),
+                    content: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16.0),
+                      child: Row(
+                        children: [
+                          Text(
+                            '12',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.secondary,
+                              fontWeight: FontWeight.bold,
                             ),
-                            Expanded(
-                              child: Slider(
-                                value: fontSize.toDouble(),
-                                min: 12,
-                                max: 20,
-                                divisions: 8,
-                                label: fontSize.toString(),
-                                onChanged: (value) {
-                                  setDialogState(() {
-                                    fontSize = value.toInt();
-                                  });
-                                  // 拖动时实时预览
-                                  ThemeProvider.instance
-                                      .setCommentFontSize(fontSize);
-                                },
-                              ),
+                          ),
+                          Expanded(
+                            child: Slider(
+                              value: fontSize.toDouble(),
+                              min: 12,
+                              max: 20,
+                              divisions: 8,
+                              label: fontSize.toString(),
+                              onChanged: (value) {
+                                setDialogState(() {
+                                  fontSize = value.toInt();
+                                });
+                                // 拖动时实时预览
+                                ThemeProvider.instance
+                                    .setCommentFontSize(fontSize);
+                              },
                             ),
-                            Text(
-                              '20',
-                              style: TextStyle(
-                                color: Theme.of(context).colorScheme.secondary,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          ),
+                          Text(
+                            '20',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.secondary,
+                              fontWeight: FontWeight.bold,
                             ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
-                      actions: [
-                        TextButton(
-                          onPressed: () {
-                            ThemeProvider.instance
-                                .setCommentFontSize(originalFontSize);
-                            Navigator.pop(context);
-                          },
-                          child: const Text('取消'),
-                        ),
-                        FilledButton(
-                          onPressed: () => Navigator.pop(context),
-                          child: const Text('确定'),
-                        ),
-                      ],
                     ),
+                    actions: [
+                      TextButton(
+                        onPressed: () {
+                          ThemeProvider.instance
+                              .setCommentFontSize(originalFontSize);
+                          Navigator.pop(context);
+                        },
+                        child: const Text('取消'),
+                      ),
+                      FilledButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('确定'),
+                      ),
+                    ],
                   ),
-                ).then((_) {
-                  if (context.mounted) {
-                    setState(() {});
-                  }
-                });
-              },
-            ),
-            SwitchListTile(
-              title: const Text('显示每日推荐'),
-              secondary: const Icon(Icons.star),
-              subtitle: const Text('在收藏夹页面显示每日推荐'),
-              value: _showDailyRecommendations,
-              onChanged: (bool value) async {
-                final prefs = await SharedPreferencesService.instance;
-                await prefs.setBool('show_daily_recommendations', value);
-                setState(() {
-                  _showDailyRecommendations = value;
-                });
-              },
-            ),
-            SwitchListTile(
-              title: const Text('显示最近在听'),
-              secondary: const Icon(Icons.history),
-              subtitle: const Text('在收藏夹页面显示最近在听'),
-              value: _showRecentListening,
-              onChanged: (bool value) async {
-                final prefs = await SharedPreferencesService.instance;
-                await prefs.setBool('show_recent_listening', value);
-                setState(() {
-                  _showRecentListening = value;
-                });
-              },
-            ),
-            _buildSectionTitle('隐私'),
-            SwitchListTile(
-              title: const Text('读取剪贴板'),
-              secondary: const Icon(Icons.content_paste),
-              subtitle: const Text('自动提取剪贴板中的链接'),
-              value: _readFromClipboard,
-              onChanged: (bool value) async {
-                await SharedPreferencesService.setReadFromClipboard(value);
-                setState(() {
-                  _readFromClipboard = value;
-                });
-              },
-            ),
-            _buildSectionTitle('工具'),
-            ListTile(
-              title: const Text('导入歌单'),
-              leading: const Icon(Icons.import_export),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<Widget>(
-                      builder: (_) => const PlaylistSearchScreen()),
-                );
-              },
-            ),
-            _buildSectionTitle('其他'),
-            ListTile(
-              title: const Text('关于'),
-              leading: const Icon(Icons.info_outline),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute<Widget>(
-                      builder: (_) => const AboutScreen()),
-                );
-              },
-            ),
-          ],
+                ),
+              ).then((_) {
+                if (context.mounted) {
+                  setState(() {});
+                }
+              });
+            },
+          ),
+          SwitchListTile(
+            title: const Text('显示每日推荐'),
+            secondary: const Icon(Icons.star),
+            subtitle: const Text('在收藏夹页面显示每日推荐'),
+            value: _showDailyRecommendations,
+            onChanged: (bool value) async {
+              final prefs = await SharedPreferencesService.instance;
+              await prefs.setBool('show_daily_recommendations', value);
+              setState(() {
+                _showDailyRecommendations = value;
+              });
+            },
+          ),
+          SwitchListTile(
+            title: const Text('显示最近在听'),
+            secondary: const Icon(Icons.history),
+            subtitle: const Text('在收藏夹页面显示最近在听'),
+            value: _showRecentListening,
+            onChanged: (bool value) async {
+              final prefs = await SharedPreferencesService.instance;
+              await prefs.setBool('show_recent_listening', value);
+              setState(() {
+                _showRecentListening = value;
+              });
+            },
+          ),
+          _buildSectionTitle('隐私'),
+          SwitchListTile(
+            title: const Text('读取剪贴板'),
+            secondary: const Icon(Icons.content_paste),
+            subtitle: const Text('自动提取剪贴板中的链接'),
+            value: _readFromClipboard,
+            onChanged: (bool value) async {
+              await SharedPreferencesService.setReadFromClipboard(value);
+              setState(() {
+                _readFromClipboard = value;
+              });
+            },
+          ),
+          _buildSectionTitle('工具'),
+          ListTile(
+            title: const Text('导入歌单'),
+            leading: const Icon(Icons.import_export),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<Widget>(
+                    builder: (_) => const PlaylistSearchScreen()),
+              );
+            },
+          ),
+          _buildSectionTitle('其他'),
+          ListTile(
+            title: const Text('关于'),
+            leading: const Icon(Icons.info_outline),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute<Widget>(builder: (_) => const AboutScreen()),
+              );
+            },
+          ),
         ],
       ),
     );

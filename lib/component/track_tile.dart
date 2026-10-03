@@ -1,4 +1,3 @@
-import 'package:bmsc/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -48,22 +47,15 @@ class TrackTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final progress = this.progress?.clamp(0.0, 1.0).toDouble();
     final colorScheme = Theme.of(context).colorScheme;
-    final elderMode = ThemeProvider.instance.elderMode;
-    // 长辈模式：更大的封面、更粗更大的文字、更大的辅助图标
-    final coverWidth = elderMode ? 100.0 : 76.0;
-    final coverHeight = elderMode ? 64.0 : 48.0;
-    final metaIconSize = elderMode ? 16.0 : 12.0;
-    final secondaryStyle = (elderMode
-            ? Theme.of(context).textTheme.bodyMedium
-            : Theme.of(context).textTheme.bodySmall)
+    const coverWidth = 76.0;
+    const coverHeight = 48.0;
+    const metaIconSize = 12.0;
+    final secondaryStyle = Theme.of(context)
+        .textTheme
+        .bodySmall
         ?.copyWith(color: colorScheme.secondary);
-    final smallStyle = secondaryStyle?.copyWith(fontSize: elderMode ? 13 : 11);
-    final titleStyle = elderMode
-        ? Theme.of(context)
-            .textTheme
-            .titleMedium
-            ?.copyWith(fontWeight: FontWeight.w600)
-        : Theme.of(context).textTheme.titleSmall;
+    final smallStyle = secondaryStyle?.copyWith(fontSize: 11);
+    final titleStyle = Theme.of(context).textTheme.titleSmall;
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
       elevation: 2,
@@ -102,7 +94,7 @@ class TrackTile extends StatelessWidget {
             onTap: onTap,
             onLongPress: onLongPress,
             child: Padding(
-              padding: EdgeInsets.all(elderMode ? 12 : 8),
+              padding: const EdgeInsets.all(8),
               child: Column(
                 children: [
                   Row(
@@ -173,7 +165,7 @@ class TrackTile extends StatelessWidget {
                                 if (downloaded || cached) ...[
                                   Icon(
                                     Icons.check_circle,
-                                    size: elderMode ? 20 : 16,
+                                    size: 16,
                                     color: downloaded
                                         ? colorScheme.tertiary
                                         : colorScheme.outline,
