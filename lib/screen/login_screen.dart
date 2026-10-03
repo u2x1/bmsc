@@ -3,6 +3,7 @@ import 'package:bmsc/service/bilibili_service.dart';
 import 'package:flutter/material.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:gt3_flutter_plugin/gt3_flutter_plugin.dart';
+
 import 'package:qr_flutter/qr_flutter.dart';
 import 'dart:async';
 
@@ -108,6 +109,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     _captchaData,
                     validate: result['geetest_validate'],
                     seccode: result['geetest_seccode'],
+                    challenge: result['geetest_challenge'],
                   ));
 
           if (loginResult.isSuccess) {
@@ -315,7 +317,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final (exchangeCode, error) = await BilibiliService.instance
           .then((x) => x.verifySafeCenterSms(
-                code: _riskSmsCodeController.text,
+                code: _riskSmsCodeController.text.trim(),
                 tmpCode: _riskParams!.tmpCode,
                 requestId: _riskParams!.requestId,
                 source: _riskParams!.source,
@@ -395,19 +397,46 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final captcha =
-          await BilibiliService.instance.then((x) => x.getLoginCaptcha());
-      if (captcha == null) {
-        throw Exception('Failed to get login captcha');
+      // 官方两段式（真机实测证实）：裸调 sms/send——B 站不要求验证时直接
+      // 下发验证码；要求验证时返回 recaptcha_url，必须用 url 内与本次发送
+      // 会话绑定的 gt/challenge 做人机验证再带结果重发。captcha 端点预验证
+      // 的产物已被 B 站拒收（-105「验证码错误」），不再使用。
+      final (captchaKey0, error0, recaptchaUrl) = await BilibiliService
+          .instance
+          .then((x) => x.sendSmsCaptchaApp(phone, null));
+      if (error0 == null && captchaKey0.isNotEmpty) {
+        _captchaKey = captchaKey0;
+        _startSmsCountdown();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('验证码已发送')),
+          );
+        }
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+      if (recaptchaUrl == null) {
+        setState(() {
+          _errorMessage = error0 ?? '发送失败，请稍后重试';
+          _isLoading = false;
+        });
+        return;
+      }
+      // recaptcha_url（h5 project-msg-auth/verify）参数：gee_gt /
+      // gee_challenge / recaptcha_token（见 chinggg 逆向与 API-collect 文档）
+      final qp = Uri.parse(recaptchaUrl).queryParameters;
+      final gt = qp['gee_gt'] ?? qp['gt'];
+      final challenge = qp['gee_challenge'] ?? qp['challenge'];
+      if (gt == null || challenge == null) {
+        throw Exception('recaptcha_url 缺少极验参数: $recaptchaUrl');
       }
       _captchaData = CaptchaData(
-        token: captcha['token'] ?? '',
-        gt: captcha['gt'],
-        challenge: captcha['challenge'],
+        token: qp['recaptcha_token'] ?? '',
+        gt: gt,
+        challenge: challenge,
       );
-      if (_captchaData!.gt == null || _captchaData!.challenge == null) {
-        throw Exception('缺少验证码参数');
-      }
 
       final geetest = Gt3FlutterPlugin();
       Gt3RegisterData registerData = Gt3RegisterData(
@@ -431,18 +460,19 @@ class _LoginScreenState extends State<LoginScreen> {
             }
             result = Map<String, dynamic>.from(geetestResult);
             final phone = _phoneController.text.trim();
-            final (captchaKey, error) =
+            final (captchaKey, error, _) =
                 await BilibiliService.instance.then((x) => x.sendSmsCaptchaApp(
                       phone,
                       _captchaData,
                       validate: result['geetest_validate'],
                       seccode: result['geetest_seccode'],
+                      challenge: result['geetest_challenge'],
                     ));
 
-            if (error != null) {
+            if (error != null || captchaKey.isEmpty) {
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(error)),
+                  SnackBar(content: Text(error ?? '发送失败，请重试')),
                 );
               }
             } else {
@@ -505,8 +535,8 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
-      final loginResult = await BilibiliService.instance
-          .then((x) => x.smsLoginApp(phone, _smsCodeController.text, _captchaKey!));
+      final loginResult = await BilibiliService.instance.then(
+          (x) => x.smsLoginApp(phone, _smsCodeController.text.trim(), _captchaKey!));
 
       if (loginResult.isSuccess) {
         await BilibiliService.instance

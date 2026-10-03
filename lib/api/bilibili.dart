@@ -119,6 +119,12 @@ class BilibiliAPI {
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
+        // App 端登录请求（带 app-key 头）不混入 Web 端指纹头（cookie/
+        // referer/Origin/桌面 UA）：passport 风控校验 UA 与 app 签名 body
+        // 的一致性，桌面 UA 会以 -105「验证码错误」拒绝（真机实测）。
+        if (options.headers.containsKey('app-key')) {
+          return handler.next(options);
+        }
         final merged = <String, dynamic>{...headers}..addAll(options.headers);
         options.headers = merged;
         return handler.next(options);
@@ -966,15 +972,20 @@ class BilibiliAPI {
       };
 
   Map<String, String> _geetestParams(CaptchaData? captcha,
-          {String? validate, String? seccode}) =>
-      {
-        if (captcha != null && captcha.token.isNotEmpty)
-          'recaptcha_token': captcha.token,
-        if (captcha?.challenge != null && captcha!.challenge!.isNotEmpty)
-          'gee_challenge': captcha.challenge!,
-        if (validate != null && validate.isNotEmpty) 'gee_validate': validate,
-        if (seccode != null && seccode.isNotEmpty) 'gee_seccode': seccode,
-      };
+          {String? validate, String? seccode, String? challenge}) {
+    // challenge 必须用极验 SDK 回显值：原生 SDK 可能给回显 challenge
+    // 追加后缀（实测出现 challenge+'lx'），validate 与回显 challenge
+    // 绑定；回传注册时的原始 challenge 会被 B 站以 -105「验证码错误」
+    // 拒绝（对齐 PiliPlus：gee_challenge 取 res['geetest_challenge']）。
+    final c = challenge ?? captcha?.challenge;
+    return {
+      if (captcha != null && captcha.token.isNotEmpty)
+        'recaptcha_token': captcha.token,
+      if (c != null && c.isNotEmpty) 'gee_challenge': c,
+      if (validate != null && validate.isNotEmpty) 'gee_validate': validate,
+      if (seccode != null && seccode.isNotEmpty) 'gee_seccode': seccode,
+    };
+  }
 
   /// App 端密码登录（oauth2/login）
   Future<AppLoginResult> passwordLoginApp({
@@ -983,6 +994,7 @@ class BilibiliAPI {
     CaptchaData? captcha,
     String? validate,
     String? seccode,
+    String? challenge,
     required String buvid,
     required String deviceId,
     required String encryptedDeviceToken,
@@ -991,7 +1003,8 @@ class BilibiliAPI {
     final params = <String, String>{
       ..._androidLoginBaseParams(ts),
       ..._androidLoginDeviceParams(buvid, deviceId, encryptedDeviceToken),
-      ..._geetestParams(captcha, validate: validate, seccode: seccode),
+      ..._geetestParams(captcha,
+          validate: validate, seccode: seccode, challenge: challenge),
       'username': username,
       'password': encryptedPassword,
       'permission': 'ALL',
@@ -1004,7 +1017,7 @@ class BilibiliAPI {
           data: signed,
           options: Options(
             contentType: Headers.formUrlEncodedContentType,
-            headers: {'X-BiliPai-Login-Buvid': buvid},
+            headers: BiliSign.androidLoginHeaders(buvid),
           ));
       return AppLoginResult.fromResponse(
           resp.data, resp.headers['set-cookie'] ?? []);
@@ -1014,18 +1027,24 @@ class BilibiliAPI {
     }
   }
 
-  /// App 端发送短信验证码（sms/send）
-  Future<(String, String?)> sendSmsCaptchaApp({
+  /// App 端发送短信验证码（sms/send）。
+  ///
+  /// 返回 (captchaKey, error, recaptchaUrl)。B 站当前为两段式（真机实测）：
+  /// 裸调不要求验证时直接返回 captcha_key；要求验证时返回 recaptcha_url，
+  /// 须用 url 内与本发送会话绑定的 gt/challenge 完成人机验证后带结果重发。
+  Future<(String, String?, String?)> sendSmsCaptchaApp({
     required String phone,
     CaptchaData? captcha,
     String? validate,
     String? seccode,
+    String? challenge,
     required String buvid,
   }) async {
     final ts = DateTime.now().millisecondsSinceEpoch;
     final params = <String, String>{
       ..._androidLoginBaseParams(ts ~/ 1000),
-      ..._geetestParams(captcha, validate: validate, seccode: seccode),
+      ..._geetestParams(captcha,
+          validate: validate, seccode: seccode, challenge: challenge),
       'buvid': buvid,
       'local_id': buvid,
       'login_session_id':
@@ -1039,30 +1058,28 @@ class BilibiliAPI {
           data: signed,
           options: Options(
             contentType: Headers.formUrlEncodedContentType,
-            headers: {'X-BiliPai-Login-Buvid': buvid},
+            headers: BiliSign.androidLoginHeaders(buvid),
           ));
       final body = resp.data;
       if (body['code'] != 0) {
-        return ("", body['message']?.toString() ?? '发送失败');
+        // 业务失败（code!=0）也落日志：此前只弹 SnackBar，排障无任何依据
+        _logger.warning('sendSmsCaptchaApp rejected: code=${body['code']}, '
+            'message=${body['message']}');
+        return ("", body['message']?.toString() ?? '发送失败', null);
       }
       final data = body['data'];
       final captchaKey = data?['captcha_key']?.toString() ?? '';
       final recaptchaUrl = data?['recaptcha_url']?.toString() ?? '';
       if (captchaKey.isEmpty && recaptchaUrl.isNotEmpty) {
-        // 要求重新完成人机验证
-        return ("", _formatRecaptchaRequired(recaptchaUrl));
+        // 要求先完成人机验证：把 url 交给调用方解析参数并重发
+        return ("", null, recaptchaUrl);
       }
-      return (captchaKey, null);
+      return (captchaKey, null, null);
     } catch (e) {
       _logger.severe('sendSmsCaptchaApp error: $e');
-      return ("", e.toString());
+      return ("", e.toString(), null);
     }
   }
-
-  String _formatRecaptchaRequired(String url) =>
-      '需要重新完成人机验证$_formatRecaptchaUrl(url)';
-
-  String _formatRecaptchaUrl(String url) => ': $url';
 
   /// App 端短信登录（login/sms）
   Future<AppLoginResult> smsLoginApp({
@@ -1090,7 +1107,7 @@ class BilibiliAPI {
           data: signed,
           options: Options(
             contentType: Headers.formUrlEncodedContentType,
-            headers: {'X-BiliPai-Login-Buvid': buvid},
+            headers: BiliSign.androidLoginHeaders(buvid),
           ));
       return AppLoginResult.fromResponse(
           resp.data, resp.headers['set-cookie'] ?? []);

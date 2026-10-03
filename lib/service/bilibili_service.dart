@@ -363,7 +363,7 @@ class BilibiliService {
   /// App 端密码登录（对齐 BiliPai）
   Future<AppLoginResult> passwordLoginApp(
       String username, String password, CaptchaData? captcha,
-      {String? validate, String? seccode}) async {
+      {String? validate, String? seccode, String? challenge}) async {
     final (buvid, deviceId) = await getLoginIdentity();
     // 1. 获取 RSA 公钥
     final loginKey = await _bilibiliAPI.getLoginKey();
@@ -381,18 +381,21 @@ class BilibiliService {
       captcha: captcha,
       validate: validate,
       seccode: seccode,
+      challenge: challenge,
       buvid: buvid,
       deviceId: deviceId,
       encryptedDeviceToken: encryptedDeviceToken,
     );
   }
 
-  /// App 端发送短信验证码（对齐 BiliPai）
-  Future<(String, String?)> sendSmsCaptchaApp(
+  /// App 端发送短信验证码（对齐 BiliPai）。
+  /// 返回 (captchaKey, error, recaptchaUrl)，见 BilibiliAPI.sendSmsCaptchaApp。
+  Future<(String, String?, String?)> sendSmsCaptchaApp(
     String phone,
     CaptchaData? captcha, {
     String? validate,
     String? seccode,
+    String? challenge,
   }) async {
     final (buvid, _) = await getLoginIdentity();
     return _bilibiliAPI.sendSmsCaptchaApp(
@@ -400,6 +403,7 @@ class BilibiliService {
       captcha: captcha,
       validate: validate,
       seccode: seccode,
+      challenge: challenge,
       buvid: buvid,
     );
   }
@@ -414,7 +418,7 @@ class BilibiliService {
     }
     final encryptedDeviceToken = crypto.encryptDeviceToken(
         loginKey['key']!, BiliSign.createRandomString(16));
-    return _bilibiliAPI.smsLoginApp(
+    final result = await _bilibiliAPI.smsLoginApp(
       phone: phone,
       code: code,
       captchaKey: captchaKey,
@@ -422,6 +426,12 @@ class BilibiliService {
       deviceId: deviceId,
       encryptedDeviceToken: encryptedDeviceToken,
     );
+    if (!result.isSuccess) {
+      // B 站业务失败只走 message（无异常），此前完全无日志，排障全靠猜
+      _logger.warning('smsLoginApp failed: code=${result.code}, '
+          'message=${result.message}, captchaKey=$captchaKey');
+    }
+    return result;
   }
 
   /// TV 二维码登录（首选，登录态含 access_token）

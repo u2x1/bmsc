@@ -19,6 +19,27 @@ class BiliSign {
 
   /// Bilibili HD (android_hd) 客户端凭据，用于当前 SMS/密码登录接口。
   static const String androidHdAppKey = 'dfca71928277209b';
+
+  /// App 端登录请求的 User-Agent（对齐官方 HD 客户端 / PiliPlus
+  /// Constants.userAgent）。passport 风控校验 UA 与 app 签名 body 的
+  /// 一致性：桌面 UA 会被以 -105「验证码错误」拒绝（真机实测）。
+  static const String androidHdUserAgent =
+      'Mozilla/5.0 BiliDroid/2.0.1 (bbcallen@gmail.com) os/android '
+      'model/android_hd mobi_app/android_hd build/2001100 channel/master '
+      'innerVer/2001100 osVer/15 network/2';
+
+  /// App 端登录请求头（对齐 PiliPlus LoginHttp.headers）。
+  static Map<String, String> androidLoginHeaders(String buvid) => {
+        'buvid': buvid,
+        'env': 'prod',
+        'app-key': 'android_hd',
+        'user-agent': androidHdUserAgent,
+        'x-bili-trace-id':
+            '11111111111111111111111111111111:1111111111111111:0:0',
+        'x-bili-aurora-eid': '',
+        'x-bili-aurora-zone': '',
+        'bili-http-engine': 'cronet',
+      };
   static const String _androidHdAppSec = 'b5475a8825547a4fc26c7d518eaaa02e';
 
   /// 与 Java URLEncoder.encode(s, UTF-8) 一致（再把 '+' 换成 '%20'，对齐 BiliPai）。
