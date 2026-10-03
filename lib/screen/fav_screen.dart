@@ -39,18 +39,20 @@ class FavScreenState extends State<FavScreen> {
   /// 各收藏夹的本地缓存封面（供网格拼贴缩略图），键为收藏夹 id
   Map<int, List<String>> favCovers = {};
 
-  /// 分区开关的偏好读取 future 缓存：build 内临时新建 Future 会让
+  /// 分区开关/排序的偏好读取 future 缓存：build 内临时新建 Future 会让
   /// FutureBuilder 每次 setState 都重新经历 waiting 态（吸顶 header
   /// 闪烁并多一轮异步等待）；设置页返回时由 refreshLoginState 重新
   /// 读取以应用变更
   late Future<bool> _showRecentFuture;
   late Future<bool> _showDailyFuture;
+  late Future<List<String>> _sectionOrderFuture;
 
   void _reloadSectionToggles() {
     _showRecentFuture = SharedPreferencesService.instance
         .then((prefs) => prefs.getBool('show_recent_listening') ?? true);
     _showDailyFuture = SharedPreferencesService.instance
         .then((prefs) => prefs.getBool('show_daily_recommendations') ?? true);
+    _sectionOrderFuture = SharedPreferencesService.getHomeSectionOrder();
   }
 
   @override
@@ -487,45 +489,67 @@ class FavScreenState extends State<FavScreen> {
                     ],
                   ),
                 )
-              : CustomScrollView(
-                  slivers: [
-                    // 板块一：每日推荐（header 吸顶，整行可点击），
-                    // 推荐基于收藏夹，无收藏夹时不显示
-                    if (favList.isNotEmpty || collectedFavList.isNotEmpty)
-                      _buildDailyRecommendSection(),
-
-                    // 板块二：最近在听（九宫格页卡，header 吸顶，
-                    // 受「显示最近在听」设置开关控制）
-                    _buildRecentSection(),
-
-                    // 板块三：我的收藏夹（header 吸顶 + 封面拼贴九宫格）。
-                    // 标题行常驻，保证空列表时仍可从尾部按钮新建/刷新
-                    SliverStickyHeader(
-                      header: SectionHeader(
-                        icon: Icons.folder_outlined,
-                        title: '我的收藏夹',
-                        count: favList.isEmpty ? null : _visibleCount(favList),
-                        trailing: _buildFavActions(),
-                      ),
-                      sliver: _buildFavSectionBody(favList, true),
-                    ),
-
-                    // 板块四：收藏的收藏夹（header 吸顶 + 封面拼贴九宫格，
-                    // 顶部通栏分隔条与上一分区界限明确）
-                    if (collectedFavList.isNotEmpty) ...[
-                      const SliverToBoxAdapter(child: SectionDivider()),
-                      SliverStickyHeader(
-                        header: SectionHeader(
-                          icon: Icons.star_outline,
-                          title: '收藏的收藏夹',
-                          count: _visibleCount(collectedFavList),
-                        ),
-                        sliver: _buildFavSectionBody(collectedFavList, false),
-                      ),
-                    ],
-                  ],
+              : FutureBuilder<List<String>>(
+                  future: _sectionOrderFuture,
+                  builder: (context, snapshot) {
+                    final order = snapshot.data ?? kDefaultHomeSectionOrder;
+                    return CustomScrollView(
+                      slivers: [
+                        // 板块顺序由设置页「主页板块排序」决定，
+                        // 各板块可见性规则不变（见 _buildOrderedSection）
+                        for (final key in order) ..._buildOrderedSection(key),
+                      ],
+                    );
+                  },
                 ),
     );
+  }
+
+  /// 按 key 产出各板块 sliver：
+  /// - 每日推荐：header 吸顶，整行可点击；推荐基于收藏夹，无收藏夹时不显示
+  /// - 最近在听：九宫格页卡，header 吸顶，受「显示最近在听」设置开关控制
+  /// - 我的收藏夹：header 吸顶 + 封面拼贴九宫格；标题行常驻，保证空列表
+  ///   时仍可从尾部按钮新建/刷新
+  /// - 收藏的收藏夹：header 吸顶 + 封面拼贴九宫格，顶部通栏分隔条与
+  ///   上一分区界限明确；无收藏时不显示
+  List<Widget> _buildOrderedSection(String key) {
+    switch (key) {
+      case kHomeSectionDaily:
+        return [
+          if (favList.isNotEmpty || collectedFavList.isNotEmpty)
+            _buildDailyRecommendSection(),
+        ];
+      case kHomeSectionRecent:
+        return [_buildRecentSection()];
+      case kHomeSectionMine:
+        return [
+          SliverStickyHeader(
+            header: SectionHeader(
+              icon: Icons.folder_outlined,
+              title: '我的收藏夹',
+              count: favList.isEmpty ? null : _visibleCount(favList),
+              trailing: _buildFavActions(),
+            ),
+            sliver: _buildFavSectionBody(favList, true),
+          ),
+        ];
+      case kHomeSectionCollected:
+        return [
+          if (collectedFavList.isNotEmpty) ...[
+            const SliverToBoxAdapter(child: SectionDivider()),
+            SliverStickyHeader(
+              header: SectionHeader(
+                icon: Icons.star_outline,
+                title: '收藏的收藏夹',
+                count: _visibleCount(collectedFavList),
+              ),
+              sliver: _buildFavSectionBody(collectedFavList, false),
+            ),
+          ],
+        ];
+      default:
+        return const [];
+    }
   }
 
   /// 收藏夹板块内容（返回 sliver）：封面拼贴九宫格；

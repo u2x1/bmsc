@@ -16,6 +16,20 @@ import 'package:rxdart/subjects.dart';
 
 final _logger = LoggerUtils.getLogger('SharedPreferencesService');
 
+/// 主页板块 key（排序偏好的存储值）
+const String kHomeSectionDaily = 'daily';
+const String kHomeSectionRecent = 'recent';
+const String kHomeSectionMine = 'mine';
+const String kHomeSectionCollected = 'collected';
+
+/// 主页板块默认顺序：每日推荐 → 最近在听 → 我的收藏夹 → 收藏的收藏夹
+const List<String> kDefaultHomeSectionOrder = [
+  kHomeSectionDaily,
+  kHomeSectionRecent,
+  kHomeSectionMine,
+  kHomeSectionCollected,
+];
+
 class SharedPreferencesService {
   static final instance = _instance();
   static final _maxConcurrentDownloadsController = BehaviorSubject<int>();
@@ -28,6 +42,26 @@ class SharedPreferencesService {
   static Future<SharedPreferences> _instance() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs;
+  }
+
+  /// 主页板块排序：读取时消毒——剔除未知 key、补齐缺失板块
+  ///（未来新增板块自动追加到末尾）。
+  /// 返回值始终为可变拷贝（kDefaultHomeSectionOrder 是 const，
+  /// 排序对话框会直接原地增删返回的列表）
+  static Future<List<String>> getHomeSectionOrder() async {
+    final prefs = await instance;
+    final stored = prefs.getStringList('home_section_order');
+    if (stored == null) return List.of(kDefaultHomeSectionOrder);
+    final order = stored.where(kDefaultHomeSectionOrder.contains).toList();
+    for (final key in kDefaultHomeSectionOrder) {
+      if (!order.contains(key)) order.add(key);
+    }
+    return order;
+  }
+
+  static Future<void> setHomeSectionOrder(List<String> order) async {
+    final prefs = await instance;
+    await prefs.setStringList('home_section_order', order);
   }
 
   /// 单位为MB

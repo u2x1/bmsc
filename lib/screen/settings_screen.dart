@@ -70,6 +70,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// 主页板块排序：拖拽手柄调整顺序，即时保存；返回主页后生效
+  ///（主页由 refreshLoginState 重新读取排序偏好）
+  Future<void> _showHomeSectionOrderDialog() async {
+    final order = await SharedPreferencesService.getHomeSectionOrder();
+    if (!mounted) return;
+    const sectionMeta = {
+      kHomeSectionDaily: (Icons.auto_awesome, '每日推荐'),
+      kHomeSectionRecent: (Icons.history, '最近在听'),
+      kHomeSectionMine: (Icons.folder_outlined, '我的收藏夹'),
+      kHomeSectionCollected: (Icons.star_outline, '收藏的收藏夹'),
+    };
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('主页板块排序'),
+          content: SizedBox(
+            width: 360,
+            child: ReorderableListView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              buildDefaultDragHandles: false,
+              onReorderItem: (oldIndex, newIndex) {
+                // Flutter 3.41+ 的 onReorderItem 已把 newIndex
+                // 调整为「移除后插入」的最终下标
+                setDialogState(() {
+                  order.insert(newIndex, order.removeAt(oldIndex));
+                });
+                SharedPreferencesService.setHomeSectionOrder(order);
+              },
+              children: [
+                for (final key in order)
+                  ListTile(
+                    key: ValueKey(key),
+                    dense: true,
+                    contentPadding: const EdgeInsets.only(left: 8),
+                    leading: Icon(sectionMeta[key]!.$1, size: 20),
+                    title: Text(sectionMeta[key]!.$2),
+                    trailing: ReorderableDragStartListener(
+                      index: order.indexOf(key),
+                      child: const Padding(
+                        padding: EdgeInsets.all(12),
+                        child: Icon(Icons.drag_handle, size: 20),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setDialogState(() {
+                  order
+                    ..clear()
+                    ..addAll(kDefaultHomeSectionOrder);
+                });
+                SharedPreferencesService.setHomeSectionOrder(order);
+              },
+              child: const Text('重置默认'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('完成'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
@@ -570,6 +641,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _showRecentListening = value;
               });
             },
+          ),
+          ListTile(
+            title: const Text('主页板块排序'),
+            leading: const Icon(Icons.sort),
+            subtitle: const Text('调整主页各板块的显示顺序'),
+            onTap: _showHomeSectionOrderDialog,
           ),
           _buildSectionTitle('隐私'),
           SwitchListTile(
