@@ -87,6 +87,11 @@ class FavScreenState extends State<FavScreen> {
           collectedFavList = cachedCollectedFavs;
         });
         _loadFavCovers();
+      } else {
+        // 本地缓存为空（首次登录/刚清缓存）时本地加载静默无结果——
+        // 回退到网络拉取，否则主页停留在空白状态（真机实测：
+        // 登录后 got 0 cached favs 即止步）
+        return loadFavorites();
       }
 
       logger.info(
