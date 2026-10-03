@@ -244,7 +244,62 @@ $DART vm_shot2.dart "$WS" inspector-168 shot.png 1600 3200 2
 $DART vm_eval.dart "$WS" fav_screen '<expression>'
 ```
 
-## 6. 备选方案
+## 6. 性能采集（帧耗时 timeline + 合成滚动）
+
+在截图方案基础上还有两个 profiling 工具（tools/screenshot/）：
+
+### vm_timeline.dart（帧耗时统计）
+
+```bash
+dart vm_timeline.dart <ws-uri> <window-ms> [label]
+```
+
+- 订阅 VM Service 的 `Extension` 事件流，统计窗口内的 `Flutter.Frame`
+  事件（profile/debug 模式均可用；**profile 模式无 evaluate/inspector，
+  但帧耗时事件照常有**）
+- 输出 build/raster 的 n/avg/p50/p95/max 及 >16.7ms 占比，
+  并打印每秒帧数分布
+- 注意 `streamListen` 会**立即回放最近的帧事件缓存**，脚本已内置
+  1.5s 排空，勿把回放数据当实时数据
+- 窗口被遮挡/未激活时引擎**完全不出帧**（0 事件），先 `open -a` 激活，
+  可用 `osascript -e 'tell application "System Events" to tell process
+  "<name>" to get frontmost'` 确认
+
+### scroll.swift（合成滚轮事件，驱动滚动）
+
+```bash
+swiftc -O scroll.swift -o scroll_bin
+./scroll_bin <x> <y> <dyPxPerEvent> <count> <intervalMs>   # dy<0 向下
+```
+
+- 基于 CGEventPost 合成滚轮事件，需要**辅助功能权限**
+  （profile 模式无 evaluate，无法代码驱动滚动，只能合成输入事件）
+- 窗口几何可用 osascript 读取/设置：
+  `tell application "System Events" to tell process "<name>" to
+   get {position, size} of window 1`
+- 滚动速度过快会快速触顶/触底后停止出帧，建议交替上下滚动保持持续运动
+
+### click.swift（合成鼠标点击，驱动导航）
+
+```bash
+swiftc -O click.swift -o click_bin
+./click_bin <x> <y>   # 屏幕坐标
+```
+
+- 点击目标控件坐标可用 debug 模式的 evaluate 动态获取
+  （`renderObject.localToGlobal(...)` 返回**窗口内**坐标，
+  屏幕坐标 = 窗口 position + 窗口内坐标 + 标题栏高度 28）
+
+### 测量注意事项
+
+- 同包名多实例（Debug/Profile 并存）会干扰 `open -a` 激活与 AX 查询，
+  先 `pkill` 多余实例
+- debug 模式数值普遍放大 5~20 倍，绝对值以 profile 为准，
+  相对对比用 debug 也可
+- 滚动本身不触发 build（仅 layout/paint）；build 耗时反映的是
+  StreamBuilder/setState 驱动的重建
+
+## 7. 备选方案
 
 | 方案 | 说明 |
 |---|---|
