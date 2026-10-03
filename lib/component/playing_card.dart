@@ -273,6 +273,7 @@ class _PlayingCardState extends State<PlayingCard> {
                                         backgroundColor: Theme.of(context)
                                             .colorScheme
                                             .surface,
+                                        showDragHandle: true,
                                         isScrollControlled: true,
                                         constraints: BoxConstraints(
                                           maxHeight: MediaQuery.of(context)

@@ -1202,6 +1202,7 @@ class _DetailScreenState extends State<DetailScreen>
           context: context,
           builder: (context) => const PlaylistBottomSheet(),
           backgroundColor: Theme.of(context).colorScheme.surface,
+          showDragHandle: true,
           isScrollControlled: true,
           constraints: BoxConstraints(
             maxHeight: MediaQuery.of(context).size.height * 0.7,
