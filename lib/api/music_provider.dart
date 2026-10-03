@@ -1,6 +1,12 @@
 import 'package:dio/dio.dart';
 
+/// 第三方平台歌单抓取。
+///
+/// 已废弃：导入歌单功能不再维护，后续版本将随功能一并移除。
+/// 请勿新增调用方。
+@Deprecated('导入歌单功能已废弃，将在后续版本移除')
 class MusicProvider {
+  @Deprecated('导入歌单功能已废弃，将在后续版本移除')
   static Future<List<Map<String, dynamic>>?> fetchNeteasePlaylistTracks(
       String playlistId) async {
     try {
@@ -26,6 +32,7 @@ class MusicProvider {
     }
   }
 
+  @Deprecated('导入歌单功能已废弃，将在后续版本移除')
   static Future<List<Map<String, dynamic>>?> fetchTencentPlaylistTracks(
       String playlistId) async {
     try {
@@ -49,6 +56,7 @@ class MusicProvider {
     }
   }
 
+  @Deprecated('导入歌单功能已废弃，将在后续版本移除')
   static Future<List<Map<String, dynamic>>?> fetchKuGouPlaylistTracks(
       String playlistId) async {
     try {

@@ -405,6 +405,8 @@ class SharedPreferencesService {
     }
   }
 
+  /// 已废弃：仅用于导入歌单功能的旧数据兼容，后续版本将随功能一并移除。
+  @Deprecated('导入歌单功能已废弃，将在后续版本移除')
   static Future<void> savePlaylistSearchResult(
       List<Map<String, dynamic>> result, String text, int favid) async {
     final prefs = await SharedPreferencesService.instance;
@@ -416,6 +418,8 @@ class SharedPreferencesService {
     await prefs.setString('playlist_search_result', jsonEncode(content));
   }
 
+  /// 已废弃：仅用于导入歌单功能的旧数据兼容，后续版本将随功能一并移除。
+  @Deprecated('导入歌单功能已废弃，将在后续版本移除')
   static Future<Map<String, dynamic>?> getPlaylistSearchResult() async {
     final prefs = await SharedPreferencesService.instance;
     final result = prefs.getString('playlist_search_result');

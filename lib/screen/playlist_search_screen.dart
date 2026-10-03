@@ -14,6 +14,8 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:scroll_to_index/scroll_to_index.dart';
 import '../util/logger.dart';
 
+/// 已废弃：从第三方音乐平台导入歌单的功能不再维护，后续版本将移除。
+@Deprecated('导入歌单功能已废弃，将在后续版本移除')
 class PlaylistSearchScreen extends StatefulWidget {
   const PlaylistSearchScreen({super.key});
 
@@ -168,10 +170,23 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('歌单导入'),
+          title: const Text('歌单导入（已废弃）'),
         ),
         body: Column(
           children: [
+            Container(
+              width: double.infinity,
+              color: Theme.of(context).colorScheme.errorContainer,
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                '此功能已废弃，不再维护，将在后续版本移除。',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Theme.of(context).colorScheme.onErrorContainer,
+                ),
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.all(16.0),
               child: TextField(

@@ -586,7 +586,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
           _buildSectionTitle('工具'),
           ListTile(
-            title: const Text('导入歌单'),
+            title: const Text('导入歌单（已废弃）'),
+            subtitle: const Text('不再维护，后续版本将移除'),
             leading: const Icon(Icons.import_export),
             onTap: () {
               Navigator.push(
