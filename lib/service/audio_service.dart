@@ -269,7 +269,7 @@ class AudioService {
     final bvid = extras['bvid'];
     final cid = extras['cid'];
     if (bvid == null || cid == null) return false;
-    // 与其他 playlist 变更（hijack/换源/看门狗）互斥，避免并发改坏队列。
+    // 与其他 playlist 变更（解析/换源/看门狗）互斥，避免并发改坏队列。
     // 旗标必须在首个 await 之前置位，否则准备期间换源回调可并发插入。
     if (_hijacking || _swapping) {
       _logger.warning('quality switch: playlist mutation in progress, reject');
@@ -323,7 +323,7 @@ class AudioService {
         _pendingSeekPositions[newSource] = position;
       }
       if (Platform.isIOS) {
-        // iOS 安全顺序（同 hijack）：先插 → 显式跳 → 再删。
+        // iOS 安全顺序（同 _replaceCurrentDummy）：先插 → 显式跳 → 再删。
         // 定位一律 identical，禁用固定 index+1（推进竞态会把位置
         // 种到下一P 上——真机多P实测）。
         await doAndSavePlaylist(() async {
@@ -470,10 +470,10 @@ class AudioService {
 
     player.currentIndexStream.listen((index) async {
       if (index != null) {
-        // hijack 必须先于 setInt 的 await 调用：等待会越过 _hijacking
-        // 保护期，使 hijack 自身 seek 产生的索引事件触发连锁 hijack
+        // 解析必须先于 setInt 的 await 调用：等待会越过 _hijacking
+        // 保护期，使解析自身 seek 产生的索引事件触发连锁解析
         //（级联跳歌，真机实测：点第一首自动跳第二首）。
-        unawaited(_hijackDummySource(index: index));
+        _onTrackIndexChanged(index);
         final prefs = await SharedPreferencesService.instance;
         await prefs.setInt('currentIndex', index);
       }
@@ -574,12 +574,12 @@ class AudioService {
   final Set<AudioSource> _watchdogUnwedgedSources = {};
 
   /// iOS 看门狗解卡：用全新实例替换当前源（新实例 = 新原生 AVPlayerItem =
-  /// 全新资源加载，旧 item 的内部卡死状态随之丢弃）。操作顺序与 hijack
+  /// 全新资源加载，旧 item 的内部卡死状态随之丢弃）。操作顺序与 _replaceCurrentDummy
   /// 一致：先插到当前项后面 → 显式跳 → 再删旧项，规避 removeItem(当前项)
   /// 自动推进竞态。旧源进行中的下载先取消，避免与新源写同一 .part。
   Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) async {
     if (source is! LazyAudioSource) return;
-    // 与 hijack/换源/其他看门狗执行互斥，避免并发 playlist 变更
+    // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更
     if (_hijacking || _swapping) return;
     final tag = source.tag;
     if (tag is! MediaItem) return;
@@ -807,7 +807,7 @@ class AudioService {
   // 获取当前定时器剩余时间（秒）
   int? get sleepTimerRemainingSeconds => _sleepTimerSubject.valueOrNull;
 
-  /// 已注册换源监听的源（按身份去重）。sequenceStateStream 在 hijack/
+  /// 已注册换源监听的源（按身份去重）。sequenceStateStream 在解析/
   /// 换源期间会多次触发（dummy→real、unwedge seek 等），单槽守卫会被
   /// 绕过导致同一源注册多个监听——并发执行 insertAll+removeAt 把
   /// playlist 改坏（真机日志：换源执行 3 次后当前项变成 dummy）。
@@ -853,7 +853,7 @@ class AudioService {
     if (!_swapWatchedSources.add(source)) return;
     source.downloadComplete.then((_) async {
       _swapWatchedSources.remove(source);
-      // 与其他 playlist 变更（hijack/切音质/看门狗）互斥：并发
+      // 与其他 playlist 变更（解析/切音质/看门狗）互斥：并发
       // insertAll+removeAt 会改坏 playlist。放弃后 sequenceStateStream
       // 的后续事件会为该源重新注册监听，自愈重试。
       if (_swapping || _hijacking) {
@@ -929,7 +929,7 @@ class AudioService {
       _hijacking = true;
       try {
         if (Platform.isIOS) {
-          // iOS 安全顺序（同 hijack）：先插 → 显式跳 → 再删，
+          // iOS 安全顺序（同 _replaceCurrentDummy）：先插 → 显式跳 → 再删，
           // 避免 removeItem(当前项) 自动推进竞态与加载中 seekToTime。
           //
           // 注意：不能用固定 index+1！insertAll 异步执行期间 AVQueuePlayer
@@ -979,113 +979,271 @@ class AudioService {
     });
   }
 
-  Future<void> _hijackDummySource({int? index}) async {
+  /// 在途的 dummy 解析（按实例身份去重）：兜底（当前项）与预解析
+  ///（下一首）共享，避免对同一 dummy 重复 fetch/插入。
+  final Map<IndexedAudioSource, Future<void>> _resolvingDummies = {};
+
+  /// seek 失败被保留、待成为非当前项后补删的 dummy。
+  final Set<IndexedAudioSource> _pendingDummyRemovals = {};
+
+  /// 索引事件入口：兜底解析当前 dummy → 更新播放统计 → 预解析下一首。
+  /// 解析取锁是同步的（见 _doResolveDummy），先于监听器后续的 await，
+  /// 保证级联保护不被时序越过。
+  void _onTrackIndexChanged(int index) {
+    // seek 失败被保留的 dummy：此刻已非当前项，补删（非当前项删除安全）
+    if (_pendingDummyRemovals.isNotEmpty) {
+      final current = player.sequenceState.currentSource;
+      for (final d in _pendingDummyRemovals.toList()) {
+        if (!identical(current, d)) {
+          _pendingDummyRemovals.remove(d);
+          unawaited(_removeSourceWhenIdle(d));
+        }
+      }
+    }
+    final seq = playlist.sequence;
+    if (index >= seq.length) return;
+    final source = seq[index];
+    final extras = source.tag.extras;
+    if (extras == null) return;
+    if (extras['dummy'] == true) {
+      unawaited(_resolveDummySource(source));
+    } else if (extras['bvid'] != null && extras['cid'] != null) {
+      unawaited(
+          DatabaseManager.updatePlayStats(extras['bvid'], extras['cid']));
+      _logger.info(
+          'update play stats for bvid: ${extras['bvid']} cid: ${extras['cid']}');
+    }
+    _schedulePreResolveAhead();
+  }
+
+  /// 预解析：提前把播放序下一首的 dummy 替换为真实源，使自然切歌不再
+  /// 需要任何「当前播放项」变更（iOS 上唯一危险的操作）。nextIndex 已
+  /// 包含 shuffle/loop 语义；单曲循环（nextIndex == currentIndex）与
+  /// 队尾时无事可做。
+  void _schedulePreResolveAhead() {
+    final current = player.currentIndex;
+    final next = player.nextIndex;
+    if (current == null || next == null || next == current) return;
+    final seq = playlist.sequence;
+    if (next >= seq.length) return;
+    final source = seq[next];
+    final extras = source.tag.extras;
+    if (extras == null || extras['dummy'] != true) return;
+    unawaited(_resolveDummySource(source));
+  }
+
+  /// 等待 playlist 变更锁释放（解析/换源/切音质/看门狗互斥）。超时放弃：
+  /// 解析类操作由后续索引事件链式自愈，无需无限等待。
+  Future<bool> _waitMutationFree(
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (_hijacking || _swapping) {
+      if (DateTime.now().isAfter(deadline)) {
+        _logger.warning('wait for playlist mutation lock timed out');
+        return false;
+      }
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    return true;
+  }
+
+  Future<void> _resolveDummySource(IndexedAudioSource dummy) {
+    final inflight = _resolvingDummies[dummy];
+    if (inflight != null) return inflight;
+    final f = _doResolveDummy(dummy);
+    _resolvingDummies[dummy] = f;
+    unawaited(f.catchError((Object e) {
+      _logger.warning('resolve dummy failed: $e');
+    }).whenComplete(() {
+      if (identical(_resolvingDummies[dummy], f)) {
+        _resolvingDummies.remove(dummy);
+      }
+    }));
+    return f;
+  }
+
+  Future<void> _doResolveDummy(IndexedAudioSource dummy) async {
+    // 锁空闲时同步取锁：索引事件链式触发（解析自身 seek 产生的）在下一次
+    // 事件循环前必然看到旗标已置位，级联保护不依赖 await 时序。锁被持有
+    //（换源/切音质/看门狗）时改拒绝为等待——拒绝会让 dummy 播满 60s
+    // 静音后才等下次索引事件重试。
     if (_hijacking || _swapping) {
-      return;
+      if (!await _waitMutationFree()) return;
     }
-    index ??= player.currentIndex;
-    if (index == null) {
-      _logger.warning('No current index available for hijacking');
-      return;
-    }
-    if (index >= playlist.length) {
-      return;
-    }
-
-    final currentSource = playlist.sequence[index];
-
-    final extras = currentSource.tag.extras;
-    if (extras == null) {
-      return;
-    }
-    if (extras['dummy'] != true) {
-      if (extras['bvid'] != null && extras['cid'] != null) {
-        await DatabaseManager.updatePlayStats(extras['bvid'], extras['cid']);
-        _logger.info(
-            'update play stats for bvid: ${extras['bvid']} cid: ${extras['cid']}');
-      }
-      return;
-    }
-    _logger.info('Hijacking dummy source for index: $index');
+    if (_indexOfInPlaylist(dummy) == null) return;
     _hijacking = true;
-
     try {
-      List<IndexedAudioSource>? srcs;
-      try {
-        srcs = await (await BilibiliService.instance)
-            .getAudios(currentSource.tag.id);
-      } catch (e) {
-        _logger.warning('Failed to get audio sources: $e');
-        srcs = await DatabaseManager.getLocalAudioList(currentSource.tag.id);
-      }
-      final excludedCids =
-          await DatabaseManager.getExcludedParts(currentSource.tag.id);
-      for (var cid in excludedCids) {
-        srcs?.removeWhere((src) => src.tag.extras?['cid'] == cid);
-      }
-      if (srcs == null || srcs.isEmpty) {
-        _logger.warning(
-            'No audio sources found for BVID: ${currentSource.tag.id}');
-        // 不自动跳歌：seekToNext 会再次触发 currentIndexStream →
-        // _hijackDummySource → 又失败又跳，网络异常时表现为「一路跳歌」。
-        // 停在当前曲目并暂停，用户可手动重试或切歌。
-        // srcs 为空（全部分 P 被排除）同理：此时 iOS 分支跳不了新源，
-        // 删除当前 dummy 会触发 removeItem(当前项) 自动推进竞态。
-        if (player.playing) {
+      final srcs = await _fetchRealSourcesForDummy(dummy);
+      // fetch 的 await 窗口内 dummy 可能已被移除（用户删歌/清空/换队列）
+      if (_indexOfInPlaylist(dummy) == null) return;
+      if (srcs.isEmpty) {
+        // 不自动跳歌：seekToNext 会再次触发索引事件 → 又失败又跳，网络
+        // 异常时表现为「一路跳歌」。仅在 dummy 已是当前项时暂停，等用户
+        // 手动重试或切歌。
+        if (identical(player.sequenceState.currentSource, dummy) &&
+            player.playing) {
           await player.pause();
         }
         return;
       }
-      await doAndSavePlaylist(() async {
-        // 闭包内无法利用外部的 null 检查做类型提升，取局部非空变量
-        final targetIndex = index!;
-        final newSources = srcs!;
-        final isShuffle = player.shuffleModeEnabled;
-        if (isShuffle) {
-          await player.setShuffleModeEnabled(false);
+      if (identical(player.sequenceState.currentSource, dummy)) {
+        // 兜底路径：dummy 已成为当前播放项（用户直接跳转/预解析未及时
+        // 覆盖），用 iOS 安全顺序替换（先插→显式跳→再删）。
+        await _replaceCurrentDummy(dummy, srcs, alreadyInserted: false);
+      } else {
+        // 预解析路径：dummy 不是当前项，insert/remove 不触碰当前播放项，
+        // 无 seek、无 shuffle 干预、无 currentIndex 事件。
+        await _replaceIdleDummy(dummy, srcs);
+      }
+    } finally {
+      _hijacking = false;
+      // 链式预解析：播放序的下一首仍是 dummy 时继续（自然停在真实源上，
+      // 不会整队解析）。
+      _schedulePreResolveAhead();
+    }
+  }
+
+  /// 解析 dummy 对应视频的真实音频源（网络失败回退本地缓存列表），
+  /// 并按用户设置排除指定分 P。返回空列表表示无可用源。
+  Future<List<IndexedAudioSource>> _fetchRealSourcesForDummy(
+      IndexedAudioSource dummy) async {
+    List<IndexedAudioSource>? srcs;
+    try {
+      srcs = await (await BilibiliService.instance).getAudios(dummy.tag.id);
+    } catch (e) {
+      _logger.warning('Failed to get audio sources: $e');
+      srcs = await DatabaseManager.getLocalAudioList(dummy.tag.id);
+    }
+    final excludedCids = await DatabaseManager.getExcludedParts(dummy.tag.id);
+    for (var cid in excludedCids) {
+      srcs?.removeWhere((src) => src.tag.extras?['cid'] == cid);
+    }
+    if (srcs == null || srcs.isEmpty) {
+      _logger.warning('No audio sources found for BVID: ${dummy.tag.id}');
+      return const [];
+    }
+    return srcs;
+  }
+
+  /// 预解析替换：dummy 不是当前播放项时的安全替换。insert/remove 均不
+  /// 触碰当前播放项（iOS 上 removeItem 仅作用于非当前项，无自动推进
+  /// 竞态），也不需要 seek/shuffle 干预，不产生 currentIndex 事件。
+  ///
+  /// 唯一危险窗口：insertAll 的 await 期间当前曲目恰好播完（或用户恰好
+  /// 跳转）使 dummy 成为当前项——此时升级为 _replaceCurrentDummy 的
+  /// 安全顺序完成替换，绝不在此直接删除。
+  Future<void> _replaceIdleDummy(
+      IndexedAudioSource dummy, List<IndexedAudioSource> srcs) async {
+    _logger.info(
+        'pre-resolve idle dummy: bvid=${dummy.tag.id}, parts=${srcs.length}');
+    var upgraded = false;
+    await doAndSavePlaylist(() async {
+      final dummyIdx = _indexOfInPlaylist(dummy);
+      if (dummyIdx == null) return;
+      await playlist.insertAll(dummyIdx + 1, srcs);
+      // insertAll 的 await 窗口内自然推进/用户跳转可能使 dummy 刚成为当前项
+      if (identical(player.sequenceState.currentSource, dummy)) {
+        upgraded = true;
+        return;
+      }
+      final removeIdx = _indexOfInPlaylist(dummy);
+      if (removeIdx != null) {
+        await playlist.removeAt(removeIdx);
+      }
+    });
+    if (upgraded) {
+      _logger.info('pre-resolve upgraded: dummy became current mid-mutation');
+      await _replaceCurrentDummy(dummy, srcs, alreadyInserted: true);
+    }
+  }
+
+  /// 兜底替换：dummy 已是当前播放项。iOS 安全顺序：先插到 dummy 后面 →
+  /// 显式跳到真实源（distant jump → enqueueFrom 干净加载新 item）→ 再删
+  /// dummy。避免两种已实测的卡死：
+  /// 1) removeItem(当前播放项) 触发 AVQueuePlayer 自动推进竞态
+  ///    → playing=true 但永不下发媒体请求；
+  /// 2) 对加载中的 item 发 seekToTime → AVFoundation 中断资源加载且不重试。
+  ///
+  /// seek 失败时保留 dummy 不删（静音播完自然推进到真实源，或用户切歌
+  /// 后由 _pendingDummyRemovals 补删），绝不 removeItem(当前项)。
+  Future<void> _replaceCurrentDummy(
+      IndexedAudioSource dummy, List<IndexedAudioSource> srcs,
+      {required bool alreadyInserted}) async {
+    _logger.info(
+        'resolve CURRENT dummy (fallback): bvid=${dummy.tag.id}, parts=${srcs.length}, alreadyInserted=$alreadyInserted');
+    final isShuffle = player.shuffleModeEnabled;
+    await doAndSavePlaylist(() async {
+      if (isShuffle) {
+        await player.setShuffleModeEnabled(false);
+      }
+      if (!alreadyInserted) {
+        final dummyIdx = _indexOfInPlaylist(dummy);
+        if (dummyIdx == null) {
+          if (isShuffle) await player.setShuffleModeEnabled(true);
+          return;
         }
-        await playlist.insertAll(targetIndex + 1, newSources);
-        if (Platform.isIOS && player.currentIndex == targetIndex) {
-          // iOS：先显式跳到新源（distant jump → enqueueFrom 干净加载新
-          // item），再删除 dummy。避免两种已实测的卡死：
-          // 1) removeItem(当前播放项) 触发 AVQueuePlayer 自动推进竞态
-          //    → playing=true 但永不下发媒体请求；
-          // 2) 对加载中的 item 发 seekToTime → AVFoundation 中断资源
-          //    加载且不重试。
-          //
-          // 关键前置条件：被 hijack 的 dummy 必须仍是当前播放项。hijack
-          // 的跳转 seek 会产生新的 currentIndex 事件，经监听器延迟回调
-          // 又会触发对「下一个 dummy」的 hijack——若不甄别，跳转 seek 会
-          // 形成级联，把播放从第一首一路强拽到第二首、第三首……
-          //（真机实测：点收藏夹第一首自动跳第二首）。
-          // seek 目标用 identical 定位第一个新源：insertAll 异步期间
-          // 队列可能漂移，固定 targetIndex+1 在多P下可能跳到下一P。
-          final firstIdx = newSources.isEmpty
-              ? null
-              : _indexOfInPlaylist(newSources.first);
-          if (firstIdx != null) {
+        await playlist.insertAll(dummyIdx + 1, srcs);
+      }
+      // shuffle/insert 的 await 窗口内用户可能已跳到其他曲目或 dummy 已
+      // 被移除：dummy 不再是当前项时无需 seek，直接安全删除；dummy 已不
+      // 在队列时无事可做。
+      if (_indexOfInPlaylist(dummy) == null) {
+        if (isShuffle) await player.setShuffleModeEnabled(true);
+        return;
+      }
+      final needSeek =
+          identical(player.sequenceState.currentSource, dummy);
+      var seekOk = true;
+      if (needSeek) {
+        // seek 目标用 identical 定位第一个新源：insertAll 异步期间队列可能
+        // 漂移，固定 index+1 在多 P 下可能跳到下一 P。
+        final firstIdx = _indexOfInPlaylist(srcs.first);
+        if (firstIdx != null) {
+          if (Platform.isIOS || player.loopMode == LoopMode.one) {
             try {
               await player
                   .seek(Duration.zero, index: firstIdx)
                   .timeout(const Duration(seconds: 5));
             } catch (e) {
-              _logger.warning('hijack seek to real source failed: $e');
+              _logger.warning('resolve: seek to real source failed: $e');
+              seekOk = false;
             }
           }
-        } else if (!Platform.isIOS && player.loopMode == LoopMode.one) {
-          await player.seek(Duration.zero, index: targetIndex + 1);
+        } else {
+          seekOk = false;
         }
-        // 按 dummy 实例身份现查索引再删除：insertAll/seek 的 await 期间
-        // 队列可能漂移，固定 targetIndex 可能删错项。
-        final removeIdx = _indexOfInPlaylist(currentSource);
+      }
+      if (seekOk) {
+        final removeIdx = _indexOfInPlaylist(dummy);
         if (removeIdx != null) {
           await playlist.removeAt(removeIdx);
         } else {
-          _logger.warning('hijack: dummy source vanished before removal');
+          _logger.warning('resolve: dummy source vanished before removal');
         }
-        if (isShuffle) {
-          await player.setShuffleModeEnabled(true);
-        }
+      } else {
+        // seek 目标丢失/失败：保留 dummy 注册延迟删除（下一次索引事件时
+        // dummy 已非当前项，补删是安全操作）。
+        _pendingDummyRemovals.add(dummy);
+      }
+      if (isShuffle) {
+        await player.setShuffleModeEnabled(true);
+      }
+    });
+  }
+
+  /// 延迟补删：等变更锁并复核目标已非当前播放项后从队列移除。
+  Future<void> _removeSourceWhenIdle(IndexedAudioSource source) async {
+    if (!await _waitMutationFree()) return;
+    _hijacking = true;
+    try {
+      if (identical(player.sequenceState.currentSource, source)) {
+        // 等锁期间又被跳回：重新挂起，等下一次索引事件再补删
+        _pendingDummyRemovals.add(source);
+        return;
+      }
+      await doAndSavePlaylist(() async {
+        final i = _indexOfInPlaylist(source);
+        if (i != null) await playlist.removeAt(i);
       });
     } finally {
       _hijacking = false;
@@ -1135,7 +1293,11 @@ class AudioService {
       await playlist.addAll(srcs);
     });
     _hijacking = false;
-    _hijackDummySource(index: index);
+    // 直接传 dummy 实例（而非索引捕获）：取锁同步进行，与后续 seek 的
+    // 索引事件链式触发经 _resolvingDummies 去重，不会重复解析。
+    if (index < srcs.length) {
+      unawaited(_resolveDummySource(srcs[index]));
+    }
     await player.seek(Duration.zero, index: index);
     await player.play();
   }

@@ -79,7 +79,7 @@ class LazyAudioSource extends StreamAudioSource {
   Future<void> get downloadComplete => _downloadCompleteCompleter.future;
 
   /// 全局下载互斥：同一 bvid:cid 同时只允许一个实例下载。重复源（收藏夹
-  /// 中同一视频出现两次、看门狗克隆与 hijack 撞车等）若并发写同一
+  /// 中同一视频出现两次、看门狗克隆与解析撞车等）若并发写同一
   /// .part，内容互相污染，且先完成的 onDone 改名后后者 rename 必炸
   ///（真机 SEVERE 日志实证）。键用 bvid:cid 而非文件路径：路径需要
   /// await 才能得到，无法保证「检查+占位」的原子性。
