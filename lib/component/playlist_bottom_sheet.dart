@@ -34,8 +34,8 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
   bool _selectionMode = false;
   final Set<String> _selectedKeys = {};
 
-  /// 映射回原始序列下标的当前播放项（shuffle 模式下 sequenceState
-  /// 的 currentIndex 是乱序下标，需经 effectiveIndices 换算）
+  /// 映射回原始序列下标的当前播放项（shuffle 不改变 currentIndex
+  /// 的原始序语义，直接使用即可）
   int? _currentIndex;
 
   /// 「回到当前播放」浮动按钮仅当当前项滚出视口时显示
@@ -106,14 +106,16 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     super.dispose();
   }
 
-  /// shuffle 模式下 currentIndex 是乱序（effective）下标，映射回原始
-  /// 序列下标用于高亮与定位；非 shuffle 时 effectiveIndices 为恒等映射
+  /// 当前播放项的原始（未打乱）序列下标。
+  ///
+  /// 注意：sequenceState.currentIndex 本就是原始序列下标——与
+  /// seek(index:)、原生端 getCurrentMediaItemIndex() 同为 playlist 序
+  /// 语义，shuffle 只影响播放推进顺序（effectiveIndices 描述乱序表），
+  /// 不改变 currentIndex 的含义。原实现误把 currentIndex 当作乱序位置
+  /// 再经 effectiveIndices 换算，shuffle 下高亮与「回到当前播放」
+  /// 会指到错误曲目（切到随机模式后播放列表正在播放项对不上）。
   int? _originalIndex(AudioPlayer player, SequenceState? state) {
-    final ci = state?.currentIndex;
-    if (ci == null) return null;
-    final effective = player.effectiveIndices;
-    if (ci < effective.length) return effective[ci];
-    return ci;
+    return state?.currentIndex;
   }
 
   void _updateLocate() {
@@ -148,12 +150,12 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
   Future<void> _removeAt(AudioService service,
       List<IndexedAudioSource> playlist, int index) async {
     final removedSource = playlist[index];
-    await service.doAndSavePlaylist(() async {
+    await service.mutatePlaylist(() async {
       await service.playlist.removeAt(index);
     });
     if (!mounted) return;
     _showNotice('已从播放列表删除', () async {
-      await service.doAndSavePlaylist(() async {
+      await service.mutatePlaylist(() async {
         if (index <= service.playlist.length) {
           await service.playlist.insert(index, removedSource);
         } else {
@@ -171,13 +173,13 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     final cid = item.extras['cid'] as int;
     final removedSource = playlist[index];
     await DatabaseManager.addExcludedPart(bvid, cid);
-    await service.doAndSavePlaylist(() async {
+    await service.mutatePlaylist(() async {
       await service.playlist.removeAt(index);
     });
     if (!mounted) return;
     _showNotice('已屏蔽该分 P', () async {
       await DatabaseManager.removeExcludedPart(bvid, cid);
-      await service.doAndSavePlaylist(() async {
+      await service.mutatePlaylist(() async {
         if (index <= service.playlist.length) {
           await service.playlist.insert(index, removedSource);
         } else {
@@ -221,7 +223,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     );
     if (confirmed != true || !mounted) return;
     final removed = [for (final i in indices) playlist[i]];
-    await service.doAndSavePlaylist(() async {
+    await service.mutatePlaylist(() async {
       for (var k = indices.length - 1; k >= 0; k--) {
         await service.playlist.removeAt(indices[k]);
       }
@@ -229,7 +231,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     _toggleSelectionMode();
     if (!mounted) return;
     _showNotice('已删除 ${removed.length} 首歌曲', () async {
-      await service.doAndSavePlaylist(() async {
+      await service.mutatePlaylist(() async {
         for (var k = 0; k < indices.length; k++) {
           if (indices[k] <= service.playlist.length) {
             await service.playlist.insert(indices[k], removed[k]);
@@ -441,7 +443,9 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
         }
         _switching = true;
         try {
-          await service.player.seek(Duration.zero, index: index);
+          // 持互斥定位：防在途解析/预解析的插入删除使目标索引错位
+          await service.mutatePlaylist(
+              () async => service.player.seek(Duration.zero, index: index));
           await service.player.play();
         } finally {
           _switching = false;
@@ -573,7 +577,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                     ),
                     FilledButton(
                       onPressed: () {
-                        service.doAndSavePlaylist(() async {
+                        service.mutatePlaylist(() async {
                           await service.playlist.clear();
                         });
                         Navigator.pop(context);
@@ -778,7 +782,7 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                               // newIndex 调整为「移除后插入」的最终下标
                                               //（旧 onReorder 才需要手动 -1），
                                               // 直接传给 move 即可
-                                              await service.doAndSavePlaylist(
+                                              await service.mutatePlaylist(
                                                   () async {
                                                 await service.playlist
                                                     .move(oldIndex, newIndex);

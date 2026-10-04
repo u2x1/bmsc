@@ -493,6 +493,12 @@ class DatabaseManager {
         allResults.addAll(results.map((e) => Meta.fromJson(e)));
       }
 
+      // 过滤历史缓存中的失效视频（提取层过滤只对增量同步生效）：
+      // 展示列表与 playByBvids 的播放列表都出自本函数，同一处过滤
+      // 保证两边一致，点击索引不会错位
+      allResults.removeWhere(
+          (m) => m.bvid.isEmpty || m.title == '已失效视频');
+
       _logger.info('Retrieved ${allResults.length} metas from cache');
       return allResults;
     } catch (e, stackTrace) {
@@ -1116,8 +1122,8 @@ class DatabaseManager {
 
   static Future<List<String>> getCachedCollectionBvids(int mid) async {
     final db = await database;
-    final results = await db
-        .query(collectedFavListVideoTable, where: 'mid = ?', whereArgs: [mid]);
+    final results = await db.query(collectedFavListVideoTable,
+        where: 'mid = ?', whereArgs: [mid], orderBy: 'rowid');
     return results.map((row) => row['bvid'] as String).toList();
   }
 
@@ -1243,8 +1249,12 @@ class DatabaseManager {
 
   static Future<List<String>> getCachedFavBvids(int mid) async {
     final db = await database;
-    final results =
-        await db.query(favListVideoTable, where: 'mid = ?', whereArgs: [mid]);
+    // ORDER BY rowid：显式按插入序（即最近一次全量同步的网络序）返回。
+    // 不带 ORDER BY 时依赖 SQLite 的扫描顺序，若查询计划改走
+    // (bvid, mid) 自索引会变成 bvid 字典序，收藏夹详情页展示顺序与
+    // _playFromIndex 传入的 index 对不上，点击会播错歌
+    final results = await db.query(favListVideoTable,
+        where: 'mid = ?', whereArgs: [mid], orderBy: 'rowid');
     return results.map((row) => row['bvid'] as String).toList();
   }
 

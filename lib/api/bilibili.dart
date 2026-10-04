@@ -306,6 +306,11 @@ class BilibiliAPI {
 
   List<Meta> _extractCollectionMetas(dynamic data) =>
       ((data['medias'] as List?) ?? [])
+          .map((x) => x as Map<String, dynamic>)
+          // 同 _extractFavMetas：过滤失效视频
+          .where((x) =>
+              (x['bvid'] as String?)?.isNotEmpty == true &&
+              x['title'] != _invalidVideoTitle)
           .map((x) => Meta(
                 bvid: x['bvid'],
                 title: x['title'],
@@ -336,7 +341,19 @@ class BilibiliAPI {
     return _extractFavMetas(data);
   }
 
+  /// B 站对失效视频的标题标记（fav/season 接口对已删除视频返回该
+  /// 标题 + 原 UP 名 + 无封面）
+  static const _invalidVideoTitle = '已失效视频';
+
   List<Meta> _extractFavMetas(dynamic data) => ((data['medias'] as List?) ?? [])
+      .map((x) => x as Map<String, dynamic>)
+      // 过滤失效视频：不可播（解析必失败，按「不自动跳歌」策略会
+      // 停在静音 dummy 上），混进队列后随机播放会随机轮到并卡住
+      //（实测用户收藏夹内共 74 个失效视频）。在提取层过滤保证
+      // 展示列表与播放列表一致，不引入点击索引错位
+      .where((x) =>
+          (x['bvid'] as String?)?.isNotEmpty == true &&
+          x['title'] != _invalidVideoTitle)
       .map((x) => Meta(
             bvid: x['bvid'],
             title: x['title'],

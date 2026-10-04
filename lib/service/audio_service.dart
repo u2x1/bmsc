@@ -19,6 +19,90 @@ import 'package:rxdart/rxdart.dart';
 
 final _logger = LoggerUtils.getLogger('AudioService');
 
+/// 解析（dummy→真实分 P 源）/ 换源不扰动随机序的 [ShuffleOrder]。
+///
+/// [DefaultShuffleOrder.insert] 把新源**随机散插**进随机序——本应用
+/// 的队列解析流程会在播放中不断把 dummy 替换为真实源（点击、预解析、
+/// 下载完成换源、切音质），每次替换都会重掷「下一首」：预解析好的
+/// 曲目并不是实际接下来播放的那首，多 P 视频的各分 P 也被打散，
+/// 随机模式下顺序反复无常。本实现默认行为与 DefaultShuffleOrder 一致
+///（随机散插），但替换式插入可通过 [anchorAfter] 锚定：新源按顺序
+/// 紧随被替换项在随机序中的位置，其随机序槽位保持不变。
+class AnchoredShuffleOrder extends ShuffleOrder {
+  // 必须直接暴露可变列表（与 DefaultShuffleOrder 一致）：just_audio 的
+  // _toMessage() 会把该列表的引用传给平台消息，应用的自定义后台
+  //（just_audio_background_custom）通过 replaceRange 就地同步镜像；
+  // 包一层 List.unmodifiable 会让所有队列变更直接抛
+  // "Cannot remove from an unmodifiable list"（真机实测）
+  @override
+  final indices = <int>[];
+
+  final _random = Random();
+  int? _anchorAfter;
+
+  /// 下一次 [insert] 的新源在随机序中紧随 [playlistIndex]（被替换的
+  /// dummy/旧源）之后按序占位。一次性：首个 insert 消费后失效。
+  void anchorAfter(int playlistIndex) => _anchorAfter = playlistIndex;
+
+  @override
+  void shuffle({int? initialIndex}) {
+    if (indices.length <= 1) return;
+    indices.shuffle(_random);
+    if (initialIndex == null) return;
+    const initialPos = 0;
+    final swapPos = indices.indexOf(initialIndex);
+    if (swapPos < 0) return;
+    final swapIndex = indices[initialPos];
+    indices[initialPos] = initialIndex;
+    indices[swapPos] = swapIndex;
+  }
+
+  @override
+  void insert(int index, int count) {
+    // 先按插入点平移既有索引（与 DefaultShuffleOrder 相同）
+    for (var i = 0; i < indices.length; i++) {
+      if (indices[i] >= index) {
+        indices[i] += count;
+      }
+    }
+    final newIndices = List.generate(count, (i) => index + i);
+    final anchor = _anchorAfter;
+    _anchorAfter = null;
+    if (anchor != null) {
+      // 锚定插入：紧随锚点（插入点前一项，即被替换的 dummy/旧源）
+      // 的随机序位置之后按序排布，替换后新源占据原槽位，随机序不变
+      final pos = indices.indexOf(anchor);
+      if (pos >= 0) {
+        indices.insertAll(pos + 1, newIndices);
+        return;
+      }
+    }
+    // 默认与 DefaultShuffleOrder 相同：随机散插
+    for (final newIndex in newIndices) {
+      final insertionIndex = _random.nextInt(indices.length + 1);
+      indices.insert(insertionIndex, newIndex);
+    }
+  }
+
+  @override
+  void removeRange(int start, int end) {
+    final count = end - start;
+    final oldIndices = List.generate(count, (i) => start + i).toSet();
+    indices.removeWhere(oldIndices.contains);
+    for (var i = 0; i < indices.length; i++) {
+      if (indices[i] >= end) {
+        indices[i] -= count;
+      }
+    }
+  }
+
+  @override
+  void clear() {
+    indices.clear();
+    _anchorAfter = null;
+  }
+}
+
 /// 一个可用音质档位及其存储占用。
 class AudioQualityInfo {
   final int id;
@@ -42,10 +126,15 @@ class AudioQualityInfo {
 class AudioService {
   static final instance = _init();
 
+  /// 队列随机序：替换式插入（解析/换源/切音质）通过 anchorAfter
+  /// 锚定，保持随机序不被重掷（见 [AnchoredShuffleOrder]）
+  final AnchoredShuffleOrder _playlistShuffleOrder = AnchoredShuffleOrder();
+
   // ignore: deprecated_member_use
-  final playlist = ConcatenatingAudioSource(
+  late final ConcatenatingAudioSource playlist = ConcatenatingAudioSource(
     useLazyPreparation: true,
     children: [],
+    shuffleOrder: _playlistShuffleOrder,
   );
   final player = AudioPlayer(
     handleInterruptions: false,
@@ -328,6 +417,7 @@ class AudioService {
         // iOS 安全顺序（同 _replaceCurrentDummy）：先插 → 显式跳 → 再删。
         // 定位一律 identical，禁用固定 index+1（推进竞态会把位置
         // 种到下一P 上——真机多P实测）。
+        _playlistShuffleOrder.anchorAfter(curIdx);
         await doAndSavePlaylist(() async {
           await playlist.insertAll(curIdx + 1, [newSource]);
         });
@@ -349,6 +439,7 @@ class AudioService {
           if (oldIdx != null) await playlist.removeAt(oldIdx);
         });
       } else {
+        _playlistShuffleOrder.anchorAfter(curIdx);
         await doAndSavePlaylist(() async {
           await playlist.insertAll(curIdx + 1, [newSource]);
           final oldIdx = _indexOfInPlaylist(source);
@@ -471,14 +562,25 @@ class AudioService {
     });
 
     player.currentIndexStream.listen((index) async {
-      if (index != null) {
-        // 解析必须先于 setInt 的 await 调用：等待会越过 _hijacking
-        // 保护期，使解析自身 seek 产生的索引事件触发连锁解析
-        //（级联跳歌，真机实测：点第一首自动跳第二首）。
-        _onTrackIndexChanged(index);
-        final prefs = await SharedPreferencesService.instance;
-        await prefs.setInt('currentIndex', index);
+      if (index == null) return;
+      // 播放列表变更执行期间（_hijacking/_swapping），just_audio 的
+      // sequenceState 是「旧 currentIndex × 新序列」的错位映射——原生端
+      // 的索引事件尚未回传，currentSource 可能指向完全错误的曲目。
+      // 按幻影事件处理会把播放统计/预解析打到错误曲目上，并连锁触发
+      // 对错误 dummy 的解析（真机实测：点击播放后 play_stat 被大量污染、
+      // 整个队列被级联预解析、播放条卡在错误歌曲上）。变更窗口内的
+      // 索引事件一律跳过，待变更完成后由 _resyncCurrentTrack 补同步。
+      if (_hijacking || _swapping) {
+        _needsTrackResync = true;
+        _scheduleTrackResync();
+        return;
       }
+      // 解析必须先于 setInt 的 await 调用：等待会越过 _hijacking
+      // 保护期，使解析自身 seek 产生的索引事件触发连锁解析
+      //（级联跳歌，真机实测：点第一首自动跳第二首）。
+      _onTrackIndexChanged(index);
+      final prefs = await SharedPreferencesService.instance;
+      await prefs.setInt('currentIndex', index);
     });
 
     // iOS：未缓存源以截断宣告的渐进式服务（见
@@ -580,6 +682,39 @@ class AudioService {
   int _watchdogStallTicks = 0;
   final Set<AudioSource> _watchdogUnwedgedSources = {};
 
+  /// 变更窗口内被跳过的索引事件是否待补同步
+  bool _needsTrackResync = false;
+  Timer? _trackResyncTimer;
+
+  /// 上次已按「真实切歌」处理过的当前源（按实例身份去重）。
+  /// sequenceState 在播放模式切换、playlist 变更等场景会以相同当前源
+  /// 重复发射，updatePlayStats 每次 +1，不去重会把 playCount 和
+  /// 「最近在听」打到错误/重复的曲目上
+  IndexedAudioSource? _lastHandledCurrentSource;
+
+  /// 变更完成后补一次当前曲目同步：届时原生索引事件已回传，
+  /// sequenceState.currentSource 是可信映射，可安全地更新播放统计、
+  /// 解析当前 dummy 与预解析下一首（与正常索引事件共用幂等逻辑）。
+  void _scheduleTrackResync() {
+    if (_trackResyncTimer?.isActive ?? false) return;
+    _trackResyncTimer = Timer(const Duration(milliseconds: 200), () {
+      _trackResyncTimer = null;
+      if (_hijacking || _swapping) {
+        // 又有变更在执行：等它结束再试
+        _scheduleTrackResync();
+        return;
+      }
+      if (!_needsTrackResync) return;
+      _needsTrackResync = false;
+      final index = player.currentIndex;
+      if (index == null) return;
+      _logger.info('track resync after playlist mutation: index=$index');
+      _onTrackIndexChanged(index);
+      unawaited(SharedPreferencesService.instance
+          .then((prefs) => prefs.setInt('currentIndex', index)));
+    });
+  }
+
   /// iOS 看门狗解卡：用全新实例替换当前源（新实例 = 新原生 AVPlayerItem =
   /// 全新资源加载，旧 item 的内部卡死状态随之丢弃）。操作顺序与 _replaceCurrentDummy
   /// 一致：先插到当前项后面 → 显式跳 → 再删旧项，规避 removeItem(当前项)
@@ -625,6 +760,7 @@ class AudioService {
     _hijacking = true;
     _swapping = true;
     try {
+      _playlistShuffleOrder.anchorAfter(curIdx);
       await doAndSavePlaylist(() async {
         await playlist.insertAll(curIdx + 1, [fresh]);
       });
@@ -957,6 +1093,7 @@ class AudioService {
           // 注意：不能用固定 index+1！insertAll 异步执行期间 AVQueuePlayer
           // 可能已推进（P1 恰逢播完），固定偏移会把 seek 打到下一P 上
           //（真机多P实测：下一P继承上一P进度）。一切定位用 identical。
+          _playlistShuffleOrder.anchorAfter(curIdx);
           await doAndSavePlaylist(() async {
             await playlist.insertAll(curIdx + 1, [cachedSource]);
           });
@@ -978,6 +1115,7 @@ class AudioService {
             if (oldIdx != null) await playlist.removeAt(oldIdx);
           });
         } else {
+          _playlistShuffleOrder.anchorAfter(curIdx);
           await doAndSavePlaylist(() async {
             await playlist.insertAll(curIdx + 1, [cachedSource]);
             final oldIdx = _indexOfInPlaylist(source);
@@ -1027,15 +1165,31 @@ class AudioService {
     final source = seq[index];
     final extras = source.tag.extras;
     if (extras == null) return;
+    // 同一源重复触发（播放模式切换、变更后 resync 等）时不再重复计
+    // 统计、不再重复预解析：updatePlayStats 每次 playCount +1，
+    // 重复事件会污染 playCount 与「最近在听」
+    final isCurrentChanged = !identical(source, _lastHandledCurrentSource);
     if (extras['dummy'] == true) {
+      if (isCurrentChanged) {
+        _lastHandledCurrentSource = source;
+      }
       unawaited(_resolveDummySource(source));
     } else if (extras['bvid'] != null && extras['cid'] != null) {
-      unawaited(
-          DatabaseManager.updatePlayStats(extras['bvid'], extras['cid']));
-      _logger.info(
-          'update play stats for bvid: ${extras['bvid']} cid: ${extras['cid']}');
+      if (isCurrentChanged) {
+        _lastHandledCurrentSource = source;
+        unawaited(
+            DatabaseManager.updatePlayStats(extras['bvid'], extras['cid']));
+        _logger.info(
+            'update play stats for bvid: ${extras['bvid']} cid: ${extras['cid']}');
+      }
     }
-    _schedulePreResolveAhead();
+    // 预解析只在真实切歌时进行：解析下一首 → 其完成又预解析下一首 →…
+    // 的链式触发会把整个队列全部解析（每首一次网络请求，且期间的
+    // 插入/删除让 sequenceState 反复错位，真机实测级联在数秒内解析了
+    // 44 个视频的整个队列并使播放条反复跳变）
+    if (isCurrentChanged) {
+      _schedulePreResolveAhead();
+    }
   }
 
   /// 预解析：提前把播放序下一首的 dummy 替换为真实源，使自然切歌不再
@@ -1119,9 +1273,12 @@ class AudioService {
       }
     } finally {
       _hijacking = false;
-      // 链式预解析：播放序的下一首仍是 dummy 时继续（自然停在真实源上，
-      // 不会整队解析）。
-      _schedulePreResolveAhead();
+      // 注意：这里不能链式预解析下一首。原实现「解析完成 → 预解析下一首
+      // → 其完成又预解析下一首 → …」会把整个队列全部解析（每首一次网络
+      // 请求；且大量插入/删除使 sequenceState 反复错位，真机实测 4 秒内
+      // 级联解析了 44 个视频的队列、播放条反复跳变并卡在错误曲目）。
+      // 预解析只由真实切歌驱动（_onTrackIndexChanged），每次恰好解析
+      // 「播放序下一首」一首，切歌时下一首自然已就绪。
     }
   }
 
@@ -1162,6 +1319,8 @@ class AudioService {
     await doAndSavePlaylist(() async {
       final dummyIdx = _indexOfInPlaylist(dummy);
       if (dummyIdx == null) return;
+      // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
+      _playlistShuffleOrder.anchorAfter(dummyIdx);
       await playlist.insertAll(dummyIdx + 1, srcs);
       // insertAll 的 await 窗口内自然推进/用户跳转可能使 dummy 刚成为当前项
       if (identical(player.sequenceState.currentSource, dummy)) {
@@ -1204,6 +1363,8 @@ class AudioService {
           if (isShuffle) await player.setShuffleModeEnabled(true);
           return;
         }
+        // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
+        _playlistShuffleOrder.anchorAfter(dummyIdx);
         await playlist.insertAll(dummyIdx + 1, srcs);
       }
       // shuffle/insert 的 await 窗口内用户可能已跳到其他曲目或 dummy 已
@@ -1296,21 +1457,30 @@ class AudioService {
     final idx = await _addUniqueSourcesToPlaylist(srcs,
         insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
     if (idx != null) {
-      int target = idx;
-      if (preferCid != null) {
-        // 在播放列表中定位该 bvid 下目标分 P 的位置（含该视频
-        // 已在列表中被去重命中的情况）；找不到保持从 P1 开始
-        final i = playlist.children.indexWhere((c) =>
-            c is IndexedAudioSource &&
-            c.tag is MediaItem &&
-            (c.tag as MediaItem).extras?['bvid'] == bvid &&
-            (c.tag as MediaItem).extras?['cid'] == preferCid);
-        if (i >= 0) {
-          target = i;
-          _logger.info('Located to part cid=$preferCid at index $i');
+      // 定位与 seek 同处变更互斥窗口：其间在途的解析/预解析不会插入
+      // 删除队列项，target 计算与 seek 落点一致（否则多 P 插入会使
+      // seek 落到错误曲目）
+      if (!await _waitMutationFree()) return;
+      _hijacking = true;
+      try {
+        int target = idx;
+        if (preferCid != null) {
+          // 在播放列表中定位该 bvid 下目标分 P 的位置（含该视频
+          // 已在列表中被去重命中的情况）；找不到保持从 P1 开始
+          final i = playlist.children.indexWhere((c) =>
+              c is IndexedAudioSource &&
+              c.tag is MediaItem &&
+              (c.tag as MediaItem).extras?['bvid'] == bvid &&
+              (c.tag as MediaItem).extras?['cid'] == preferCid);
+          if (i >= 0) {
+            target = i;
+            _logger.info('Located to part cid=$preferCid at index $i');
+          }
         }
+        await player.seek(Duration.zero, index: target);
+      } finally {
+        _hijacking = false;
       }
-      await player.seek(Duration.zero, index: target);
     }
     await player.play();
   }
@@ -1325,18 +1495,41 @@ class AudioService {
       srcs.add(await getDummyAudioSource(meta));
     }
     await player.pause();
+    // 等在途的解析/换源/预解析变更完成再换队列：原实现直接覆写
+    // _hijacking 旗标，与在途变更并发执行 clear/addAll 会互相改坏队列
+    if (!await _waitMutationFree()) return;
     _hijacking = true;
-    await doAndSavePlaylist(() async {
-      await playlist.clear();
-      await playlist.addAll(srcs);
-    });
-    _hijacking = false;
-    // 直接传 dummy 实例（而非索引捕获）：取锁同步进行，与后续 seek 的
-    // 索引事件链式触发经 _resolvingDummies 去重，不会重复解析。
+    try {
+      await doAndSavePlaylist(() async {
+        await playlist.clear();
+        await playlist.addAll(srcs);
+      });
+      // 先定位、后解析，且定位期间保持互斥：子序列化/预解析的插入
+      // 删除不会发生，[index] 一定落在点击的曲目上。原实现解析先于
+      // seek 且此刻旗标已释放，多 P 视频的插入会使 seek 落到错误曲目
+      //（随机播放下预解析目标分散在队列各处，错位概率更高）
+      await player.seek(Duration.zero, index: index);
+      // 启动恢复等场景下播放器可能仍在 loading，just_audio 会把该
+      // seek 静默丢弃——等就绪后重试一次，确保定位到点击曲目
+      if (index < srcs.length &&
+          !identical(player.sequenceState.currentSource, srcs[index])) {
+        try {
+          await player.processingStateStream
+              .firstWhere((s) => s == ProcessingState.ready)
+              .timeout(const Duration(seconds: 5));
+          await player.seek(Duration.zero, index: index);
+        } catch (_) {
+          // 拉起失败由后续索引事件链自愈
+        }
+      }
+    } finally {
+      _hijacking = false;
+    }
+    // 直接传 dummy 实例（而非索引捕获）：取锁同步进行，与 seek/resync
+    // 触发的索引事件经 _resolvingDummies 去重，不会重复解析。
     if (index < srcs.length) {
       unawaited(_resolveDummySource(srcs[index]));
     }
-    await player.seek(Duration.zero, index: index);
     await player.play();
   }
 
@@ -1350,7 +1543,14 @@ class AudioService {
         insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
 
     if (idx != null) {
-      await player.seek(Duration.zero, index: idx);
+      // 同 playByBvid：定位 seek 与队列变更互斥，防索引错位
+      if (!await _waitMutationFree()) return;
+      _hijacking = true;
+      try {
+        await player.seek(Duration.zero, index: idx);
+      } finally {
+        _hijacking = false;
+      }
     }
     await player.play();
   }
@@ -1378,14 +1578,28 @@ class AudioService {
         'Playing ${tracks.length} local tracks from index $index (shuffle=$shuffle)');
     final srcs = tracks.map(LocalMusicService.buildSource).toList();
     await player.pause();
+    if (!await _waitMutationFree()) return;
     _hijacking = true;
-    await doAndSavePlaylist(() async {
-      await playlist.clear();
-      await playlist.addAll(srcs);
-    });
-    _hijacking = false;
-    if (index >= srcs.length) index = 0;
-    await player.seek(Duration.zero, index: index);
+    try {
+      await doAndSavePlaylist(() async {
+        await playlist.clear();
+        await playlist.addAll(srcs);
+      });
+      if (index >= srcs.length) index = 0;
+      await player.seek(Duration.zero, index: index);
+      // loading 态（启动恢复期间）seek 会被静默丢弃，就绪后重试一次
+      if (index < srcs.length &&
+          !identical(player.sequenceState.currentSource, srcs[index])) {
+        try {
+          await player.processingStateStream
+              .firstWhere((s) => s == ProcessingState.ready)
+              .timeout(const Duration(seconds: 5));
+          await player.seek(Duration.zero, index: index);
+        } catch (_) {}
+      }
+    } finally {
+      _hijacking = false;
+    }
     if (shuffle) {
       // 播放模式 3 = 列表循环 + 随机（hookEvents 监听自动持久化）
       await player.setLoopMode(LoopMode.all);
@@ -1446,6 +1660,22 @@ class AudioService {
     await func();
     await SharedPreferencesService.savePlaylist(
         playlist, player.currentIndex ?? 0);
+  }
+
+  /// UI 层队列变更统一入口：先等在途的解析/换源/预解析完成，再持互斥
+  /// 执行变更。直接调 doAndSavePlaylist 改队列会与在途变更并发互相
+  /// 改坏队列；且变更期间 sequenceState 的「旧索引 × 新序列」错位映射
+  /// 若被索引监听误当真实切歌处理，会把统计/预解析打到错误曲目上
+  ///（幻影事件，真机实测会连锁解析整个队列）。已在 _hijacking 内执行
+  /// 的内部流程不应使用本方法（会等自己）。
+  Future<void> mutatePlaylist(Future<void> Function() func) async {
+    final lockAcquired = await _waitMutationFree();
+    if (lockAcquired) _hijacking = true;
+    try {
+      await doAndSavePlaylist(func);
+    } finally {
+      if (lockAcquired) _hijacking = false;
+    }
   }
 
   // 去重依据：B 站源以 extras 中的 bvid + cid（dummy 源与真实源的
