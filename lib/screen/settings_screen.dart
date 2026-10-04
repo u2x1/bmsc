@@ -7,6 +7,7 @@ import 'package:bmsc/screen/login_screen.dart';
 import 'package:bmsc/screen/playlist_search_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/service/stats_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import '../service/shared_preferences_service.dart';
@@ -27,7 +28,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _downloadPath = '/storage/emulated/0/Download/BMSC';
   int _maxConcurrentDownloads = 3;
   int _cacheLimitSize = 300;
-  bool _readFromClipboard = true;
+  bool _readFromClipboard = false;
+  bool _statsEnabled = true;
 
   @override
   void initState() {
@@ -48,6 +50,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final cacheLimitSize = await SharedPreferencesService.getCacheLimitSize();
     final readFromClipboard =
         await SharedPreferencesService.getReadFromClipboard();
+    final statsEnabled = await StatsService.getEnabled();
     if (mounted) {
       setState(() {
         _audioQuality = audioQuality;
@@ -58,6 +61,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _maxConcurrentDownloads = maxConcurrentDownloads;
         _cacheLimitSize = cacheLimitSize;
         _readFromClipboard = readFromClipboard;
+        _statsEnabled = statsEnabled;
       });
     }
   }
@@ -74,6 +78,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       kHomeSectionRecent: 'show_recent_listening',
       kHomeSectionMine: 'show_my_favs',
       kHomeSectionCollected: 'show_collected_favs',
+      kHomeSectionLocal: 'show_local_music',
     };
     final visible = <String, bool>{
       for (final e in sectionPrefKeys.entries)
@@ -85,6 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       kHomeSectionRecent: (Icons.history, '最近在听'),
       kHomeSectionMine: (Icons.folder_outlined, '我的收藏夹'),
       kHomeSectionCollected: (Icons.star_outline, '收藏的收藏夹'),
+      kHomeSectionLocal: (Icons.library_music_outlined, '本地音乐'),
     };
     await showDialog(
       context: context,
@@ -659,6 +665,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               await SharedPreferencesService.setReadFromClipboard(value);
               setState(() {
                 _readFromClipboard = value;
+              });
+            },
+          ),
+          SwitchListTile(
+            title: const Text('使用统计'),
+            secondary: const Icon(Icons.insights),
+            subtitle: const Text('匿名统计每日活跃与版本分布，不含个人信息'),
+            value: _statsEnabled,
+            onChanged: (bool value) async {
+              await StatsService.setEnabled(value);
+              setState(() {
+                _statsEnabled = value;
               });
             },
           ),

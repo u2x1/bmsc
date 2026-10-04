@@ -10,6 +10,7 @@ import 'package:bmsc/screen/local_history_screen.dart';
 import 'package:bmsc/service/audio_service.dart' as app_audio;
 import 'package:bmsc/audio/just_audio_background_custom.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/url.dart';
 import 'package:flutter/material.dart';
@@ -33,6 +34,8 @@ final _logger = LoggerUtils.getLogger('main');
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await LoggerUtils.init();
+  // 匿名使用统计每日心跳（默认开启，设置 → 隐私 可关），不阻塞启动
+  unawaited(StatsService.maybePing());
 
   if (Platform.isAndroid || Platform.isIOS) {
     _logger.info('audio platform: ${Platform.operatingSystem}');
