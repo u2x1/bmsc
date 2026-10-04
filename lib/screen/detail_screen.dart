@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
@@ -350,19 +351,21 @@ class _DetailScreenState extends State<DetailScreen>
     }
 
     final src = _currentSequenceState?.currentSource;
+    // 本地音乐无对应 B 站链接，不显示分享
+    final bvid = src?.tag.extras['bvid'];
+    if (src == null || bvid == null) {
+      return const SizedBox.shrink();
+    }
     return IconButton(
       icon: const Icon(Icons.share),
-      onPressed: src == null
-          ? null
-          : () {
-              final bvid = src.tag.extras['bvid'];
-              final title = src.tag.title;
-              final url = 'https://www.bilibili.com/video/$bvid';
-              SharePlus.instance.share(ShareParams(
-                text: '$title\n$url',
-                subject: title,
-              ));
-            },
+      onPressed: () {
+        final title = src.tag.title;
+        final url = 'https://www.bilibili.com/video/$bvid';
+        SharePlus.instance.share(ShareParams(
+          text: '$title\n$url',
+          subject: title,
+        ));
+      },
     );
   }
 
@@ -565,13 +568,25 @@ class _DetailScreenState extends State<DetailScreen>
                 ? Center(
                     child: Icon(Icons.question_mark, size: 50),
                   )
-                : CachedNetworkImage(
-                    imageUrl: src.tag.artUri.toString(),
-                    fit: BoxFit.cover,
-                    placeholder: (context, url) => const Icon(Icons.music_note),
-                    errorWidget: (context, url, error) =>
-                        const Icon(Icons.music_note),
-                  )),
+                // 本地音乐封面为 file:// 路径，走本地文件加载；
+                // 无封面（artUri == null）时显示占位图标
+                : src.tag.artUri == null
+                    ? const Center(child: Icon(Icons.music_note, size: 50))
+                    : src.tag.artUri!.isScheme('file')
+                        ? Image.file(
+                            File(src.tag.artUri!.path),
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.music_note),
+                          )
+                        : CachedNetworkImage(
+                            imageUrl: src.tag.artUri.toString(),
+                            fit: BoxFit.cover,
+                            placeholder: (context, url) =>
+                                const Icon(Icons.music_note),
+                            errorWidget: (context, url, error) =>
+                                const Icon(Icons.music_note),
+                          )),
       )),
     );
   }
@@ -605,7 +620,8 @@ class _DetailScreenState extends State<DetailScreen>
           ),
         ),
         InkWell(
-          onTap: () => src == null
+          // 本地音乐无对应 UP 主，禁用跳转
+          onTap: () => (src == null || (src.tag.extras['mid'] ?? 0) == 0)
               ? null
               : Navigator.push(context, MaterialPageRoute<Widget>(
                   builder: (BuildContext context) {

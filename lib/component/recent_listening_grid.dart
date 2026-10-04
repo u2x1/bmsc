@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
@@ -184,10 +186,15 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
   Widget _buildCell(PlayStat stat) {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      // 定位到上次听到的分 P（play_stat.last_cid）续播，
-      // 旧数据无记录时从 P1 开始
-      onTap: () => AudioService.instance
-          .then((x) => x.playByBvid(stat.bvid, preferCid: stat.lastCid)),
+      // B 站曲目：定位到上次听到的分 P（play_stat.last_cid）续播，
+      // 旧数据无记录时从 P1 开始；本地音乐曲目直接单曲续播
+      onTap: () => AudioService.instance.then((x) {
+        if (stat.isLocal) {
+          final localId = int.tryParse(stat.bvid.substring(6));
+          if (localId != null) return x.playLocalTrackById(localId);
+        }
+        return x.playByBvid(stat.bvid, preferCid: stat.lastCid);
+      }),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -199,7 +206,8 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
                 fit: StackFit.expand,
                 children: [
                   _buildCover(stat),
-                  if (stat.duration != null)
+                  // 时长为 0 的本地文件（元数据缺失）不显示角标
+                  if (stat.duration != null && stat.duration! > 0)
                     Positioned(
                       right: 4,
                       bottom: 4,
@@ -244,6 +252,14 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
       ),
     );
     if (artUri == null || artUri.isEmpty) return placeholder;
+    // 本地音乐封面为本地文件路径
+    if (stat.isLocal) {
+      return Image.file(
+        File(artUri),
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => placeholder,
+      );
+    }
     // 居中裁剪为 16:9（B 站封面为横图）；320×180 适配 3x 视网膜
     return CachedNetworkImage(
       imageUrl: '$artUri@320w_180h_1c',

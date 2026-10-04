@@ -1,4 +1,5 @@
 import 'package:bmsc/screen/feedback_screen.dart';
+import 'package:bmsc/screen/local_music_screen.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/changelog.dart';
@@ -185,16 +186,23 @@ class _Spotlight {
 /// 本版本主打功能引导（0..N 条，每版本发布前更新；无主打功能时置空列表）
 const List<_Spotlight> _spotlights = [
   _Spotlight(
+    icon: Icons.library_music_outlined,
+    title: '本地音乐播放',
+    description: '导入设备音频文件播放，支持自动扫描与手动导入',
+    routeBuilder: _localMusicRoute,
+  ),
+  _Spotlight(
     icon: Icons.feedback_outlined,
     title: '应用内问题反馈',
-    description: '无需 GitHub 账号即可反馈 bug，可附带日志自动脱敏提交。入口：关于页 → 问题反馈',
+    description: '在关于页可直接提交问题反馈，内容会同步到 GitHub Issues',
     routeBuilder: _feedbackRoute,
   ),
   _Spotlight(
     icon: Icons.grid_view_outlined,
-    title: '收藏夹缩略图网格视图',
-    description: '收藏夹详情页点右上角图标，在曲目列表与封面网格间切换，选择全局记忆',
+    title: '收藏夹网格视图',
+    description: '收藏夹详情页可在曲目列表与封面网格间切换',
   ),
 ];
 
+Widget _localMusicRoute(BuildContext _) => const LocalMusicScreen();
 Widget _feedbackRoute(BuildContext _) => const FeedbackScreen();

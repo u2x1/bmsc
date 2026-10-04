@@ -1,14 +1,19 @@
 import 'package:bmsc/component/recent_listening_grid.dart';
 import 'package:bmsc/component/section_header.dart';
+import 'package:bmsc/component/track_tile.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/fav.dart';
+import 'package:bmsc/model/local_track.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/service/local_music_service.dart';
+import 'package:bmsc/util/string.dart' as str_util;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 import '../service/shared_preferences_service.dart';
 import 'fav_detail_screen.dart';
+import 'local_music_screen.dart';
 import 'login_screen.dart';
 import 'recommendation_screen.dart';
 import 'package:bmsc/util/logger.dart';
@@ -47,7 +52,12 @@ class FavScreenState extends State<FavScreen> {
   late Future<bool> _showDailyFuture;
   late Future<bool> _showMineFuture;
   late Future<bool> _showCollectedFuture;
+  late Future<bool> _showLocalFuture;
   late Future<List<String>> _sectionOrderFuture;
+
+  /// 本地音乐板块预览：前 3 首 + 总数
+  List<LocalTrack> _localTracks = [];
+  int _localCount = 0;
 
   void _reloadSectionToggles() {
     _showRecentFuture = SharedPreferencesService.instance
@@ -58,6 +68,8 @@ class FavScreenState extends State<FavScreen> {
         .then((prefs) => prefs.getBool('show_my_favs') ?? true);
     _showCollectedFuture = SharedPreferencesService.instance
         .then((prefs) => prefs.getBool('show_collected_favs') ?? true);
+    _showLocalFuture = SharedPreferencesService.instance
+        .then((prefs) => prefs.getBool('show_local_music') ?? true);
     _sectionOrderFuture = SharedPreferencesService.getHomeSectionOrder();
   }
 
@@ -69,6 +81,8 @@ class FavScreenState extends State<FavScreen> {
     // 播放页收藏/取消收藏后本地库会 bump favListVersion，
     // 此处重读本地缓存使主页收藏夹计数与封面即时更新
     DatabaseManager.favListVersion.addListener(_onFavListChanged);
+    DatabaseManager.localMusicVersion.addListener(_onLocalMusicChanged);
+    _loadLocalPreview();
     BilibiliService.instance.then((x) {
       setState(() {
         signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
@@ -83,10 +97,33 @@ class FavScreenState extends State<FavScreen> {
     loadFavorites(local: true);
   }
 
+  void _onLocalMusicChanged() {
+    _loadLocalPreview();
+  }
+
   @override
   void dispose() {
     DatabaseManager.favListVersion.removeListener(_onFavListChanged);
+    DatabaseManager.localMusicVersion.removeListener(_onLocalMusicChanged);
     super.dispose();
+  }
+
+  /// 本地音乐板块预览（仅 DB 查询 + 文件存在性清理，不访问网络）
+  Future<void> _loadLocalPreview() async {
+    final tracks = await LocalMusicService.getTracks();
+    if (!mounted) return;
+    setState(() {
+      _localCount = tracks.length;
+      _localTracks = tracks.take(3).toList();
+    });
+  }
+
+  /// 点击预览条目：以完整曲库为队列从该曲开始播放
+  Future<void> _playLocalTrack(int index) async {
+    final tracks = await LocalMusicService.getTracks();
+    if (index >= tracks.length) return;
+    final service = await AudioService.instance;
+    await service.playLocalTracks(tracks, index: index);
   }
 
   Future<void> refreshLoginState() async {
@@ -429,48 +466,61 @@ class FavScreenState extends State<FavScreen> {
       // 不使用顶部「云收藏夹」栏，新建/刷新入口
       // 移至「我的收藏夹」分区标题行
       body: !signedin
-          ? Center(
-              // 未登录：点击直接进入登录页，登录成功后原地刷新收藏夹
-              child: InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () async {
-                  final loggedIn = await Navigator.push<bool>(
-                    context,
-                    MaterialPageRoute<bool>(
-                        builder: (_) => const LoginScreen()),
-                  );
-                  if (loggedIn == true && mounted) {
-                    await refreshLoginState();
-                  }
-                },
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.lock_outline,
-                          size: 48, color: Colors.grey),
-                      const SizedBox(height: 12),
-                      Text(
-                        '请先登录',
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: Theme.of(context).colorScheme.secondary,
+          ? CustomScrollView(
+              slivers: [
+                // 未登录：B 站相关板块收起为登录引导，
+                // 本地音乐板块不受影响（本地播放无需账号）
+                SliverToBoxAdapter(
+                  child: SizedBox(
+                    height: MediaQuery.of(context).size.height * 0.35,
+                    child: Center(
+                      // 未登录：点击直接进入登录页，登录成功后原地刷新收藏夹
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () async {
+                          final loggedIn = await Navigator.push<bool>(
+                            context,
+                            MaterialPageRoute<bool>(
+                                builder: (_) => const LoginScreen()),
+                          );
+                          if (loggedIn == true && mounted) {
+                            await refreshLoginState();
+                          }
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 24, vertical: 16),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.lock_outline,
+                                  size: 48, color: Colors.grey),
+                              const SizedBox(height: 12),
+                              Text(
+                                '请先登录',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  color:
+                                      Theme.of(context).colorScheme.secondary,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '点击登录',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Theme.of(context).colorScheme.primary,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '点击登录',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
-              ),
+                ..._buildOrderedSection(kHomeSectionLocal),
+              ],
             )
           : loadFailed && favList.isEmpty && collectedFavList.isEmpty
               ? Center(
@@ -531,9 +581,116 @@ class FavScreenState extends State<FavScreen> {
         return [_buildMineSection()];
       case kHomeSectionCollected:
         return [_buildCollectedSection()];
+      case kHomeSectionLocal:
+        return [_buildLocalSection()];
       default:
         return const [];
     }
+  }
+
+  /// 板块「本地音乐」：受「主页板块」设置开关控制；不依赖登录态。
+  /// header 吸顶可点击进入曲库页；内容预览前 3 首（点击即以完整
+  /// 曲库为队列播放），空库时显示导入引导。
+  Widget _buildLocalSection() {
+    return FutureBuilder<bool>(
+      future: _showLocalFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || !snapshot.data!) {
+          return const SliverToBoxAdapter(child: SizedBox());
+        }
+        final scheme = Theme.of(context).colorScheme;
+        return SliverStickyHeader(
+          header: SectionHeader(
+            icon: Icons.library_music_outlined,
+            title: '本地音乐',
+            count: _localCount == 0 ? null : _localCount,
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '进入曲库',
+                  style: TextStyle(fontSize: 13, color: scheme.secondary),
+                ),
+                Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
+              ],
+            ),
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute<Widget>(
+                  builder: (_) => const LocalMusicScreen()),
+            ).then((_) => _loadLocalPreview()),
+          ),
+          sliver: SliverToBoxAdapter(child: _buildLocalPreview(scheme)),
+        );
+      },
+    );
+  }
+
+  /// 本地音乐板块内容：前 3 首预览（TrackTile，与全局列表风格一致）；
+  /// 空库时为导入引导卡片
+  Widget _buildLocalPreview(ColorScheme scheme) {
+    if (_localTracks.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(10),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute<Widget>(
+                builder: (_) => const LocalMusicScreen()),
+          ).then((_) => _loadLocalPreview()),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest.withValues(alpha: 0.45),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.add_circle_outline, color: scheme.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('导入本地音乐',
+                          style: TextStyle(fontWeight: FontWeight.w600)),
+                      Text(
+                        '设备中的音频文件，无需联网也能听',
+                        style: TextStyle(fontSize: 12, color: scheme.secondary),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+      child: Column(
+        children: [
+          for (var i = 0; i < _localTracks.length; i++)
+            TrackTile(
+              pic: _localTracks[i].coverPath != null
+                  ? 'file://${_localTracks[i].coverPath}'
+                  : null,
+              title: _localTracks[i].title,
+              author: _localTracks[i].artist,
+              album: _localTracks[i].album.isEmpty
+                  ? null
+                  : _localTracks[i].album,
+              len: _localTracks[i].duration > 0
+                  ? str_util.duration(_localTracks[i].duration)
+                  : '--:--',
+              onTap: () => _playLocalTrack(i),
+            ),
+        ],
+      ),
+    );
   }
 
   /// 板块「我的收藏夹」：受「主页板块」设置开关控制。

@@ -18,6 +18,9 @@ final _inflight = <String, Future<Uri?>>{};
 /// 并发同一 URL 共享一次下载；失败后下次调用可重试。
 Future<Uri?> resolveArtCacheFile(Uri? artUri) {
   if (artUri == null) return Future.value(null);
+  // 本地音乐封面已是本地文件，直接透传：走 HTTP 下载会因无 host
+  // 报「No host specified in URI」，且无需缓存
+  if (artUri.isScheme('file')) return Future.value(artUri);
   final key = artUri.toString();
   final cached = _inflight[key];
   if (cached != null) return cached;

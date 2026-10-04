@@ -17,6 +17,7 @@ import 'dart:math' as math;
 import 'package:bmsc/util/logger.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:bmsc/model/download_task.dart';
+import 'package:bmsc/model/local_track.dart';
 
 final _logger = LoggerUtils.getLogger('DatabaseManager');
 
@@ -36,11 +37,16 @@ class DatabaseManager {
   static const String downloadTaskTable = 'download_tasks';
   static const String excludedPartsTable = 'excluded_parts';
   static const String statTable = 'play_stat';
+  static const String localMusicTable = 'local_music';
 
   /// 收藏夹内容变更版本号：addFav/rmFav 实际改库后自增。
   /// 主页收藏夹列表监听它重读本地缓存，使收藏/取消收藏后
   /// 收藏夹的媒体计数与封面堆叠无需网络刷新即即时更新
   static final ValueNotifier<int> favListVersion = ValueNotifier(0);
+
+  /// 本地音乐曲库变更版本号：导入/删除实际改库后自增，
+  /// 主页「本地音乐」板块监听它刷新计数与预览列表
+  static final ValueNotifier<int> localMusicVersion = ValueNotifier(0);
 
   static Future<Database> get database async {
     if (_database != null) return _database!;
@@ -76,7 +82,7 @@ class DatabaseManager {
     try {
       final db = await openDatabase(
         path,
-        version: 9,
+        version: 10,
         onCreate: (db, version) async {
           _logger.info('Creating new database tables...');
           await db.execute('''
@@ -213,9 +219,16 @@ class DatabaseManager {
             last_cid INTEGER
           )
         ''');
+
+          await _createLocalMusicTable(db);
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           _logger.info('Upgrading database from v$oldVersion to v$newVersion');
+
+          if (oldVersion <= 9) {
+            // 本地音乐曲库表（导入的设备音频文件，与 B 站缓存体系无关）
+            await _createLocalMusicTable(db);
+          }
 
           if (oldVersion <= 8) {
             // play_stat 新增 last_cid 列：记录每首歌最近播放的分 P，
@@ -1674,10 +1687,18 @@ class DatabaseManager {
 
     orderBy ??= 'last_played DESC';
 
+    // 本地音乐曲目的 stat 键为 local_<id>，联查 local_music 取
+    // 标题/艺术家/封面/时长/文件路径；B 站源仍走 meta_cache
     final query = '''
-      SELECT s.*, m.title, m.artist, m.artUri, m.duration
+      SELECT s.*,
+             COALESCE(m.title, lm.title) AS title,
+             COALESCE(m.artist, lm.artist) AS artist,
+             COALESCE(m.artUri, lm.coverPath) AS artUri,
+             COALESCE(m.duration, lm.duration) AS duration,
+             lm.filePath AS local_file
       FROM $statTable s
       LEFT JOIN $metaTable m ON s.bvid = m.bvid
+      LEFT JOIN $localMusicTable lm ON s.bvid = 'local_' || lm.id
       ORDER BY $orderBy
       ${limit != null ? 'LIMIT $limit' : ''}
     ''';
@@ -1698,5 +1719,116 @@ class DatabaseManager {
       where: 'bvid = ?',
       whereArgs: [bvid],
     );
+  }
+
+  // ===== 本地音乐曲库 =====
+
+  static Future<void> _createLocalMusicTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS $localMusicTable (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        filePath TEXT UNIQUE,
+        contentHash TEXT UNIQUE,
+        title TEXT,
+        artist TEXT,
+        album TEXT,
+        duration INTEGER,
+        fileSize INTEGER,
+        coverPath TEXT,
+        createdAt INTEGER
+      )
+    ''');
+  }
+
+  /// 已存在的内容哈希集合（导入去重用）。
+  static Future<Set<String>> getLocalTrackHashes() async {
+    final db = await database;
+    final rows = await db.query(localMusicTable, columns: ['contentHash']);
+    return rows.map((r) => r['contentHash'] as String).toSet();
+  }
+
+  /// 插入一条本地曲目（contentHash 冲突时忽略并返回 null）。
+  static Future<LocalTrack?> insertLocalTrack({
+    required String filePath,
+    required String contentHash,
+    required String title,
+    required String artist,
+    required String album,
+    required int duration,
+    required int fileSize,
+    String? coverPath,
+  }) async {
+    final db = await database;
+    final id = await db.insert(
+      localMusicTable,
+      {
+        'filePath': filePath,
+        'contentHash': contentHash,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'duration': duration,
+        'fileSize': fileSize,
+        'coverPath': coverPath,
+        'createdAt': DateTime.now().millisecondsSinceEpoch,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    if (id == 0) return null;
+    localMusicVersion.value++;
+    return LocalTrack(
+      id: id,
+      filePath: filePath,
+      title: title,
+      artist: artist,
+      album: album,
+      duration: duration,
+      fileSize: fileSize,
+      coverPath: coverPath,
+      createdAt: DateTime.now().millisecondsSinceEpoch,
+    );
+  }
+
+  /// 全部本地曲目。
+  /// [orderBy] 为 SQL 排序子句（默认按导入时间倒序）。
+  static Future<List<LocalTrack>> getLocalTracks({
+    String orderBy = 'createdAt DESC',
+  }) async {
+    final db = await database;
+    final rows = await db.query(localMusicTable, orderBy: orderBy);
+    return rows.map(LocalTrack.fromJson).toList();
+  }
+
+  static Future<(int, int)> getLocalTrackCountAndSize() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+        'SELECT COUNT(*) AS c, COALESCE(SUM(fileSize), 0) AS s FROM $localMusicTable');
+    final row = rows.first;
+    return ((row['c'] as int?) ?? 0, (row['s'] as int?) ?? 0);
+  }
+
+  static Future<LocalTrack?> getLocalTrackById(int id) async {
+    final db = await database;
+    final rows =
+        await db.query(localMusicTable, where: 'id = ?', whereArgs: [id]);
+    return rows.firstOrNull != null
+        ? LocalTrack.fromJson(rows.first)
+        : null;
+  }
+
+  /// 按 id 删除曲库记录，返回被删的行（供调用方清理文件）。
+  static Future<List<LocalTrack>> removeLocalTracks(List<int> ids) async {
+    if (ids.isEmpty) return const [];
+    final db = await database;
+    final placeholders = List.filled(ids.length, '?').join(',');
+    final rows = await db
+        .query(localMusicTable, where: 'id IN ($placeholders)', whereArgs: ids);
+    final removed = rows.map(LocalTrack.fromJson).toList();
+    if (removed.isNotEmpty) {
+      await db.delete(localMusicTable,
+          where: 'id IN ($placeholders)', whereArgs: ids);
+      localMusicVersion.value++;
+    }
+    return removed;
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:audio_video_progress_bar/audio_video_progress_bar.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/util/widget.dart';
@@ -175,8 +177,24 @@ class _PlayingCardState extends State<PlayingCard> {
                                                     .colorScheme
                                                     .primary),
                                           )
-                                        : CachedNetworkImage(
-                                            imageUrl: "$artUri@256w_144h_1c",
+                                        // 本地音乐封面为 file:// 路径
+                                        : artUri.startsWith('file://')
+                                            ? Image.file(
+                                                File(artUri.substring(7)),
+                                                fit: BoxFit.cover,
+                                                errorBuilder: (_, __, ___) =>
+                                                    Container(
+                                                  color: Theme.of(context)
+                                                      .colorScheme
+                                                      .surfaceContainerHighest,
+                                                  child: Icon(Icons.music_note,
+                                                      color: Theme.of(context)
+                                                          .colorScheme
+                                                          .primary),
+                                                ),
+                                              )
+                                            : CachedNetworkImage(
+                                                imageUrl: "$artUri@256w_144h_1c",
                                             placeholder: (context, url) =>
                                                 Container(
                                               color: Theme.of(context)

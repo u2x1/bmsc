@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -122,7 +124,26 @@ class TrackTile extends StatelessWidget {
                                         size: 20,
                                       ),
                                     )
-                                  : CachedNetworkImage(
+                                  // 本地音乐封面为 file:// 路径，走本地文件加载
+                                  : pic!.startsWith('file://')
+                                      ? Image.file(
+                                          File(pic!.substring(7)),
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) =>
+                                              Container(
+                                            color: Theme.of(context)
+                                                .colorScheme
+                                                .primaryContainer,
+                                            child: Icon(
+                                              Icons.music_note,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .primary,
+                                              size: 20,
+                                            ),
+                                          ),
+                                        )
+                                      : CachedNetworkImage(
                                       imageUrl: "${pic!}@256w_144h_1c",
                                       fit: BoxFit.cover,
                                       placeholder: (_, __) => Container(

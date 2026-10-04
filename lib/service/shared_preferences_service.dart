@@ -21,13 +21,16 @@ const String kHomeSectionDaily = 'daily';
 const String kHomeSectionRecent = 'recent';
 const String kHomeSectionMine = 'mine';
 const String kHomeSectionCollected = 'collected';
+const String kHomeSectionLocal = 'local';
 
-/// 主页板块默认顺序：每日推荐 → 最近在听 → 我的收藏夹 → 收藏的收藏夹
+/// 主页板块默认顺序：每日推荐 → 最近在听 → 我的收藏夹 → 收藏的收藏夹 → 本地音乐
+///（新增板块对老用户自动追加到末尾，见 getHomeSectionOrder）
 const List<String> kDefaultHomeSectionOrder = [
   kHomeSectionDaily,
   kHomeSectionRecent,
   kHomeSectionMine,
   kHomeSectionCollected,
+  kHomeSectionLocal,
 ];
 
 class SharedPreferencesService {
@@ -117,7 +120,8 @@ class SharedPreferencesService {
 
   static Future<bool> getReadFromClipboard() async {
     final prefs = await instance;
-    return prefs.getBool('readFromClipboard') ?? true;
+    // 2.0.0 起默认关闭（隐私考虑）；未设置过的用户升级后不再自动读取剪贴板
+    return prefs.getBool('readFromClipboard') ?? false;
   }
 
   static Future<void> setReadFromClipboard(bool value) async {
@@ -278,6 +282,7 @@ class SharedPreferencesService {
         final dummyUri = (source is UriAudioSource && uri.isNotEmpty)
             ? uri
             : 'asset:///assets/silent.m4a';
+        final isLocal = tag.extras?['local'] == true;
         return PlaylistData(
           id: tag.id,
           title: tag.title,
@@ -293,6 +298,9 @@ class SharedPreferencesService {
           cached: tag.extras?['cached'] ?? false,
           duration: tag.duration?.inSeconds ?? 0,
           dummy: dummy,
+          local: isLocal,
+          filePath: isLocal ? (tag.extras?['filePath'] ?? '') : '',
+          album: tag.album ?? '',
         ).toJson();
       }
       _logger.warning(
@@ -336,6 +344,31 @@ class SharedPreferencesService {
                 'dummy': true,
               },
             ));
+      } else if (data.local) {
+        // 本地音乐：文件已被用户在应用外删除时跳过该项（本地源没有
+        // 网络回退，留在队列里只会播放失败）
+        final file = File(data.filePath);
+        if (data.filePath.isEmpty || !file.existsSync()) {
+          _logger.warning(
+              'Restored local track missing, drop from playlist: ${data.filePath}');
+          return null;
+        }
+        return AudioSource.uri(
+          Uri.file(data.filePath),
+          tag: MediaItem(
+            id: data.id,
+            title: data.title,
+            artist: data.artist,
+            album: data.album.isEmpty ? null : data.album,
+            artUri:
+                data.artUri.isEmpty ? null : Uri.parse(data.artUri),
+            duration: Duration(seconds: data.duration),
+            extras: {
+              'local': true,
+              'filePath': data.filePath,
+            },
+          ),
+        );
       } else {
         final uri = data.audioUri == "" ? null : Uri.parse(data.audioUri);
         final file = uri != null && uri.isScheme('file') ? File(uri.path) : null;
@@ -390,7 +423,10 @@ class SharedPreferencesService {
       }
     }));
 
-    return (sources.toList(), prefs.getInt(currentIndexId) ?? 0);
+    return (
+      sources.whereType<IndexedAudioSource>().toList(),
+      prefs.getInt(currentIndexId) ?? 0
+    );
   }
 
   static Future<int> getPlayPosition() async {

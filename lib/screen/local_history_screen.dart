@@ -149,17 +149,27 @@ class _LocalHistoryScreenState extends State<LocalHistoryScreen> {
         totalTime = "$min:${sec.toString().padLeft(2, '0')}";
       }
     }
+    final stat = hisList[index];
+    // 本地音乐曲目：封面为本地文件路径（TrackTile 支持 file:// 前缀），
+    // 点击单曲续播；B 站曲目按原逻辑定位分 P
     return TrackTile(
-      key: Key(hisList[index].bvid),
-      pic: hisList[index].artUri,
-      title: hisList[index].title ?? "?",
-      author: hisList[index].artist ?? "?",
-      view: time(hisList[index].lastPlayed * 1000),
+      key: Key(stat.bvid),
+      pic: stat.isLocal && stat.artUri != null && stat.artUri!.isNotEmpty
+          ? 'file://${stat.artUri}'
+          : stat.artUri,
+      title: stat.title ?? "?",
+      author: stat.artist ?? "?",
+      view: time(stat.lastPlayed * 1000),
       len: duration,
       time: '累计 $totalTime',
-      playcnt: '共${hisList[index].playCount}次',
-      onTap: () =>
-          AudioService.instance.then((x) => x.playByBvid(hisList[index].bvid)),
+      playcnt: '共${stat.playCount}次',
+      onTap: () => AudioService.instance.then((x) {
+        if (stat.isLocal) {
+          final localId = int.tryParse(stat.bvid.substring(6));
+          if (localId != null) return x.playLocalTrackById(localId);
+        }
+        return x.playByBvid(stat.bvid);
+      }),
     );
   }
 }

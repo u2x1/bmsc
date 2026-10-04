@@ -5,9 +5,11 @@ import 'dart:math';
 import 'package:audio_session/audio_session.dart';
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/database_manager.dart';
+import 'package:bmsc/model/local_track.dart';
 import 'package:bmsc/model/meta.dart';
 import 'package:bmsc/model/track.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/service/local_music_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -544,7 +546,12 @@ class AudioService {
         }
         final source = player.sequenceState.currentSource;
         final extras = source?.tag?.extras;
-        if (source == null || extras == null || extras['dummy'] == true) {
+        // 本地文件源不走看门狗：_unwedgeCurrentSourceIOS 只处理
+        // LazyAudioSource，本地文件也不存在代理卡死场景
+        if (source == null ||
+            extras == null ||
+            extras['dummy'] == true ||
+            extras['local'] == true) {
           _watchdogStallTicks = 0;
           return;
         }
@@ -691,7 +698,21 @@ class AudioService {
       }
 
       final extras = currentSource.tag.extras;
-      if (extras == null || extras['aid'] == null || extras['cid'] == null) {
+      if (extras == null) {
+        return;
+      }
+      // 本地曲目：保存播放位置（重启续播用）+ 本地播放统计
+      //（stat 键为 MediaItem.id 即 local_<id>，「最近在听」联查
+      // local_music 取标题/封面）
+      if (extras['local'] == true) {
+        _historyUpdateCnt++;
+        unawaited(DatabaseManager.updatePlayStat(currentSource.tag.id,
+            _historyUpdateCnt == 1 ? 1 : 0, _historyUpdateInterval));
+        await SharedPreferencesService.setPlayPosition(
+            player.position.inSeconds);
+        return;
+      }
+      if (extras['aid'] == null || extras['cid'] == null) {
         return;
       }
 
@@ -1343,6 +1364,56 @@ class AudioService {
         insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
   }
 
+  /// 播放本地音乐：替换整个播放队列并从 [index] 开始播放。
+  /// 本地源为 file:// 直接加载，无需 dummy 解析流程。
+  /// [shuffle] 为 true 时切换到随机播放模式（列表循环 + shuffle，
+  /// 与播放模式 3 语义一致，自动持久化），并从随机曲目开始。
+  Future<void> playLocalTracks(List<LocalTrack> tracks,
+      {int index = 0, bool shuffle = false}) async {
+    if (tracks.isEmpty) return;
+    if (shuffle) {
+      index = Random().nextInt(tracks.length);
+    }
+    _logger.info(
+        'Playing ${tracks.length} local tracks from index $index (shuffle=$shuffle)');
+    final srcs = tracks.map(LocalMusicService.buildSource).toList();
+    await player.pause();
+    _hijacking = true;
+    await doAndSavePlaylist(() async {
+      await playlist.clear();
+      await playlist.addAll(srcs);
+    });
+    _hijacking = false;
+    if (index >= srcs.length) index = 0;
+    await player.seek(Duration.zero, index: index);
+    if (shuffle) {
+      // 播放模式 3 = 列表循环 + 随机（hookEvents 监听自动持久化）
+      await player.setLoopMode(LoopMode.all);
+      await player.setShuffleModeEnabled(true);
+    }
+    await player.play();
+  }
+
+  /// 按曲库 id 播放单个本地曲目（「最近在听」/「本地历史」点击续播）。
+  /// 曲目已被删除时清理其播放统计并忽略。
+  Future<void> playLocalTrackById(int localId) async {
+    final track = await DatabaseManager.getLocalTrackById(localId);
+    if (track == null) {
+      _logger.warning('local track $localId missing, prune its play stat');
+      await DatabaseManager.removePlayStat('local_$localId');
+      return;
+    }
+    await playLocalTracks([track]);
+  }
+
+  /// 把本地曲目插入到当前播放项之后（不影响正在播放的曲目，去重）。
+  Future<void> appendLocalTracks(List<LocalTrack> tracks) async {
+    if (tracks.isEmpty) return;
+    final srcs = tracks.map(LocalMusicService.buildSource).toList();
+    await _addUniqueSourcesToPlaylist(srcs,
+        insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
+  }
+
   Future<void> appendPlaylist(String bvid,
       {int? insertIndex, Map<String, dynamic>? extraExtras}) async {
     final srcs = await (await BilibiliService.instance).getAudios(bvid);
@@ -1377,11 +1448,21 @@ class AudioService {
         playlist, player.currentIndex ?? 0);
   }
 
-  // 以 extras 中的 bvid + cid 作为去重依据（dummy 源与真实源的 id 体系不同）
-  static bool _isSameMedia(MediaItem a, MediaItem b) =>
-      a.extras?['bvid'] != null &&
-      a.extras?['bvid'] == b.extras?['bvid'] &&
-      a.extras?['cid'] == b.extras?['cid'];
+  // 去重依据：B 站源以 extras 中的 bvid + cid（dummy 源与真实源的
+  // id 体系不同）；本地曲目以 filePath（bvid/cid 体系不适用）
+  static bool _isSameMedia(MediaItem a, MediaItem b) {
+    final aLocal = a.extras?['local'] == true;
+    final bLocal = b.extras?['local'] == true;
+    if (aLocal || bLocal) {
+      return aLocal &&
+          bLocal &&
+          a.extras?['filePath'] != null &&
+          a.extras?['filePath'] == b.extras?['filePath'];
+    }
+    return a.extras?['bvid'] != null &&
+        a.extras?['bvid'] == b.extras?['bvid'] &&
+        a.extras?['cid'] == b.extras?['cid'];
+  }
 
   Future<int?> _addUniqueSourcesToPlaylist(List<IndexedAudioSource> sources,
       {int? insertIndex, Map<String, dynamic>? extraExtras}) async {
@@ -1418,14 +1499,22 @@ class AudioService {
     }
     if (uniqueSources.isNotEmpty) {
       final index = insertIndex;
-      // 批量插入后只保存一次
-      await doAndSavePlaylist(() async {
-        if (index != null) {
-          await playlist.insertAll(index, uniqueSources);
-        } else {
-          await playlist.addAll(uniqueSources);
-        }
-      });
+      // 插入也持有变更互斥：插入期间的 sequenceState 错位映射若被索引
+      // 监听当真实切歌处理，会把统计/预解析打到插入的曲目上
+      final lockAcquired = await _waitMutationFree();
+      if (lockAcquired) _hijacking = true;
+      try {
+        // 批量插入后只保存一次
+        await doAndSavePlaylist(() async {
+          if (index != null) {
+            await playlist.insertAll(index, uniqueSources);
+          } else {
+            await playlist.addAll(uniqueSources);
+          }
+        });
+      } finally {
+        if (lockAcquired) _hijacking = false;
+      }
     }
     return ret;
   }

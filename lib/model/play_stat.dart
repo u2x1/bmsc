@@ -14,6 +14,10 @@ class PlayStat {
   final String? artUri;
   final int? duration;
 
+  /// 本地音乐曲目的沙盒文件路径（bvid 为 `local_<id>` 时由
+  /// local_music 联查得到）；非本地曲目为 null
+  final String? localFilePath;
+
   PlayStat({
     required this.bvid,
     required this.lastPlayed,
@@ -24,7 +28,11 @@ class PlayStat {
     this.artist,
     this.artUri,
     this.duration,
+    this.localFilePath,
   });
+
+  /// 是否为本地音乐曲目（play_stat.bvid 以 `local_` 前缀存储）
+  bool get isLocal => localFilePath != null || bvid.startsWith('local_');
 
   factory PlayStat.fromJson(Map<String, dynamic> json) {
     return PlayStat(
@@ -37,6 +45,7 @@ class PlayStat {
       artist: json['artist'] as String?,
       artUri: json['artUri'] as String?,
       duration: json['duration'] as int?,
+      localFilePath: json['local_file'] as String?,
     );
   }
 
