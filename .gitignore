@@ -59,3 +59,6 @@ test/credentials/
 
 # Cloudflare Workers（workers/）
 node_modules/
+
+# 本地音乐调试截图（不入库）
+screenshot/*.png
