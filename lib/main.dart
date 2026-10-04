@@ -22,6 +22,7 @@ import 'package:flutter/foundation.dart';
 import 'util/error_handler.dart';
 import 'screen/about_screen.dart';
 import 'util/logger.dart';
+import 'util/whats_new.dart';
 import 'package:bmsc/screen/settings_screen.dart';
 import 'package:bmsc/theme.dart';
 
@@ -124,8 +125,11 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     ThemeProvider.instance.addListener(_updateSystemUiOverlay);
-    WidgetsBinding.instance
-        .addPostFrameCallback((_) => _updateSystemUiOverlay());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _updateSystemUiOverlay();
+      // 升级后首次启动的新版本欢迎弹窗（内部自行判断是否需要展示）
+      WhatsNew.maybeShow(context);
+    });
     UpdateService.instance.then((x) async {
       if (!mounted) return;
       setState(() {

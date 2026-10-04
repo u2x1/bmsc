@@ -1,9 +1,11 @@
 import 'package:bmsc/model/release.dart';
+import 'package:bmsc/util/changelog.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../service/update_service.dart';
 import 'package:flutter/services.dart';
+import 'package:bmsc/screen/feedback_screen.dart';
 import 'package:bmsc/screen/log_screen.dart';
 
 class AboutScreen extends StatefulWidget {
@@ -76,18 +78,7 @@ class _AboutScreenState extends State<AboutScreen> {
     final currentVersion = packageInfo.version;
     List<(String, String)> c = [];
     try {
-      final changelogAsset = await rootBundle.loadString('changelog.md');
-      c = changelogAsset
-          .split('#')
-          .map((e) => e.trim())
-          .map((e) => e
-              .split('\n')
-              .map((e) => e.trim())
-              .where((e) => e.isNotEmpty)
-              .toList())
-          .where((e) => e.isNotEmpty)
-          .map((e) => (e[0], e.sublist(1).join('\n')))
-          .toList();
+      c = parseChangelog(await rootBundle.loadString('changelog.md'));
     } catch (_) {
       // changelog 资源缺失或解析失败时静默忽略
     }
@@ -197,8 +188,19 @@ class _AboutScreenState extends State<AboutScreen> {
                               ),
                             ),
                             TextButton.icon(
-                              icon: const Icon(Icons.bug_report),
+                              icon: const Icon(Icons.feedback_outlined),
                               label: const Text('问题反馈'),
+                              onPressed: () => Navigator.push(
+                                context,
+                                MaterialPageRoute<void>(
+                                  builder: (context) =>
+                                      const FeedbackScreen(),
+                                ),
+                              ),
+                            ),
+                            TextButton.icon(
+                              icon: const Icon(Icons.bug_report),
+                              label: const Text('GitHub Issues'),
                               onPressed: () => launchUrl(
                                 Uri.parse(
                                     'https://github.com/u2x1/bmsc/issues'),

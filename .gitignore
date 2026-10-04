@@ -56,3 +56,6 @@ app.*.map.json
 
 # live 集成测试的本地登录态缓存（含 SESSDATA，切勿提交）
 test/credentials/
+
+# Cloudflare Workers（workers/）
+node_modules/

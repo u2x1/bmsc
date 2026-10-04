@@ -1,0 +1,17 @@
+#:schema https://developers.cloudflare.com/workers/wrangler/configuration/
+name = "bmsc-feedback"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# *.workers.dev 在国内被 DNS 污染不可达，绑定自定义域名供 App 访问
+workers_dev = false
+routes = [
+  { pattern = "bmsc-api.u2x1.work", custom_domain = true },
+]
+
+[vars]
+GITHUB_REPO = "u2x1/bmsc"
+
+# 密钥通过 wrangler secret put 设置，不写在本文件中：
+#   GITHUB_TOKEN   （必填）可在目标仓库创建 issue 的 GitHub PAT
+#   FEEDBACK_TOKEN （可选）设置后 App 需在 X-Feedback-Token 头携带相同值

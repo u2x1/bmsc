@@ -163,6 +163,18 @@ inspector 会调用 `debugInstrumentRepaintCompositedChild` 强制重绘子树�
 | `vm_rpc.dart` | 通用 RPC 调用（打印结果 JSON） |
 | `vm_shot2.dart` | 按 objectId 截图并保存 PNG |
 | `vm_eval.dart` | 在指定库上下文中执行 Dart 表达式 |
+| `vm_shot_root.dart` | （后补）自动取根元素 objectId 并截图，一步到位 |
+
+> **补充坑位**：
+> 1. 服务扩展 RPC 必须带 `isolateId` 调用（`vm_rpc.dart` 不带会报
+>    Unknown method）；且扩展返回是双层 `result`（`data['result']['result']`
+>    才是负载）。
+> 2. 向应用偏好（NSUserDefaults）预置键做 UI 触发测试时：macOS 上
+>    shared_preferences 的原生键带 `flutter.` 前缀（如
+>    `flutter.last_seen_version`）；且 ad-hoc 签名的 debug 包容器目录是
+>    **UUID 命名**（`~/Library/Containers/<UUID>/`），不是 bundle id 命名，
+>    `defaults write com.example.bmsc` 会写到错误位置。先 `killall cfprefsd`
+>    再写，写用 `defaults write <plist完整路径> <键> <值>`。
 
 ### vm_shot2.dart（核心脚本）
 
