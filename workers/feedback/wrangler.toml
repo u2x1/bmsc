@@ -12,6 +12,12 @@ routes = [
 [vars]
 GITHUB_REPO = "u2x1/bmsc"
 
+# 使用统计数据库（schema 见 schema.sql）
+[[d1_databases]]
+binding = "DB"
+database_name = "bmsc-stats"
+database_id = "7764eb65-e185-4bdc-a2e3-a7d4a05b936c"
+
 # 密钥通过 wrangler secret put 设置，不写在本文件中：
 #   GITHUB_TOKEN   （必填）可在目标仓库创建 issue 的 GitHub PAT
 #   FEEDBACK_TOKEN （可选）设置后 App 需在 X-Feedback-Token 头携带相同值

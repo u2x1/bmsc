@@ -1,11 +1,16 @@
 /**
- * BMSC 应用内反馈接收端（Cloudflare Workers）
- * 流程：校验请求 → 脱敏 → 组装 Issue → 调用 GitHub API 创建
+ * BMSC 后端（Cloudflare Workers）
+ * 路由：
+ *   POST /      应用内反馈 → 自动创建 GitHub Issue
+ *   POST /ping  匿名使用统计心跳（每日一次）
+ *   GET  /stats 统计面板（需 token，HTML；?format=json 返回 JSON）
  *
  * 环境变量：
- *   GITHUB_TOKEN   (secret, 必填) 可在目标仓库创建 issue 的 GitHub PAT
- *   GITHUB_REPO    (var,    可选) 目标仓库，默认 u2x1/bmsc
- *   FEEDBACK_TOKEN (secret, 可选) 设置后要求请求头 X-Feedback-Token 匹配
+ *   GITHUB_TOKEN   (secret, 反馈必填) 可在目标仓库创建 issue 的 GitHub PAT
+ *   GITHUB_REPO    (var,    可选)     目标仓库，默认 u2x1/bmsc
+ *   FEEDBACK_TOKEN (secret, 可选)     设置后反馈请求头 X-Feedback-Token 须匹配
+ *   STATS_TOKEN    (secret, 统计必填) /stats 访问令牌（?token= 或 X-Stats-Token）
+ *   DB             (D1 绑定)          统计数据库，见 schema.sql
  */
 
 const MAX_BODY_BYTES = 100 * 1024;
@@ -18,14 +23,120 @@ const META_KEYS = ['version', 'buildNumber', 'platform', 'osVersion'];
 export default {
   async fetch(request, env) {
     try {
-      return await handle(request, env);
+      const path = new URL(request.url).pathname;
+      if (path === '/ping') return await handlePing(request, env);
+      if (path === '/stats') return await handleStats(request, env);
+      return await handleFeedback(request, env);
     } catch (err) {
       return jsonResponse({ ok: false, error: `internal error: ${err}` }, 500);
     }
   },
 };
 
-async function handle(request, env) {
+// ---------- 使用统计 ----------
+
+async function handlePing(request, env) {
+  if (request.method !== 'POST') {
+    return jsonResponse({ ok: false, error: 'method not allowed' }, 405);
+  }
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ ok: false, error: 'invalid json body' }, 400);
+  }
+  // 匿名安装 ID 只允许 hex，防注入与垃圾数据
+  const id = clampString(body.id, 64);
+  if (!/^[0-9a-f]{16,64}$/.test(id)) {
+    return jsonResponse({ ok: false, error: 'invalid id' }, 400);
+  }
+  // version/platform 会渲染进 HTML 面板，剥掉 HTML 特殊字符
+  const version = clampString(body.version, 50).replace(/[<>&"']/g, '');
+  const platform = clampString(body.platform, 50).replace(/[<>&"']/g, '');
+  if (!env.DB) {
+    return jsonResponse({ ok: false, error: 'stats not configured' }, 500);
+  }
+  const day = new Date().toISOString().slice(0, 10); // UTC 日
+  await env.DB.prepare(
+    'INSERT OR IGNORE INTO pings (id, day, version, platform) VALUES (?, ?, ?, ?)',
+  )
+    .bind(id, day, version, platform)
+    .run();
+  return jsonResponse({ ok: true });
+}
+
+async function handleStats(request, env) {
+  const url = new URL(request.url);
+  const token =
+    url.searchParams.get('token') || request.headers.get('X-Stats-Token');
+  if (!env.STATS_TOKEN || token !== env.STATS_TOKEN) {
+    return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+  }
+  if (!env.DB) {
+    return jsonResponse({ ok: false, error: 'stats not configured' }, 500);
+  }
+  const [total, dau, newUsers, versions, platforms] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(DISTINCT id) AS n FROM pings').first(),
+    env.DB.prepare(
+      'SELECT day, COUNT(*) AS n FROM pings GROUP BY day ORDER BY day DESC LIMIT 30',
+    ).all(),
+    env.DB.prepare(
+      'SELECT first_day, COUNT(*) AS n FROM (SELECT MIN(day) AS first_day FROM pings GROUP BY id) GROUP BY first_day ORDER BY first_day DESC LIMIT 30',
+    ).all(),
+    env.DB.prepare(
+      'SELECT version, COUNT(DISTINCT id) AS n FROM pings GROUP BY version ORDER BY n DESC LIMIT 20',
+    ).all(),
+    env.DB.prepare(
+      'SELECT platform, COUNT(DISTINCT id) AS n FROM pings GROUP BY platform ORDER BY n DESC',
+    ).all(),
+  ]);
+  const data = {
+    totalUsers: total?.n ?? 0,
+    dau: dau.results ?? [],
+    newUsers: newUsers.results ?? [],
+    versions: versions.results ?? [],
+    platforms: platforms.results ?? [],
+  };
+  if (url.searchParams.get('format') === 'json') {
+    return jsonResponse({ ok: true, ...data });
+  }
+  return new Response(renderStatsHtml(data), {
+    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+  });
+}
+
+function renderStatsHtml({ totalUsers, dau, newUsers, versions, platforms }) {
+  const esc = (s) =>
+    String(s).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const table = (title, rows, cols) => `
+<h2>${title}</h2>
+<table><tr>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>
+${rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`;
+  return `<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BMSC 使用统计</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;max-width:720px;margin:2rem auto;padding:0 1rem;background:#121212;color:#eee}
+table{border-collapse:collapse;width:100%;margin-bottom:1rem}
+th,td{border:1px solid #444;padding:6px 10px;text-align:left;font-size:14px}
+th{background:#1e1e1e}
+h1{font-size:1.4rem}h2{font-size:1.05rem;margin-top:2rem;color:#9ecfff}
+.total{font-size:2.4rem;font-weight:700}
+.total small{font-size:0.9rem;font-weight:400;color:#aaa}
+</style></head><body>
+<h1>BMSC 使用统计</h1>
+<div class="total">${esc(totalUsers)} <small>累计用户</small></div>
+${table('近 30 天日活（DAU）', dau.map((r) => [r.day, r.n]), ['日期', '活跃用户'])}
+${table('近 30 天新增用户', newUsers.map((r) => [r.first_day, r.n]), ['日期', '新增用户'])}
+${table('版本分布', versions.map((r) => [r.version || '(未知)', r.n]), ['版本', '用户数'])}
+${table('平台分布', platforms.map((r) => [r.platform || '(未知)', r.n]), ['平台', '用户数'])}
+</body></html>`;
+}
+
+// ---------- 应用内反馈 ----------
+
+async function handleFeedback(request, env) {
   if (request.method !== 'POST') {
     return jsonResponse({ ok: false, error: 'method not allowed' }, 405);
   }
@@ -150,7 +261,7 @@ function buildIssueBody({ content, contact, logs, meta }) {
   return parts.join('\n');
 }
 
-/** bilibili 凭据 / Bearer token 打码，与 App 端 FeedbackService.sanitize 规则一致 */
+/** bilibili 凭据 / Bearer token 打码，与 App 端 FeedbackPayload.sanitize 规则一致 */
 function sanitizeSensitive(text) {
   return text
     .replace(

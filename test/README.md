@@ -17,7 +17,9 @@ dart test test/unit          # 或 flutter test test/unit
 | `login_model_test.dart` | 登录响应解析（Set-Cookie + body cookie_info 合并、status=2 风控、-105 重验证、TV poll 外层 code 兜底）、风控/重验证 URL 解析、极验/腾讯验证码结构 |
 | `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
 | `feedback_test.dart` | 反馈通道 payload 组装：bilibili 凭据/Bearer token 脱敏、日志尾部截断、content trim 与空字段省略、meta 字段 |
-| `changelog_test.dart` | changelog.md 解析：版本分节顺序、多行条目合并、空行剔除、空输入 |
+| `changelog_test.dart` | changelog.md 解析：版本分节顺序、多行条目合并、空行剔除、空输入、条目分组 |
+| `stats_test.dart` | 使用统计：匿名安装 ID 格式与随机性、UTC 日期（跨日界线）、每日心跳去重判断 |
+| `local_music_test.dart` | 本地音乐：导入文件名清理/冲突序号/封面扩展名推断、LocalTrack 与 PlaylistData（local 字段及旧版本兼容）序列化往返 |
 
 ## 2. 集成测试（真实接口、live tag、默认跳过）
 
