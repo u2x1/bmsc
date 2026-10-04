@@ -4,6 +4,10 @@ class PlayStat {
   final int totalPlayTime;
   final int playCount;
 
+  /// 最近播放的分 P（cid）——「最近在听」点击时定位续播用；
+  /// 旧数据/未知时为 null（从 P1 开始）
+  final int? lastCid;
+
   // Optional fields from meta table join
   final String? title;
   final String? artist;
@@ -15,6 +19,7 @@ class PlayStat {
     required this.lastPlayed,
     required this.totalPlayTime,
     required this.playCount,
+    this.lastCid,
     this.title,
     this.artist,
     this.artUri,
@@ -27,6 +32,7 @@ class PlayStat {
       lastPlayed: json['last_played'] as int,
       totalPlayTime: json['total_play_time'] as int,
       playCount: json['play_count'] as int,
+      lastCid: json['last_cid'] as int?,
       title: json['title'] as String?,
       artist: json['artist'] as String?,
       artUri: json['artUri'] as String?,
@@ -54,6 +60,7 @@ class PlayStat {
       'last_played': lastPlayed,
       'total_play_time': totalPlayTime,
       'play_count': playCount,
+      if (lastCid != null) 'last_cid': lastCid,
     };
   }
 

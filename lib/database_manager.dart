@@ -76,7 +76,7 @@ class DatabaseManager {
     try {
       final db = await openDatabase(
         path,
-        version: 7,
+        version: 9,
         onCreate: (db, version) async {
           _logger.info('Creating new database tables...');
           await db.execute('''
@@ -143,7 +143,8 @@ class DatabaseManager {
             title TEXT,
             mediaCount INTEGER,
             cover TEXT,
-            list_order INTEGER
+            list_order INTEGER,
+            synced_count INTEGER DEFAULT -1
           )
         ''');
 
@@ -169,7 +170,8 @@ class DatabaseManager {
             title TEXT,
             mediaCount INTEGER,
             cover TEXT,
-            list_order INTEGER
+            list_order INTEGER,
+            synced_count INTEGER DEFAULT -1
           )
         ''');
 
@@ -207,12 +209,30 @@ class DatabaseManager {
             bvid TEXT PRIMARY KEY,
             last_played INTEGER,
             total_play_time INTEGER DEFAULT 0,
-            play_count INTEGER DEFAULT 0
+            play_count INTEGER DEFAULT 0,
+            last_cid INTEGER
           )
         ''');
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           _logger.info('Upgrading database from v$oldVersion to v$newVersion');
+
+          if (oldVersion <= 8) {
+            // play_stat 新增 last_cid 列：记录每首歌最近播放的分 P，
+            // 供「最近在听」点击时定位续播（而非从 P1 重头开始）
+            await db
+                .execute('ALTER TABLE $statTable ADD COLUMN last_cid INTEGER');
+          }
+
+          if (oldVersion <= 7) {
+            // 收藏夹/收藏合集列表新增 synced_count 列：记录上次全量同步
+            //（网络完整拉取并替换视频缓存）时的条数，供详情页判断本地
+            // 缓存是否完整（封面补拉只写入第一页，不代表全量）
+            await db.execute(
+                'ALTER TABLE $favListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
+            await db.execute(
+                'ALTER TABLE $collectedFavListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
+          }
 
           if (oldVersion <= 6) {
             // 收藏夹列表新增 cover 列：缓存列表 API 返回的收藏夹自身封面，
@@ -970,6 +990,14 @@ class DatabaseManager {
   static Future<void> cacheFavList(List<Fav> favs) async {
     final db = await database;
 
+    // synced_count 记录的是「上次全量同步视频缓存」的条数，重写收藏夹
+    // 列表（只是元数据）不应将其重置为 -1，否则详情页会反复全量拉取
+    final oldSyncedCounts = <int, int>{
+      for (final row in await db
+          .query(favListTable, columns: ['id', 'synced_count']))
+        row['id'] as int: (row['synced_count'] as int?) ?? -1
+    };
+
     await db.delete(favListTable);
 
     final batch = db.batch();
@@ -983,6 +1011,7 @@ class DatabaseManager {
           'mediaCount': favs[i].mediaCount,
           'cover': favs[i].cover,
           'list_order': i,
+          'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -994,6 +1023,13 @@ class DatabaseManager {
 
   static Future<void> cacheCollectedFavList(List<Fav> favs) async {
     final db = await database;
+
+    // 同 cacheFavList：保留已有 synced_count，避免重置
+    final oldSyncedCounts = <int, int>{
+      for (final row in await db
+          .query(collectedFavListTable, columns: ['id', 'synced_count']))
+        row['id'] as int: (row['synced_count'] as int?) ?? -1
+    };
 
     await db.delete(collectedFavListTable);
 
@@ -1008,6 +1044,7 @@ class DatabaseManager {
           'mediaCount': favs[i].mediaCount,
           'cover': favs[i].cover,
           'list_order': i,
+          'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
         },
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
@@ -1032,6 +1069,8 @@ class DatabaseManager {
         .toList();
   }
 
+  /// 全量替换某收藏合集的视频缓存（网络完整拉取后调用），
+  /// 并把实际条数记入 collected_fav_list.synced_count
   static Future<void> cacheCollectedFavListVideo(
       List<String> bvids, int mid) async {
     final db = await database;
@@ -1039,8 +1078,11 @@ class DatabaseManager {
     batch
         .delete(collectedFavListVideoTable, where: 'mid = ?', whereArgs: [mid]);
     for (var bvid in bvids) {
-      batch.insert(collectedFavListVideoTable, {'bvid': bvid, 'mid': mid});
+      batch.insert(collectedFavListVideoTable, {'bvid': bvid, 'mid': mid},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
     }
+    batch.update(collectedFavListTable, {'synced_count': bvids.length},
+        where: 'id = ?', whereArgs: [mid]);
     await batch.commit();
     _logger.info('cached ${bvids.length} collected fav list videos');
   }
@@ -1154,13 +1196,20 @@ class DatabaseManager {
         .toList();
   }
 
+  /// 全量替换某收藏夹的视频缓存（网络完整拉取后调用），
+  /// 并把实际条数记入 fav_list.synced_count 作为「已全量同步」标记。
+  /// 注：getUserUploads 也以 UP 主 mid 调用本函数，UPDATE 在
+  /// fav_list 表中不命中任何收藏夹行，无副作用
   static Future<void> cacheFavListVideo(List<String> bvids, int mid) async {
     final db = await database;
     final batch = db.batch();
     batch.delete(favListVideoTable, where: 'mid = ?', whereArgs: [mid]);
     for (var bvid in bvids) {
-      batch.insert(favListVideoTable, {'bvid': bvid, 'mid': mid});
+      batch.insert(favListVideoTable, {'bvid': bvid, 'mid': mid},
+          conflictAlgorithm: ConflictAlgorithm.ignore);
     }
+    batch.update(favListTable, {'synced_count': bvids.length},
+        where: 'id = ?', whereArgs: [mid]);
     await batch.commit();
     _logger.info('cached ${bvids.length} fav list videos');
   }
@@ -1190,6 +1239,23 @@ class DatabaseManager {
     final bvids = await DatabaseManager.getCachedFavBvids(mid);
     final metas = await DatabaseManager.getMetas(bvids);
     return metas;
+  }
+
+  /// 上次全量同步（网络完整拉取并替换视频缓存）时的条数；
+  /// -1 表示从未全量同步过——本地缓存可能只是封面补拉写入的第一页
+  static Future<int> getFavSyncedCount(int favId) async {
+    final db = await database;
+    final rows = await db
+        .query(favListTable, columns: ['synced_count'], where: 'id = ?', whereArgs: [favId]);
+    return (rows.firstOrNull?['synced_count'] as int?) ?? -1;
+  }
+
+  /// 收藏的合集：同 [getFavSyncedCount]
+  static Future<int> getCollectedFavSyncedCount(int seasonId) async {
+    final db = await database;
+    final rows = await db.query(collectedFavListTable,
+        columns: ['synced_count'], where: 'id = ?', whereArgs: [seasonId]);
+    return (rows.firstOrNull?['synced_count'] as int?) ?? -1;
   }
 
   static Future<bool> isFaved(String bvid) async {
@@ -1541,7 +1607,8 @@ class DatabaseManager {
   }
 
   static Future<void> updatePlayStat(
-      String bvid, int playcnt, int playTimeSeconds) async {
+      String bvid, int playcnt, int playTimeSeconds,
+      {int? cid}) async {
     final db = await database;
     final now = DateTime.now().millisecondsSinceEpoch;
 
@@ -1558,6 +1625,7 @@ class DatabaseManager {
           lastPlayed: now,
           totalPlayTime: playTimeSeconds,
           playCount: 1,
+          lastCid: cid,
         );
 
         await txn.insert(
@@ -1572,6 +1640,7 @@ class DatabaseManager {
           lastPlayed: now,
           totalPlayTime: existingStat.totalPlayTime + playTimeSeconds,
           playCount: existingStat.playCount + playcnt,
+          lastCid: cid ?? existingStat.lastCid,
         );
 
         await txn.update(

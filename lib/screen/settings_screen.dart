@@ -27,8 +27,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _downloadPath = '/storage/emulated/0/Download/BMSC';
   int _maxConcurrentDownloads = 3;
   int _cacheLimitSize = 300;
-  bool _showDailyRecommendations = true;
-  bool _showRecentListening = true;
   bool _readFromClipboard = true;
 
   @override
@@ -48,10 +46,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final maxConcurrentDownloads =
         await SharedPreferencesService.getMaxConcurrentDownloads();
     final cacheLimitSize = await SharedPreferencesService.getCacheLimitSize();
-    final prefs = await SharedPreferencesService.instance;
-    final showDailyRecommendations =
-        prefs.getBool('show_daily_recommendations') ?? true;
-    final showRecentListening = prefs.getBool('show_recent_listening') ?? true;
     final readFromClipboard =
         await SharedPreferencesService.getReadFromClipboard();
     if (mounted) {
@@ -63,17 +57,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _downloadPath = downloadPath;
         _maxConcurrentDownloads = maxConcurrentDownloads;
         _cacheLimitSize = cacheLimitSize;
-        _showDailyRecommendations = showDailyRecommendations;
-        _showRecentListening = showRecentListening;
         _readFromClipboard = readFromClipboard;
       });
     }
   }
 
-  /// 主页板块排序：拖拽手柄调整顺序，即时保存；返回主页后生效
-  ///（主页由 refreshLoginState 重新读取排序偏好）
-  Future<void> _showHomeSectionOrderDialog() async {
+  /// 主页板块设置：拖拽手柄调整各板块顺序，每板块带显示开关，
+  /// 全部即时保存；返回主页后生效（主页由 refreshLoginState
+  /// 重新读取偏好）
+  Future<void> _showHomeSectionsDialog() async {
     final order = await SharedPreferencesService.getHomeSectionOrder();
+    final prefs = await SharedPreferencesService.instance;
+    // 板块 → 显示开关的存储 key（默认全开）
+    const sectionPrefKeys = {
+      kHomeSectionDaily: 'show_daily_recommendations',
+      kHomeSectionRecent: 'show_recent_listening',
+      kHomeSectionMine: 'show_my_favs',
+      kHomeSectionCollected: 'show_collected_favs',
+    };
+    final visible = <String, bool>{
+      for (final e in sectionPrefKeys.entries)
+        e.key: prefs.getBool(e.value) ?? true,
+    };
     if (!mounted) return;
     const sectionMeta = {
       kHomeSectionDaily: (Icons.auto_awesome, '每日推荐'),
@@ -85,7 +90,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       context: context,
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) => AlertDialog(
-          title: const Text('主页板块排序'),
+          title: const Text('主页板块'),
           content: SizedBox(
             width: 360,
             child: ReorderableListView(
@@ -108,12 +113,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     contentPadding: const EdgeInsets.only(left: 8),
                     leading: Icon(sectionMeta[key]!.$1, size: 20),
                     title: Text(sectionMeta[key]!.$2),
-                    trailing: ReorderableDragStartListener(
-                      index: order.indexOf(key),
-                      child: const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Icon(Icons.drag_handle, size: 20),
-                      ),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Switch(
+                          value: visible[key] ?? true,
+                          onChanged: (value) {
+                            setDialogState(() {
+                              visible[key] = value;
+                            });
+                            prefs.setBool(sectionPrefKeys[key]!, value);
+                          },
+                        ),
+                        ReorderableDragStartListener(
+                          index: order.indexOf(key),
+                          child: const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: Icon(Icons.drag_handle, size: 20),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
@@ -122,12 +141,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           actions: [
             TextButton(
               onPressed: () {
+                // 重置为默认：默认顺序 + 全部板块开启
                 setDialogState(() {
                   order
                     ..clear()
                     ..addAll(kDefaultHomeSectionOrder);
+                  visible
+                    ..clear()
+                    ..addEntries(
+                        kDefaultHomeSectionOrder.map((k) => MapEntry(k, true)));
                 });
                 SharedPreferencesService.setHomeSectionOrder(order);
+                for (final e in sectionPrefKeys.entries) {
+                  prefs.setBool(e.value, true);
+                }
               },
               child: const Text('重置默认'),
             ),
@@ -616,37 +643,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               });
             },
           ),
-          SwitchListTile(
-            title: const Text('显示每日推荐'),
-            secondary: const Icon(Icons.star),
-            subtitle: const Text('在收藏夹页面显示每日推荐'),
-            value: _showDailyRecommendations,
-            onChanged: (bool value) async {
-              final prefs = await SharedPreferencesService.instance;
-              await prefs.setBool('show_daily_recommendations', value);
-              setState(() {
-                _showDailyRecommendations = value;
-              });
-            },
-          ),
-          SwitchListTile(
-            title: const Text('显示最近在听'),
-            secondary: const Icon(Icons.history),
-            subtitle: const Text('在收藏夹页面显示最近在听'),
-            value: _showRecentListening,
-            onChanged: (bool value) async {
-              final prefs = await SharedPreferencesService.instance;
-              await prefs.setBool('show_recent_listening', value);
-              setState(() {
-                _showRecentListening = value;
-              });
-            },
-          ),
           ListTile(
-            title: const Text('主页板块排序'),
-            leading: const Icon(Icons.sort),
-            subtitle: const Text('调整主页各板块的显示顺序'),
-            onTap: _showHomeSectionOrderDialog,
+            title: const Text('主页板块'),
+            leading: const Icon(Icons.dashboard_outlined),
+            subtitle: const Text('各板块的显示开关与排列顺序'),
+            onTap: _showHomeSectionsDialog,
           ),
           _buildSectionTitle('隐私'),
           SwitchListTile(

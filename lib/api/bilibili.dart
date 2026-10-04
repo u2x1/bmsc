@@ -244,7 +244,12 @@ class BilibiliAPI {
       if (data == null) {
         return null;
       }
-      ret.addAll(extract(data));
+      final pageItems = extract(data);
+      // 空页即终止：hasMoreCheck 依赖的计数若包含失效内容（B 站
+      // media_count 计失效条目而 medias 不返回），继续翻页只会
+      // 反复请求空数据甚至死循环
+      if (pageItems.isEmpty) break;
+      ret.addAll(pageItems);
       ++pn;
     } while (hasMoreCheck(data, ret.length));
     return ret;
@@ -279,15 +284,16 @@ class BilibiliAPI {
         hasMoreCheck: (data, _) => data['has_more'] as bool);
   }
 
+  /// 合集/收藏的合集内容：season/list 接口忽略 ps/pn 参数、一次返回
+  /// 全部 medias（实测 163 条的合集 ps=20&pn=9 仍返回全量），且响应
+  /// 无 has_more 字段——这里只请求一次，不做分页累加。
+  /// （原 len < media_count 的翻页判断在 media_count 含失效条目而
+  /// medias 不含时会多翻一轮，把同一批条目重复累加导致缓存主键冲突）
   Future<List<Meta>?> getCollectionMetas(int mid) async {
-    return _callAPIMultiPage(apiCollectionMetasUrl,
-        params: (pn) => {
-              'season_id': mid,
-              'ps': 20,
-              'pn': pn,
-            },
-        extract: (data) => _extractCollectionMetas(data),
-        hasMoreCheck: (data, len) => len < (data['info']['media_count'] ?? 1));
+    final data = await _callAPI(apiCollectionMetasUrl,
+        queryParameters: {'season_id': mid, 'ps': 20, 'pn': 1});
+    if (data == null) return null;
+    return _extractCollectionMetas(data);
   }
 
   /// 只拉取收藏的合集第一页内容（主页封面堆叠的轻量兜底）
@@ -298,17 +304,18 @@ class BilibiliAPI {
     return _extractCollectionMetas(data);
   }
 
-  List<Meta> _extractCollectionMetas(dynamic data) => (data['medias'] as List)
-      .map((x) => Meta(
-            bvid: x['bvid'],
-            title: x['title'],
-            artist: x['upper']['name'],
-            mid: x['upper']['mid'],
-            aid: x['id'],
-            duration: x['duration'],
-            artUri: x['cover'],
-          ))
-      .toList();
+  List<Meta> _extractCollectionMetas(dynamic data) =>
+      ((data['medias'] as List?) ?? [])
+          .map((x) => Meta(
+                bvid: x['bvid'],
+                title: x['title'],
+                artist: x['upper']['name'],
+                mid: x['upper']['mid'],
+                aid: x['id'],
+                duration: x['duration'],
+                artUri: x['cover'],
+              ))
+          .toList();
 
   Future<List<Meta>?> getFavMetas(int mid) async {
     return _callAPIMultiPage(apiFavMetasUrl,
@@ -329,7 +336,7 @@ class BilibiliAPI {
     return _extractFavMetas(data);
   }
 
-  List<Meta> _extractFavMetas(dynamic data) => (data['medias'] as List)
+  List<Meta> _extractFavMetas(dynamic data) => ((data['medias'] as List?) ?? [])
       .map((x) => Meta(
             bvid: x['bvid'],
             title: x['title'],

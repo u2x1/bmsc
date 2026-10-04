@@ -11,7 +11,8 @@ import 'section_header.dart';
 
 /// 主页「最近在听」：本地播放统计（play_stat JOIN meta）经加权随机推荐
 /// （见 recent_picks.dart）取前 27，按 3×3 九宫格分页，左右滑动翻页，
-/// 页数 >1 时下方显示圆点指示。点击整首视频（全部分 P）入队播放。
+/// 页数 >1 时下方显示圆点指示。点击入队播放并定位到上次听到的
+/// 分 P（play_stat.last_cid，无记录时从 P1 开始）。
 /// 标题行整体可点击，打开本地历史记录列表。历史为空时整段隐藏。
 class RecentListeningGrid extends StatefulWidget {
   const RecentListeningGrid({super.key});
@@ -183,7 +184,10 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
   Widget _buildCell(PlayStat stat) {
     return InkWell(
       borderRadius: BorderRadius.circular(8),
-      onTap: () => AudioService.instance.then((x) => x.playByBvid(stat.bvid)),
+      // 定位到上次听到的分 P（play_stat.last_cid）续播，
+      // 旧数据无记录时从 P1 开始
+      onTap: () => AudioService.instance
+          .then((x) => x.playByBvid(stat.bvid, preferCid: stat.lastCid)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

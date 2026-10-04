@@ -45,6 +45,8 @@ class FavScreenState extends State<FavScreen> {
   /// 读取以应用变更
   late Future<bool> _showRecentFuture;
   late Future<bool> _showDailyFuture;
+  late Future<bool> _showMineFuture;
+  late Future<bool> _showCollectedFuture;
   late Future<List<String>> _sectionOrderFuture;
 
   void _reloadSectionToggles() {
@@ -52,6 +54,10 @@ class FavScreenState extends State<FavScreen> {
         .then((prefs) => prefs.getBool('show_recent_listening') ?? true);
     _showDailyFuture = SharedPreferencesService.instance
         .then((prefs) => prefs.getBool('show_daily_recommendations') ?? true);
+    _showMineFuture = SharedPreferencesService.instance
+        .then((prefs) => prefs.getBool('show_my_favs') ?? true);
+    _showCollectedFuture = SharedPreferencesService.instance
+        .then((prefs) => prefs.getBool('show_collected_favs') ?? true);
     _sectionOrderFuture = SharedPreferencesService.getHomeSectionOrder();
   }
 
@@ -505,9 +511,9 @@ class FavScreenState extends State<FavScreen> {
     );
   }
 
-  /// 按 key 产出各板块 sliver：
+  /// 按 key 产出各板块 sliver（全部受「主页板块」设置开关控制）：
   /// - 每日推荐：header 吸顶，整行可点击；推荐基于收藏夹，无收藏夹时不显示
-  /// - 最近在听：九宫格页卡，header 吸顶，受「显示最近在听」设置开关控制
+  /// - 最近在听：九宫格页卡，header 吸顶
   /// - 我的收藏夹：header 吸顶 + 封面拼贴九宫格；标题行常驻，保证空列表
   ///   时仍可从尾部按钮新建/刷新
   /// - 收藏的收藏夹：header 吸顶 + 封面拼贴九宫格，顶部通栏分隔条与
@@ -522,34 +528,62 @@ class FavScreenState extends State<FavScreen> {
       case kHomeSectionRecent:
         return [_buildRecentSection()];
       case kHomeSectionMine:
-        return [
-          SliverStickyHeader(
-            header: SectionHeader(
-              icon: Icons.folder_outlined,
-              title: '我的收藏夹',
-              count: favList.isEmpty ? null : _visibleCount(favList),
-              trailing: _buildFavActions(),
-            ),
-            sliver: _buildFavSectionBody(favList, true),
-          ),
-        ];
+        return [_buildMineSection()];
       case kHomeSectionCollected:
-        return [
-          if (collectedFavList.isNotEmpty) ...[
-            const SliverToBoxAdapter(child: SectionDivider()),
-            SliverStickyHeader(
-              header: SectionHeader(
-                icon: Icons.star_outline,
-                title: '收藏的收藏夹',
-                count: _visibleCount(collectedFavList),
-              ),
-              sliver: _buildFavSectionBody(collectedFavList, false),
-            ),
-          ],
-        ];
+        return [_buildCollectedSection()];
       default:
         return const [];
     }
+  }
+
+  /// 板块「我的收藏夹」：受「主页板块」设置开关控制。
+  /// 返回 sliver 供 CustomScrollView 使用。
+  Widget _buildMineSection() {
+    return FutureBuilder<bool>(
+      future: _showMineFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || !snapshot.data!) {
+          return const SliverToBoxAdapter(child: SizedBox());
+        }
+        return SliverStickyHeader(
+          header: SectionHeader(
+            icon: Icons.folder_outlined,
+            title: '我的收藏夹',
+            count: favList.isEmpty ? null : _visibleCount(favList),
+            trailing: _buildFavActions(),
+          ),
+          sliver: _buildFavSectionBody(favList, true),
+        );
+      },
+    );
+  }
+
+  /// 板块「收藏的收藏夹」：受「主页板块」设置开关控制；
+  /// 无收藏时不显示。返回 sliver 供 CustomScrollView 使用。
+  Widget _buildCollectedSection() {
+    return FutureBuilder<bool>(
+      future: _showCollectedFuture,
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || !snapshot.data!) {
+          return const SliverToBoxAdapter(child: SizedBox());
+        }
+        return SliverMainAxisGroup(
+          slivers: [
+            if (collectedFavList.isNotEmpty) ...[
+              const SliverToBoxAdapter(child: SectionDivider()),
+              SliverStickyHeader(
+                header: SectionHeader(
+                  icon: Icons.star_outline,
+                  title: '收藏的收藏夹',
+                  count: _visibleCount(collectedFavList),
+                ),
+                sliver: _buildFavSectionBody(collectedFavList, false),
+              ),
+            ],
+          ],
+        );
+      },
+    );
   }
 
   /// 收藏夹板块内容（返回 sliver）：封面拼贴九宫格；

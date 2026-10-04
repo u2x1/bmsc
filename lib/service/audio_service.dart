@@ -699,7 +699,8 @@ class AudioService {
 
       _historyUpdateCnt++;
       DatabaseManager.updatePlayStat(extras['bvid'],
-          _historyUpdateCnt == 1 ? 1 : 0, _historyUpdateInterval);
+          _historyUpdateCnt == 1 ? 1 : 0, _historyUpdateInterval,
+          cid: extras['cid'] as int?);
       await SharedPreferencesService.setPlayPosition(player.position.inSeconds);
     });
   }
@@ -1250,8 +1251,10 @@ class AudioService {
     }
   }
 
-  Future<void> playByBvid(String bvid) async {
-    _logger.info('Playing by BVID: $bvid');
+  /// [preferCid]：定位到该分 P 再播（「最近在听」续播用）；
+  /// 为空或找不到（被屏蔽等）时从第一个分 P 开始
+  Future<void> playByBvid(String bvid, {int? preferCid}) async {
+    _logger.info('Playing by BVID: $bvid (preferCid: $preferCid)');
     await player.pause();
     List<IndexedAudioSource>? srcs;
     try {
@@ -1272,7 +1275,21 @@ class AudioService {
     final idx = await _addUniqueSourcesToPlaylist(srcs,
         insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
     if (idx != null) {
-      await player.seek(Duration.zero, index: idx);
+      int target = idx;
+      if (preferCid != null) {
+        // 在播放列表中定位该 bvid 下目标分 P 的位置（含该视频
+        // 已在列表中被去重命中的情况）；找不到保持从 P1 开始
+        final i = playlist.children.indexWhere((c) =>
+            c is IndexedAudioSource &&
+            c.tag is MediaItem &&
+            (c.tag as MediaItem).extras?['bvid'] == bvid &&
+            (c.tag as MediaItem).extras?['cid'] == preferCid);
+        if (i >= 0) {
+          target = i;
+          _logger.info('Located to part cid=$preferCid at index $i');
+        }
+      }
+      await player.seek(Duration.zero, index: target);
     }
     await player.play();
   }
