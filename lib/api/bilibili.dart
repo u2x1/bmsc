@@ -188,8 +188,16 @@ class BilibiliAPI {
       Map<String, dynamic>? extraHeaders}) async {
     try {
       if (noNetwork) {
-        _logger.info("no network. return null");
-        return null;
+        // 假阴性自愈：休眠断网恢复后 connectivity 事件可能漏发/探活早于
+        // 真正恢复，noNetwork 会卡住（2026-10-05 实测：识曲直连 Worker 成功
+        // 的同时 B 站 API 全部被此闸门短路）。调用前快速复测（两次，容忍
+        // 单次 DNS 抖动）而非永久短路。
+        if (await connectionService.recheck()) {
+          noNetwork = false;
+        } else {
+          _logger.info("no network. return null");
+          return null;
+        }
       }
       final options = Options(headers: extraHeaders ?? {});
       final response = isPost
@@ -879,7 +887,8 @@ class BilibiliAPI {
 
   /// 申请 TV 端二维码（带 appkey 签名）；成功后登录态含 access_token，支持高画质
   Future<TvQrLoginInfo?> getTvQrcodeLoginInfo() async {
-    if (noNetwork) return null;
+    if (noNetwork && !await connectionService.recheck()) return null;
+    noNetwork = false;
     final params = BiliSign.signForTv({
       'appkey': BiliSign.tvAppKey,
       'local_id': '0',
