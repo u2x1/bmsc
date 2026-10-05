@@ -1,0 +1,23 @@
+#:schema https://developers.cloudflare.com/workers/wrangler/configuration/
+name = "bmsc-recognize"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# *.u2x1.work 存在泛解析 DNS 记录，Custom Domain 与之冲突（API 10013），
+# 改用 zone 路由（路由优先级高于 DNS，泛解析记录正好充当路由所需的 DNS 存在性）
+workers_dev = false
+routes = [
+  { pattern = "bmsc-recognize.u2x1.work/*", zone_name = "u2x1.work" },
+]
+
+# 按 IP 限流：每 IP 每 60s 最多 10 次识曲（计数按 CF 机房本地、最终一致，
+# 防滥用够用；IP 粒度对移动网 NAT 误伤可控，阈值宽松）
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "20261004"
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+# 密钥通过 wrangler secret put 设置，不写在本文件中：
+#   RECOGNIZE_TOKEN （可选）设置后 App 需在 X-Token 头携带相同值

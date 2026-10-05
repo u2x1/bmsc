@@ -16,7 +16,10 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 
 class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key});
+  const SearchScreen({super.key, this.initialKeyword});
+
+  /// 预填并立即搜索的关键词（如从听歌识曲结果跳转）
+  final String? initialKeyword;
 
   @override
   State<StatefulWidget> createState() => _SearchScreenState();
@@ -41,7 +44,13 @@ class _SearchScreenState extends State<SearchScreen> {
   void initState() {
     super.initState();
     _loadSearchHistory();
-    _checkClipboard();
+    final keyword = widget.initialKeyword;
+    if (keyword != null && keyword.isNotEmpty) {
+      fieldTextController.text = keyword;
+      onSearching(keyword);
+    } else {
+      _checkClipboard();
+    }
   }
 
   @override

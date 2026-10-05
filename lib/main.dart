@@ -7,8 +7,10 @@ import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/screen/dynamic_screen.dart';
 import 'package:bmsc/screen/fav_screen.dart';
 import 'package:bmsc/screen/local_history_screen.dart';
+import 'package:bmsc/screen/recognition_screen.dart';
 import 'package:bmsc/service/audio_service.dart' as app_audio;
 import 'package:bmsc/audio/just_audio_background_custom.dart';
+import 'package:bmsc/service/overlay_recognition.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
@@ -45,6 +47,15 @@ Future<void> main() async {
       androidNotificationChannelName: 'Audio Playback',
       androidStopForegroundOnPause: true,
     );
+  }
+
+  // 悬浮窗识曲（Android）：气泡点击 → 识别 → 点结果回链搜索
+  if (Platform.isAndroid) {
+    OverlayRecognitionService.instance.init();
+    OverlayRecognitionService.instance.onOpenSearch = (keyword) {
+      ErrorHandler.navigatorKey.currentState?.push(MaterialPageRoute<Widget>(
+          builder: (_) => SearchScreen(initialKeyword: keyword)));
+    };
   }
 
   if (Platform.isLinux || Platform.isWindows) {
@@ -122,6 +133,15 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   FavScreenState? _favScreenState;
   String? _clipboardText;
   DateTime? _lastNavAt;
+
+  /// 顶部按钮折叠展开状态（5 个入口收进一个按钮，点按横向展开）
+  bool _actionsExpanded = false;
+
+  /// 包装 actions 按钮：跳转后自动收起
+  void Function() _act(void Function() f) => () {
+        setState(() => _actionsExpanded = false);
+        f();
+      };
 
   @override
   void initState() {
@@ -262,42 +282,131 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
           ),
         ),
         actions: [
+          // 5 个入口折叠为一个按钮，点按在 AppBar 下方向下展开/收起
           IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()),
-            ),
-            icon: const Icon(Icons.search),
-          ),
-          IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()),
-            ),
-            // B 站「动态」官方图标为风车造型
-            icon: const Icon(Icons.wind_power_outlined),
-          ),
-          IconButton(
-            onPressed: () => _pushThrottled<Widget>(
-              MaterialPageRoute<Widget>(
-                  builder: (_) => const LocalHistoryScreen()),
-            ),
-            icon: const Icon(Icons.history_outlined),
-          ),
-          IconButton(
-            // 从设置页返回时总是刷新主页，使「显示每日推荐」等
-            // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
-            onPressed: () => _pushThrottled<bool>(
-              MaterialPageRoute<bool>(
-                builder: (_) => const SettingsScreen(),
+            tooltip: _actionsExpanded ? '收起' : '更多',
+            onPressed: () =>
+                setState(() => _actionsExpanded = !_actionsExpanded),
+            icon: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              transitionBuilder: (child, anim) =>
+                  RotationTransition(turns: anim, child: child),
+              child: Icon(
+                _actionsExpanded ? Icons.close : Icons.apps,
+                key: ValueKey(_actionsExpanded),
               ),
-            )?.then((_) async {
-              await _favScreenState?.refreshLoginState();
-            }),
-            icon: const Icon(Icons.settings_outlined),
+            ),
           ),
         ],
       ),
-      body: FavScreen(
-        onInit: (state) => _favScreenState = state,
+      body: Column(
+        children: [
+          // 入口面板：AppBar 下方向下展开/收起
+          ClipRect(
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOut,
+              alignment: Alignment.topCenter,
+              child: _actionsExpanded
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerLow,
+                        border: Border(
+                          bottom: BorderSide(
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                            width: 0.5,
+                          ),
+                        ),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          _actionEntry(
+                            icon: Icons.graphic_eq,
+                            label: '识曲',
+                            onTap: () => _pushThrottled<Widget>(
+                              MaterialPageRoute<Widget>(
+                                  builder: (_) => const RecognitionScreen()),
+                            ),
+                          ),
+                          _actionEntry(
+                            icon: Icons.search,
+                            label: '搜索',
+                            onTap: () => _pushThrottled<Widget>(
+                              MaterialPageRoute<Widget>(
+                                  builder: (_) => const SearchScreen()),
+                            ),
+                          ),
+                          _actionEntry(
+                            // B 站「动态」官方图标为风车造型
+                            icon: Icons.wind_power_outlined,
+                            label: '动态',
+                            onTap: () => _pushThrottled<Widget>(
+                              MaterialPageRoute<Widget>(
+                                  builder: (_) => const DynamicScreen()),
+                            ),
+                          ),
+                          _actionEntry(
+                            icon: Icons.history_outlined,
+                            label: '历史',
+                            onTap: () => _pushThrottled<Widget>(
+                              MaterialPageRoute<Widget>(
+                                  builder: (_) => const LocalHistoryScreen()),
+                            ),
+                          ),
+                          _actionEntry(
+                            icon: Icons.settings_outlined,
+                            label: '设置',
+                            // 从设置页返回时总是刷新主页，使「显示每日推荐」等
+                            // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
+                            onTap: () {
+                              _pushThrottled<bool>(
+                                MaterialPageRoute<bool>(
+                                  builder: (_) => const SettingsScreen(),
+                                ),
+                              )?.then((_) async {
+                                await _favScreenState?.refreshLoginState();
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                    )
+                  : const SizedBox.shrink(),
+            ),
+          ),
+          Expanded(
+            child: FavScreen(
+              onInit: (state) => _favScreenState = state,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 入口面板的单项（图标+文字），点击后自动收起面板
+  Widget _actionEntry({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: _act(onTap),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon),
+            const SizedBox(height: 2),
+            Text(label, style: Theme.of(context).textTheme.labelSmall),
+          ],
+        ),
       ),
     );
   }

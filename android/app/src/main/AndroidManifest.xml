@@ -7,6 +7,9 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO"/>
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
     <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
@@ -16,7 +19,7 @@
         android:enableOnBackInvokedCallback="true"
         android:usesCleartextTraffic="true">
         <activity
-            android:name="com.ryanheise.audioservice.AudioServiceActivity"
+            android:name="org.u2x1.bmsc.MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@style/LaunchTheme"
@@ -44,6 +47,11 @@
         <action android:name="android.media.browse.MediaBrowserService" />
       </intent-filter>
     </service>
+
+    <!-- 悬浮窗识曲气泡：后台录音走 FGS-microphone（App 退后台时麦克风权限的系统要求） -->
+    <service android:name="org.u2x1.bmsc.OverlayService"
+        android:foregroundServiceType="microphone"
+        android:exported="false"/>
 
     <receiver android:name="com.ryanheise.audioservice.MediaButtonReceiver"
         android:exported="true">

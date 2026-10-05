@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 悬浮窗面板：深色半透明圆角卡片 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android">
+    <corners android:radius="16dp"/>
+    <solid android:color="#E61E1E1E"/>
+</shape>

@@ -1,9 +1,11 @@
 // ignore_for_file: deprecated_member_use
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/model/myinfo.dart';
+import 'package:bmsc/model/recognition_attempt.dart';
 import 'package:bmsc/model/playlist_data.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/util/silent_audio.dart';
@@ -122,6 +124,93 @@ class SharedPreferencesService {
     final prefs = await instance;
     // 2.0.0 起默认关闭（隐私考虑）；未设置过的用户升级后不再自动读取剪贴板
     return prefs.getBool('readFromClipboard') ?? false;
+  }
+
+  /// 听歌识曲同意（v2：录音片段会保存在本机识别历史供回放——相比 v1 的
+  /// 「不保存」承诺范围变大，需重新征得同意）
+  static Future<bool> getRecognitionConsent() async {
+    final prefs = await instance;
+    return prefs.getBool('recognition_consent_v2') ?? false;
+  }
+
+  static Future<void> setRecognitionConsent(bool value) async {
+    final prefs = await instance;
+    await prefs.setBool('recognition_consent_v2', value);
+  }
+
+  /// 识别历史：最新在前（成功/未中/静音/失败均入史），上限 50，
+  /// 兼容旧版单曲格式条目（见 RecognitionAttempt.fromStoredJson）
+  static Future<List<RecognitionAttempt>> getRecognitionHistory() async {
+    final prefs = await instance;
+    return (prefs.getStringList('recognition_history') ?? const <String>[])
+        .map((e) => RecognitionAttempt.fromStoredJson(
+            jsonDecode(e) as Map<String, dynamic>))
+        .toList();
+  }
+
+  static Future<void> addRecognitionHistory(RecognitionAttempt entry) async {
+    final prefs = await instance;
+    final list = List<String>.from(
+        prefs.getStringList('recognition_history') ?? const <String>[]);
+    list.insert(0, jsonEncode(entry.toJson()));
+    if (list.length > 50) {
+      // 容量溢出：同步清理被挤出的最旧条目的片段文件
+      for (final raw in list.sublist(50)) {
+        try {
+          final e = RecognitionAttempt.fromStoredJson(
+              jsonDecode(raw) as Map<String, dynamic>);
+          await _deleteRecognitionClip(e.clip);
+        } catch (_) {}
+      }
+      list.length = 50;
+    }
+    await prefs.setStringList('recognition_history', list);
+  }
+
+  /// 单条删除（按 at 时间戳定位，同步删除片段文件）
+  static Future<void> removeRecognitionHistory(int at) async {
+    final prefs = await instance;
+    final list = List<String>.from(
+        prefs.getStringList('recognition_history') ?? const <String>[]);
+    list.removeWhere((raw) {
+      try {
+        final e = RecognitionAttempt.fromStoredJson(
+            jsonDecode(raw) as Map<String, dynamic>);
+        if (e.at == at) {
+          unawaited(_deleteRecognitionClip(e.clip));
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    });
+    await prefs.setStringList('recognition_history', list);
+  }
+
+  static Future<void> clearRecognitionHistory() async {
+    final prefs = await instance;
+    await prefs.remove('recognition_history');
+    try {
+      final dir = Directory(
+          '${(await getApplicationDocumentsDirectory()).path}/recognition_clips');
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (_) {}
+  }
+
+  /// 试听片段完整路径（不存在返回 null）
+  static Future<String?> recognitionClipPath(String? clip) async {
+    if (clip == null) return null;
+    final f = File(
+        '${(await getApplicationDocumentsDirectory()).path}/recognition_clips/$clip');
+    return await f.exists() ? f.path : null;
+  }
+
+  static Future<void> _deleteRecognitionClip(String? clip) async {
+    if (clip == null) return;
+    try {
+      await File(
+              '${(await getApplicationDocumentsDirectory()).path}/recognition_clips/$clip')
+          .delete();
+    } catch (_) {}
   }
 
   static Future<void> setReadFromClipboard(bool value) async {
