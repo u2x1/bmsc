@@ -67,7 +67,7 @@ BMSC_LIVE=1 BMSC_COOKIE="..." flutter test test/integration
 ## 工程约束
 
 - 测试不依赖 Flutter binding / 数据库 / 真实 SharedPreferences（`setMockInitialValues` 内存化）
-- `BilibiliAPI(enableConnectivity: false)` 跳过 connectivity 插件初始化
+- `BilibiliAPI(enableConnectivity: false)` 跳过 connectivity 初始化与探活自愈（noNetwork 为纯静态开关）
 - 网络请求一律走 `FakeHttpAdapter`（`test/helpers/fake_http_adapter.dart`）或标记 `@Tags(['live'])`
 
 ## 常用命令

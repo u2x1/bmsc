@@ -41,7 +41,12 @@ class BilibiliAPI {
 
   String _buvid3 = '';
 
-  BilibiliAPI({bool enableConnectivity = true}) {
+  /// false = 完全不做连通性管理（事件监听 + 探活自愈），noNetwork 为纯静态
+  /// 开关（测试用：auth_layer_test 的短路行为依赖静态语义）
+  final bool _enableConnectivity;
+
+  BilibiliAPI({bool enableConnectivity = true})
+      : _enableConnectivity = enableConnectivity {
     if (enableConnectivity) {
       connectionService.initialize();
       connectionService.connectionChange.listen((result) {
@@ -191,8 +196,9 @@ class BilibiliAPI {
         // 假阴性自愈：休眠断网恢复后 connectivity 事件可能漏发/探活早于
         // 真正恢复，noNetwork 会卡住（2026-10-05 实测：识曲直连 Worker 成功
         // 的同时 B 站 API 全部被此闸门短路）。调用前快速复测（两次，容忍
-        // 单次 DNS 抖动）而非永久短路。
-        if (await connectionService.recheck()) {
+        // 单次 DNS 抖动）而非永久短路。enableConnectivity=false（测试）
+        // 时保持静态短路语义。
+        if (_enableConnectivity && await connectionService.recheck()) {
           noNetwork = false;
         } else {
           _logger.info("no network. return null");
@@ -887,7 +893,10 @@ class BilibiliAPI {
 
   /// 申请 TV 端二维码（带 appkey 签名）；成功后登录态含 access_token，支持高画质
   Future<TvQrLoginInfo?> getTvQrcodeLoginInfo() async {
-    if (noNetwork && !await connectionService.recheck()) return null;
+    if (noNetwork &&
+        !(_enableConnectivity && await connectionService.recheck())) {
+      return null;
+    }
     noNetwork = false;
     final params = BiliSign.signForTv({
       'appkey': BiliSign.tvAppKey,
