@@ -241,82 +241,107 @@ class TrackTile extends StatelessWidget {
                               ],
                             ),
                             const SizedBox(height: 2),
-                            Row(
+                            // 图标+文字成组、组间折行（Wrap）：窄窗
+                            //（分屏/小窗）下折到下一行而非向右溢出
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 2,
                               children: [
-                                if (parts != null) ...[
-                                  Icon(
-                                    Icons.playlist_play,
-                                    size: metaIconSize,
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
+                                if (parts != null)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.playlist_play,
+                                        size: metaIconSize,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .secondary,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        '$parts',
+                                        style: smallStyle,
+                                      ),
+                                      if (excludedParts > 0)
+                                        Text(
+                                          ' (-$excludedParts)',
+                                          style: smallStyle?.copyWith(
+                                              color: colorScheme.error),
+                                        ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    '$parts',
-                                    style: smallStyle,
-                                  ),
-                                  if (excludedParts > 0) ...[
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.schedule,
+                                      size: metaIconSize,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .secondary,
+                                    ),
+                                    const SizedBox(width: 2),
                                     Text(
-                                      ' (-$excludedParts)',
-                                      style: smallStyle?.copyWith(
-                                          color: colorScheme.error),
+                                      len,
+                                      style: smallStyle,
                                     ),
                                   ],
-                                  const SizedBox(width: 8),
-                                ],
-                                Icon(
-                                  Icons.schedule,
-                                  size: metaIconSize,
-                                  color:
-                                      Theme.of(context).colorScheme.secondary,
                                 ),
-                                const SizedBox(width: 2),
-                                Text(
-                                  len,
-                                  style: smallStyle,
-                                ),
-                                if (view != null) ...[
-                                  const SizedBox(width: 8),
-                                  Icon(
-                                    Icons.visibility_outlined,
-                                    size: metaIconSize,
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
+                                if (view != null)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.visibility_outlined,
+                                        size: metaIconSize,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .secondary,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        view!,
+                                        style: smallStyle,
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    view!,
-                                    style: smallStyle,
+                                if (time != null)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.access_time,
+                                        size: metaIconSize,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .secondary,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        time!,
+                                        style: smallStyle,
+                                      ),
+                                    ],
                                   ),
-                                ],
-                                if (time != null) ...[
-                                  const SizedBox(width: 8),
-                                  Icon(
-                                    Icons.access_time,
-                                    size: metaIconSize,
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
+                                if (playcnt != null)
+                                  Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.play_arrow,
+                                        size: metaIconSize,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .secondary,
+                                      ),
+                                      const SizedBox(width: 2),
+                                      Text(
+                                        playcnt!,
+                                        style: smallStyle,
+                                      ),
+                                    ],
                                   ),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    time!,
-                                    style: smallStyle,
-                                  ),
-                                ],
-                                if (playcnt != null) ...[
-                                  const SizedBox(width: 8),
-                                  Icon(
-                                    Icons.play_arrow,
-                                    size: metaIconSize,
-                                    color:
-                                        Theme.of(context).colorScheme.secondary,
-                                  ),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    playcnt!,
-                                    style: smallStyle,
-                                  ),
-                                ],
                               ],
                             ),
                           ],

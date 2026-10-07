@@ -607,9 +607,11 @@ class FavScreenState extends State<FavScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '进入曲库',
-                  style: TextStyle(fontSize: 13, color: scheme.secondary),
+                Flexible(
+                  child: Text(
+                    '进入曲库',
+                    style: TextStyle(fontSize: 13, color: scheme.secondary),
+                  ),
                 ),
                 Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
               ],
@@ -809,9 +811,11 @@ class FavScreenState extends State<FavScreen> {
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  '基于收藏夹的推荐',
-                  style: TextStyle(fontSize: 13, color: scheme.secondary),
+                Flexible(
+                  child: Text(
+                    '基于收藏夹的推荐',
+                    style: TextStyle(fontSize: 13, color: scheme.secondary),
+                  ),
                 ),
                 Icon(Icons.chevron_right, size: 18, color: scheme.secondary),
               ],
@@ -864,7 +868,10 @@ class FavScreenState extends State<FavScreen> {
     final cellWidth = (MediaQuery.sizeOf(context).width - 48 - spacing * 2) / 3;
     final coverHeight =
         (cellWidth - _favCoverStackStep * 2) * 9 / 16 + _favCoverStackStep * 2;
-    final cellHeight = coverHeight + 4 + 30 + 14;
+    // 文字区预算随系统字体缩放（标题 2 行 + 计数 1 行 + 少量余量），
+    // 固定预算在系统大字体下会溢出（分屏/小窗同理）
+    final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+    final cellHeight = coverHeight + 4 + 46 * textScale;
     return SliverPadding(
       padding: const EdgeInsets.fromLTRB(24, 0, 24, 8),
       sliver: SliverGrid.builder(
@@ -920,6 +927,10 @@ class FavScreenState extends State<FavScreen> {
                     ),
                     Text(
                       '${fav.mediaCount} 个视频',
+                      // 窄窗（分屏/小窗）下禁止换行：格高固定，
+                      // 换行会把 cell 内容顶出底部
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 10, color: scheme.secondary),
                     ),
                   ],

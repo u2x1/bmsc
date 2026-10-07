@@ -28,24 +28,53 @@ class SectionHeader extends StatelessWidget {
     final row = Container(
       color: Theme.of(context).scaffoldBackgroundColor,
       padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
-      child: Row(
-        children: [
-          Icon(icon, size: 18, color: scheme.primary),
-          const SizedBox(width: 8),
-          Text(
-            title,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          if (count != null) ...[
-            const SizedBox(width: 6),
-            Text(
-              '$count',
-              style: TextStyle(fontSize: 13, color: scheme.secondary),
+      child: LayoutBuilder(
+        builder: (context, box) => Row(
+          children: [
+            Icon(icon, size: 18, color: scheme.primary),
+            const SizedBox(width: 8),
+            // 标题+计数占据尾部动作之外的剩余空间（宽时尾部自然宽度
+            // 贴右；窄时标题收缩省略、计数始终跟在标题旁），
+            // 避免窄窗（分屏/小窗）行溢出
+            Expanded(
+              child: Row(
+                children: [
+                  Flexible(
+                    fit: FlexFit.loose,
+                    child: Text(
+                      title,
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  if (count != null) ...[
+                    const SizedBox(width: 6),
+                    Text(
+                      '$count',
+                      style: TextStyle(fontSize: 13, color: scheme.secondary),
+                    ),
+                  ],
+                ],
+              ),
             ),
+            // 尾部限宽 55%：极端窄窗下其内部 Text 收缩省略
+            //（DefaultTextStyle 继承 maxLines/overflow）
+            if (trailing != null) ...[
+              const SizedBox(width: 8),
+              ConstrainedBox(
+                constraints: BoxConstraints(maxWidth: box.maxWidth * 0.55),
+                child: DefaultTextStyle(
+                  style: DefaultTextStyle.of(context).style,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  child: trailing!,
+                ),
+              ),
+            ],
           ],
-          const Spacer(),
-          if (trailing != null) trailing!,
-        ],
+        ),
       ),
     );
     if (onTap == null) return row;

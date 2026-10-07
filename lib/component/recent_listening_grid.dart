@@ -99,7 +99,9 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
                   // 注意每页内部还有 _spacing 水平内边距（翻页间隙），
                   // 故格宽需减去 4 倍 _spacing
                   final cellWidth = (constraints.maxWidth - _spacing * 4) / 3;
-                  final cellHeight = cellWidth * 9 / 16 + 4 + 30;
+                  // 两行标题预算随系统字体缩放（固定值在大字体下溢出）
+                  final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+                  final cellHeight = cellWidth * 9 / 16 + 4 + 32 * textScale;
                   // 高度按实际行数：不足一整页（9 个）时不预留满 3 行，
                   // 避免网格下方出现大段空白；多页时首页总是满 3 行
                   final rows = _items.length >= _pageSize

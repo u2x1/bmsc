@@ -553,7 +553,9 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
               spacing * (crossAxisCount - 1) -
               20) /
           crossAxisCount;
-      final cellHeight = cellWidth * 9 / 16 + 4 + 30;
+      // 两行标题预算随系统字体缩放（固定值在大字体下溢出）
+      final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+      final cellHeight = cellWidth * 9 / 16 + 4 + 32 * textScale;
       return GridView.builder(
         padding: const EdgeInsets.all(10),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(

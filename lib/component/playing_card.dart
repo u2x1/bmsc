@@ -158,15 +158,20 @@ class _PlayingCardState extends State<PlayingCard> {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 8),
-                          child: Row(
+                          // 窄窗（分屏/小窗）下紧凑布局：封面缩小、
+                          // 只保留播放/下一首，避免行向右溢出
+                          child: LayoutBuilder(
+                            builder: (context, box) {
+                              final compact = box.maxWidth < 340;
+                              return Row(
                             children: [
                               // Album art
                               shadow(
                                 ClipRRect(
                                   borderRadius: BorderRadius.circular(4),
                                   child: SizedBox(
-                                    width: 78,
-                                    height: 48,
+                                    width: compact ? 56 : 78,
+                                    height: compact ? 36 : 48,
                                     child: artUri == ""
                                         ? Container(
                                             color: Theme.of(context)
@@ -254,13 +259,14 @@ class _PlayingCardState extends State<PlayingCard> {
                               Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.skip_previous),
-                                    onPressed: player.hasPrevious
-                                        ? player
-                                            .seekToPreviousRegardlessOfLoopMode
-                                        : null,
-                                  ),
+                                  if (!compact)
+                                    IconButton(
+                                      icon: const Icon(Icons.skip_previous),
+                                      onPressed: player.hasPrevious
+                                          ? player
+                                              .seekToPreviousRegardlessOfLoopMode
+                                          : null,
+                                    ),
                                   Opacity(
                                     opacity: isLoadingOrBuffering ? 0.6 : 1.0,
                                     child: IconButton(
@@ -281,30 +287,33 @@ class _PlayingCardState extends State<PlayingCard> {
                                         : null,
                                   ),
                                   // Add playlist button
-                                  IconButton(
-                                    icon: const Icon(Icons.queue_music),
-                                    onPressed: () {
-                                      showModalBottomSheet(
-                                        context: context,
-                                        builder: (context) =>
-                                            const PlaylistBottomSheet(),
-                                        backgroundColor: Theme.of(context)
-                                            .colorScheme
-                                            .surface,
-                                        showDragHandle: true,
-                                        isScrollControlled: true,
-                                        constraints: BoxConstraints(
-                                          maxHeight: MediaQuery.of(context)
-                                                  .size
-                                                  .height *
-                                              0.7,
-                                        ),
-                                      );
-                                    },
-                                  ),
+                                  if (!compact)
+                                    IconButton(
+                                      icon: const Icon(Icons.queue_music),
+                                      onPressed: () {
+                                        showModalBottomSheet(
+                                          context: context,
+                                          builder: (context) =>
+                                              const PlaylistBottomSheet(),
+                                          backgroundColor: Theme.of(context)
+                                              .colorScheme
+                                              .surface,
+                                          showDragHandle: true,
+                                          isScrollControlled: true,
+                                          constraints: BoxConstraints(
+                                            maxHeight: MediaQuery.of(context)
+                                                    .size
+                                                    .height *
+                                                0.7,
+                                          ),
+                                        );
+                                      },
+                                    ),
                                 ],
                               ),
                             ],
+                              );
+                            },
                           ),
                         ),
                       ),
