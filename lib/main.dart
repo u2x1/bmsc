@@ -140,14 +140,53 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   String? _clipboardText;
   DateTime? _lastNavAt;
 
-  /// 顶部按钮折叠展开状态（5 个入口收进一个按钮，点按横向展开）
-  bool _actionsExpanded = false;
+  /// 顶部入口收进一个自定义下拉层（圆角列表 + 回弹展开 + 逐项错峰入场）
+  final _appsButtonKey = GlobalKey();
 
-  /// 包装 actions 按钮：跳转后自动收起
-  void Function() _act(void Function() f) => () {
-        setState(() => _actionsExpanded = false);
-        f();
-      };
+  // 排序：搜索（最高频找歌）> 听歌识曲（招牌）> 动态 > 历史，设置惯例置底。
+  // 「关于」不在此列——点 AppBar 标题仍可进入。
+  static const _appsMenuItems = [
+    (icon: Icons.search, label: '搜索', value: 0),
+    (icon: Icons.graphic_eq, label: '听歌识曲', value: 1),
+    (icon: Icons.wind_power_outlined, label: '动态', value: 2),
+    (icon: Icons.history_outlined, label: '历史', value: 3),
+    (icon: Icons.settings_outlined, label: '设置', value: 4),
+  ];
+
+  Future<void> _openAppsMenu() async {
+    final ctx = _appsButtonKey.currentContext;
+    if (ctx == null) return;
+    final box = ctx.findRenderObject() as RenderBox;
+    final rect = box.localToGlobal(Offset.zero) & box.size;
+    final v = await Navigator.of(context)
+        .push(_AppsMenuRoute(anchorRect: rect, items: _appsMenuItems));
+    if (v != null) _onMenuSelected(v);
+  }
+
+  void _onMenuSelected(int i) {
+    switch (i) {
+      case 0:
+        _pushThrottled<Widget>(
+            MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()));
+      case 1:
+        _pushThrottled<Widget>(
+            MaterialPageRoute<Widget>(builder: (_) => const RecognitionScreen()));
+      case 2:
+        _pushThrottled<Widget>(
+            MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()));
+      case 3:
+        _pushThrottled<Widget>(
+            MaterialPageRoute<Widget>(builder: (_) => const LocalHistoryScreen()));
+      case 4:
+        // 从设置页返回时总是刷新主页，使「显示每日推荐」等
+        // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
+        _pushThrottled<bool>(
+          MaterialPageRoute<bool>(builder: (_) => const SettingsScreen()),
+        )?.then((_) async {
+          await _favScreenState?.refreshLoginState();
+        });
+    }
+  }
 
   @override
   void initState() {
@@ -288,130 +327,146 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
           ),
         ),
         actions: [
-          // 5 个入口折叠为一个按钮，点按在 AppBar 下方向下展开/收起
+          // 入口收进一个自定义下拉层
           IconButton(
-            tooltip: _actionsExpanded ? '收起' : '更多',
-            onPressed: () =>
-                setState(() => _actionsExpanded = !_actionsExpanded),
-            icon: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 220),
-              transitionBuilder: (child, anim) =>
-                  RotationTransition(turns: anim, child: child),
-              child: Icon(
-                _actionsExpanded ? Icons.close : Icons.apps,
-                key: ValueKey(_actionsExpanded),
-              ),
-            ),
+            key: _appsButtonKey,
+            tooltip: '更多',
+            icon: const Icon(Icons.apps),
+            onPressed: _openAppsMenu,
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // 入口面板：AppBar 下方向下展开/收起
-          ClipRect(
-            child: AnimatedSize(
-              duration: const Duration(milliseconds: 220),
-              curve: Curves.easeOut,
-              alignment: Alignment.topCenter,
-              child: _actionsExpanded
-                  ? Container(
-                      decoration: BoxDecoration(
-                        color: Theme.of(context)
-                            .colorScheme
-                            .surfaceContainerLow,
-                        border: Border(
-                          bottom: BorderSide(
-                            color: Theme.of(context).colorScheme.outlineVariant,
-                            width: 0.5,
-                          ),
-                        ),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
-                        children: [
-                          _actionEntry(
-                            icon: Icons.graphic_eq,
-                            label: '识曲',
-                            onTap: () => _pushThrottled<Widget>(
-                              MaterialPageRoute<Widget>(
-                                  builder: (_) => const RecognitionScreen()),
-                            ),
-                          ),
-                          _actionEntry(
-                            icon: Icons.search,
-                            label: '搜索',
-                            onTap: () => _pushThrottled<Widget>(
-                              MaterialPageRoute<Widget>(
-                                  builder: (_) => const SearchScreen()),
-                            ),
-                          ),
-                          _actionEntry(
-                            // B 站「动态」官方图标为风车造型
-                            icon: Icons.wind_power_outlined,
-                            label: '动态',
-                            onTap: () => _pushThrottled<Widget>(
-                              MaterialPageRoute<Widget>(
-                                  builder: (_) => const DynamicScreen()),
-                            ),
-                          ),
-                          _actionEntry(
-                            icon: Icons.history_outlined,
-                            label: '历史',
-                            onTap: () => _pushThrottled<Widget>(
-                              MaterialPageRoute<Widget>(
-                                  builder: (_) => const LocalHistoryScreen()),
-                            ),
-                          ),
-                          _actionEntry(
-                            icon: Icons.settings_outlined,
-                            label: '设置',
-                            // 从设置页返回时总是刷新主页，使「显示每日推荐」等
-                            // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
-                            onTap: () {
-                              _pushThrottled<bool>(
-                                MaterialPageRoute<bool>(
-                                  builder: (_) => const SettingsScreen(),
-                                ),
-                              )?.then((_) async {
-                                await _favScreenState?.refreshLoginState();
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                    )
-                  : const SizedBox.shrink(),
-            ),
-          ),
-          Expanded(
-            child: FavScreen(
-              onInit: (state) => _favScreenState = state,
-            ),
-          ),
-        ],
+      body: FavScreen(
+        onInit: (state) => _favScreenState = state,
+      ),
+    );
+  }
+}
+
+/// 入口下拉层路由：锚定按钮右上角，圆角列表卡片。
+/// 动画：卡片自锚点角回弹展开（easeOutBack 缩放+下滑+渐显），
+/// 列表项逐项错峰入场；收起快速渐隐。
+class _AppsMenuRoute extends PopupRoute<int> {
+  _AppsMenuRoute({required this.anchorRect, required this.items});
+
+  final Rect anchorRect;
+  final List<({IconData icon, String label, int value})> items;
+
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 320);
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 150);
+
+  @override
+  bool get barrierDismissible => true;
+
+  @override
+  String? get barrierLabel => '关闭';
+
+  @override
+  Color? get barrierColor => Colors.transparent;
+
+  @override
+  Widget buildPage(BuildContext context, Animation<double> animation,
+      Animation<double> secondaryAnimation) {
+    final top = anchorRect.bottom + 8;
+    final right =
+        (MediaQuery.sizeOf(context).width - anchorRect.right).clamp(8.0, 1e9);
+    return Padding(
+      padding: EdgeInsets.only(top: top, right: right),
+      child: Align(
+        alignment: Alignment.topRight,
+        child: AnimatedBuilder(
+          animation: animation,
+          child: _buildCard(context, animation),
+          builder: (context, card) {
+            final enter = CurvedAnimation(
+              parent: animation,
+              curve: Curves.easeOutBack,
+              reverseCurve: Curves.easeIn,
+            );
+            return Opacity(
+              opacity: animation.value.clamp(0.0, 1.0),
+              child: Transform.scale(
+                scale: 0.88 + 0.12 * enter.value,
+                alignment: Alignment.topRight,
+                child: Transform.translate(
+                  offset: Offset(0, -10 * (1 - enter.value)),
+                  child: card,
+                ),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
 
-  /// 入口面板的单项（图标+文字），点击后自动收起面板
-  Widget _actionEntry({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: _act(onTap),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon),
-            const SizedBox(height: 2),
-            Text(label, style: Theme.of(context).textTheme.labelSmall),
-          ],
+  Widget _buildCard(BuildContext context, Animation<double> animation) {
+    final cs = Theme.of(context).colorScheme;
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 232),
+      child: Material(
+        color: cs.surfaceContainerHigh,
+        elevation: 8,
+        shadowColor: Colors.black45,
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < items.length; i++)
+                _tile(context, animation, i),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 单个列表项：色块圆角图标 + 文字，按序号错峰淡入上滑
+  Widget _tile(BuildContext context, Animation<double> animation, int i) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final item = items[i];
+    final stagger = CurvedAnimation(
+      parent: animation,
+      curve: Interval(0.06 * i, (0.5 + 0.06 * i).clamp(0.0, 1.0),
+          curve: Curves.easeOutCubic),
+    );
+    return FadeTransition(
+      opacity: stagger,
+      child: SlideTransition(
+        position: Tween(begin: const Offset(0, 0.25), end: Offset.zero)
+            .animate(stagger),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(14),
+          onTap: () => Navigator.pop(context, item.value),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: cs.secondaryContainer,
+                    borderRadius: BorderRadius.circular(13),
+                  ),
+                  child: Icon(item.icon,
+                      size: 22, color: cs.onSecondaryContainer),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(item.label, style: theme.textTheme.bodyLarge),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
