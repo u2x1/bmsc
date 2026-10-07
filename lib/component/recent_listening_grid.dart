@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
@@ -8,6 +9,8 @@ import '../database_manager.dart';
 import '../model/play_stat.dart';
 import '../screen/local_history_screen.dart';
 import '../service/audio_service.dart';
+import '../service/section_habit_service.dart';
+import '../service/shared_preferences_service.dart';
 import '../util/recent_picks.dart';
 import 'section_header.dart';
 
@@ -190,13 +193,17 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
       borderRadius: BorderRadius.circular(8),
       // B 站曲目：定位到上次听到的分 P（play_stat.last_cid）续播，
       // 旧数据无记录时从 P1 开始；本地音乐曲目直接单曲续播
-      onTap: () => AudioService.instance.then((x) {
-        if (stat.isLocal) {
-          final localId = int.tryParse(stat.bvid.substring(6));
-          if (localId != null) return x.playLocalTrackById(localId);
-        }
-        return x.playByBvid(stat.bvid, preferCid: stat.lastCid);
-      }),
+      onTap: () {
+        // 习惯学习：本次进入 App 首个主页板块播放的来源
+        unawaited(SectionHabitService.recordPlaySource(kHomeSectionRecent));
+        AudioService.instance.then((x) {
+          if (stat.isLocal) {
+            final localId = int.tryParse(stat.bvid.substring(6));
+            if (localId != null) return x.playLocalTrackById(localId);
+          }
+          return x.playByBvid(stat.bvid, preferCid: stat.lastCid);
+        });
+      },
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

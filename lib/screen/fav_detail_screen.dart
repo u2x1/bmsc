@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:bmsc/component/download_parts_dialog.dart';
 import 'package:bmsc/screen/comment_screen.dart';
 import 'package:bmsc/screen/user_detail_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/download_manager.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -19,10 +22,16 @@ class FavDetailScreen extends StatefulWidget {
   final Fav fav;
   final bool isCollected;
 
+  /// 从主页板块进入时传入所属板块 key（kHomeSectionMine /
+  /// kHomeSectionCollected），页内播放用于「进入 App 后首个主页板块
+  /// 播放」的习惯学习；其他入口（如设置里的隐藏收藏夹页）传 null
+  final String? homeSection;
+
   const FavDetailScreen({
     super.key,
     required this.fav,
     required this.isCollected,
+    this.homeSection,
   });
 
   @override
@@ -388,6 +397,10 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
   Future<void> _playFromIndex(int index) async {
     try {
       _logger.info('Playing fav list ${widget.fav.id} from index $index');
+      // 习惯学习：从主页收藏夹板块进入时的播放来源
+      if (widget.homeSection != null) {
+        unawaited(SectionHabitService.recordPlaySource(widget.homeSection!));
+      }
       final List<String> bvids;
       if (_searchController.text.isNotEmpty) {
         bvids = favInfo.map((m) => m.bvid).toList();

@@ -11,6 +11,7 @@ import 'package:bmsc/screen/recognition_screen.dart';
 import 'package:bmsc/service/audio_service.dart' as app_audio;
 import 'package:bmsc/audio/just_audio_background_custom.dart';
 import 'package:bmsc/service/overlay_recognition.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
@@ -217,7 +218,10 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      SectionHabitService.onAppResumed();
       _checkClipboard();
+    } else if (state == AppLifecycleState.paused) {
+      SectionHabitService.onAppPaused();
     }
   }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/rendering.dart';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
 
@@ -6,6 +7,7 @@ import 'package:bmsc/component/playing_card.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:flutter/material.dart';
 import '../component/track_tile.dart';
 import '../model/fav.dart';
@@ -287,6 +289,10 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
                                 len:
                                     '${video.duration ~/ 60}:${(video.duration % 60).toString().padLeft(2, '0')}',
                                 onTap: () {
+                                  // 习惯学习：主页「每日推荐」板块播放来源
+                                  unawaited(
+                                      SectionHabitService.recordPlaySource(
+                                          kHomeSectionDaily));
                                   AudioService.instance.then((x) =>
                                       x.playByBvids(
                                           recommendations

@@ -7,6 +7,7 @@ import 'package:bmsc/screen/login_screen.dart';
 import 'package:bmsc/screen/playlist_search_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/stats_service.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -68,10 +69,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   /// 主页板块设置：拖拽手柄调整各板块顺序，每板块带显示开关，
   /// 全部即时保存；返回主页后生效（主页由 refreshLoginState
-  /// 重新读取偏好）
+  /// 重新读取偏好）。「智能排序」开启时按播放习惯自动上移常用板块，
+  /// 手动拖拽视为显式意图并关闭智能排序
   Future<void> _showHomeSectionsDialog() async {
     final order = await SharedPreferencesService.getHomeSectionOrder();
     final prefs = await SharedPreferencesService.instance;
+    var autoSort = await SectionHabitService.isAutoSortEnabled();
+    var autoSortDisabledByDrag = false;
     // 板块 → 显示开关的存储 key（默认全开）
     const sectionPrefKeys = {
       kHomeSectionDaily: 'show_daily_recommendations',
@@ -99,55 +103,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
           title: const Text('主页板块'),
           content: SizedBox(
             width: 360,
-            child: ReorderableListView(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              buildDefaultDragHandles: false,
-              onReorderItem: (oldIndex, newIndex) {
-                // Flutter 3.41+ 的 onReorderItem 已把 newIndex
-                // 调整为「移除后插入」的最终下标
-                setDialogState(() {
-                  order.insert(newIndex, order.removeAt(oldIndex));
-                });
-                SharedPreferencesService.setHomeSectionOrder(order);
-              },
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                for (final key in order)
-                  ListTile(
-                    key: ValueKey(key),
-                    dense: true,
-                    contentPadding: const EdgeInsets.only(left: 8),
-                    leading: Icon(sectionMeta[key]!.$1, size: 20),
-                    title: Text(sectionMeta[key]!.$2),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Switch(
-                          value: visible[key] ?? true,
-                          onChanged: (value) {
-                            setDialogState(() {
-                              visible[key] = value;
-                            });
-                            prefs.setBool(sectionPrefKeys[key]!, value);
-                          },
+                SwitchListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.only(left: 8),
+                  title: const Text('智能排序'),
+                  subtitle: const Text('根据播放习惯自动上移常用板块',
+                      style: TextStyle(fontSize: 12)),
+                  value: autoSort,
+                  onChanged: (value) {
+                    setDialogState(() => autoSort = value);
+                    SectionHabitService.setAutoSortEnabled(value);
+                  },
+                ),
+                ReorderableListView(
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  buildDefaultDragHandles: false,
+                  onReorderItem: (oldIndex, newIndex) {
+                    // Flutter 3.41+ 的 onReorderItem 已把 newIndex
+                    // 调整为「移除后插入」的最终下标
+                    setDialogState(() {
+                      order.insert(newIndex, order.removeAt(oldIndex));
+                    });
+                    SharedPreferencesService.setHomeSectionOrder(order);
+                    if (autoSort) {
+                      // 手动拖拽是显式意图：关闭智能排序，
+                      // 避免下次学习结果覆盖用户的手动顺序
+                      setDialogState(() => autoSort = false);
+                      autoSortDisabledByDrag = true;
+                      SectionHabitService.setAutoSortEnabled(false);
+                    }
+                  },
+                  children: [
+                    for (final key in order)
+                      ListTile(
+                        key: ValueKey(key),
+                        dense: true,
+                        contentPadding: const EdgeInsets.only(left: 8),
+                        leading: Icon(sectionMeta[key]!.$1, size: 20),
+                        title: Text(sectionMeta[key]!.$2),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Switch(
+                              value: visible[key] ?? true,
+                              onChanged: (value) {
+                                setDialogState(() {
+                                  visible[key] = value;
+                                });
+                                prefs.setBool(sectionPrefKeys[key]!, value);
+                              },
+                            ),
+                            ReorderableDragStartListener(
+                              index: order.indexOf(key),
+                              child: const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: Icon(Icons.drag_handle, size: 20),
+                              ),
+                            ),
+                          ],
                         ),
-                        ReorderableDragStartListener(
-                          index: order.indexOf(key),
-                          child: const Padding(
-                            padding: EdgeInsets.all(12),
-                            child: Icon(Icons.drag_handle, size: 20),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
           actions: [
             TextButton(
               onPressed: () {
-                // 重置为默认：默认顺序 + 全部板块开启
+                // 重置为默认：默认顺序 + 全部板块开启 + 清空习惯学习
+                // 数据（否则下次播放立即把学习结果写回，重置形同虚设）
                 setDialogState(() {
                   order
                     ..clear()
@@ -158,6 +187,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         kDefaultHomeSectionOrder.map((k) => MapEntry(k, true)));
                 });
                 SharedPreferencesService.setHomeSectionOrder(order);
+                SectionHabitService.resetHabit();
                 for (final e in sectionPrefKeys.entries) {
                   prefs.setBool(e.value, true);
                 }
@@ -172,6 +202,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
+    if (autoSortDisabledByDrag && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('已手动调整顺序，智能排序已自动关闭')),
+      );
+    }
   }
 
   Widget _buildSectionTitle(String title) {

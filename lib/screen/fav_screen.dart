@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:bmsc/component/recent_listening_grid.dart';
 import 'package:bmsc/component/section_header.dart';
 import 'package:bmsc/component/track_tile.dart';
@@ -7,6 +9,7 @@ import 'package:bmsc/model/local_track.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/local_music_service.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/util/string.dart' as str_util;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -120,6 +123,8 @@ class FavScreenState extends State<FavScreen> {
 
   /// 点击预览条目：以完整曲库为队列从该曲开始播放
   Future<void> _playLocalTrack(int index) async {
+    // 习惯学习：本次进入 App 首个主页板块播放的来源
+    unawaited(SectionHabitService.recordPlaySource(kHomeSectionLocal));
     final tracks = await LocalMusicService.getTracks();
     if (index >= tracks.length) return;
     final service = await AudioService.instance;
@@ -619,7 +624,8 @@ class FavScreenState extends State<FavScreen> {
             onTap: () => Navigator.push(
               context,
               MaterialPageRoute<Widget>(
-                  builder: (_) => const LocalMusicScreen()),
+                  builder: (_) =>
+                      const LocalMusicScreen(homeSection: kHomeSectionLocal)),
             ).then((_) => _loadLocalPreview()),
           ),
           sliver: SliverToBoxAdapter(child: _buildLocalPreview(scheme)),
@@ -639,7 +645,8 @@ class FavScreenState extends State<FavScreen> {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute<Widget>(
-                builder: (_) => const LocalMusicScreen()),
+                builder: (_) =>
+                    const LocalMusicScreen(homeSection: kHomeSectionLocal)),
           ).then((_) => _loadLocalPreview()),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -899,6 +906,9 @@ class FavScreenState extends State<FavScreen> {
             builder: (context) => FavDetailScreen(
               fav: fav,
               isCollected: !isOwned,
+              // 板块归因：详情页内的播放记到所属主页板块（习惯学习）
+              homeSection:
+                  isOwned ? kHomeSectionMine : kHomeSectionCollected,
             ),
           ),
         );
@@ -1059,6 +1069,9 @@ class FavScreenState extends State<FavScreen> {
                 title: const Text('添加到播放列表'),
                 onTap: () async {
                   Navigator.pop(context);
+                  // 习惯学习：主页「我的收藏夹」板块直接发起的播放
+                  unawaited(SectionHabitService.recordPlaySource(
+                      kHomeSectionMine));
                   final bvids = await DatabaseManager.getCachedFavBvids(fav.id);
                   if (!context.mounted) return;
                   if (bvids.isEmpty) {

@@ -8,6 +8,7 @@ import 'package:bmsc/model/myinfo.dart';
 import 'package:bmsc/model/recognition_attempt.dart';
 import 'package:bmsc/model/playlist_data.dart';
 import 'package:bmsc/util/logger.dart';
+import 'package:bmsc/util/section_habit.dart';
 import 'package:bmsc/util/silent_audio.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -16,24 +17,18 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:rxdart/subjects.dart';
 
+/// 主页板块 key 与默认顺序定义于 util/section_habit.dart（纯 Dart，
+/// 便于离线测试引用），此处原样 re-export 保持既有调用方不变
+export 'package:bmsc/util/section_habit.dart'
+    show
+        kHomeSectionDaily,
+        kHomeSectionRecent,
+        kHomeSectionMine,
+        kHomeSectionCollected,
+        kHomeSectionLocal,
+        kDefaultHomeSectionOrder;
+
 final _logger = LoggerUtils.getLogger('SharedPreferencesService');
-
-/// 主页板块 key（排序偏好的存储值）
-const String kHomeSectionDaily = 'daily';
-const String kHomeSectionRecent = 'recent';
-const String kHomeSectionMine = 'mine';
-const String kHomeSectionCollected = 'collected';
-const String kHomeSectionLocal = 'local';
-
-/// 主页板块默认顺序：每日推荐 → 最近在听 → 我的收藏夹 → 收藏的收藏夹 → 本地音乐
-///（新增板块对老用户自动追加到末尾，见 getHomeSectionOrder）
-const List<String> kDefaultHomeSectionOrder = [
-  kHomeSectionDaily,
-  kHomeSectionRecent,
-  kHomeSectionMine,
-  kHomeSectionCollected,
-  kHomeSectionLocal,
-];
 
 class SharedPreferencesService {
   static final instance = _instance();

@@ -5,6 +5,7 @@ import 'package:bmsc/component/track_tile.dart';
 import 'package:bmsc/model/local_track.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/local_music_service.dart';
+import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/util/string.dart' as str_util;
 import 'package:flutter/material.dart';
@@ -34,7 +35,12 @@ extension on _SortOrder {
 /// 本地音乐曲库页：导入/搜索/排序/播放/删除管理。
 /// 播放接入统一播放队列（随机/循环/倍速/定时停止/后台通知均可用）。
 class LocalMusicScreen extends StatefulWidget {
-  const LocalMusicScreen({super.key});
+  /// 从主页「本地音乐」板块进入时传入 kHomeSectionLocal，页内播放
+  /// 用于「进入 App 后首个主页板块播放」的习惯学习；其他入口
+  /// （如更新日志引导卡片）传 null
+  final String? homeSection;
+
+  const LocalMusicScreen({super.key, this.homeSection});
 
   @override
   State<LocalMusicScreen> createState() => _LocalMusicScreenState();
@@ -98,13 +104,23 @@ class _LocalMusicScreenState extends State<LocalMusicScreen> {
     return extras['filePath'] as String?;
   }
 
+  /// 习惯学习：主页「本地音乐」板块进入时的播放来源
+  void _recordHomeSectionPlay() {
+    final section = widget.homeSection;
+    if (section != null) {
+      unawaited(SectionHabitService.recordPlaySource(section));
+    }
+  }
+
   Future<void> _play(List<LocalTrack> tracks, int index) async {
+    _recordHomeSectionPlay();
     final service = await AudioService.instance;
     await service.playLocalTracks(tracks, index: index);
   }
 
   Future<void> _playAll({bool shuffle = false}) async {
     if (_tracks.isEmpty) return;
+    _recordHomeSectionPlay();
     final service = await AudioService.instance;
     await service.playLocalTracks(_tracks, shuffle: shuffle);
   }
