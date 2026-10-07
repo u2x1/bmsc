@@ -387,6 +387,8 @@ class SharedPreferencesService {
           cached: tag.extras?['cached'] ?? false,
           duration: tag.duration?.inSeconds ?? 0,
           dummy: dummy,
+          // dummy 占位源的分 P 数（随机播放权重），非 dummy 为 null
+          parts: tag.extras?['parts'],
           local: isLocal,
           filePath: isLocal ? (tag.extras?['filePath'] ?? '') : '',
           album: tag.album ?? '',
@@ -431,6 +433,8 @@ class SharedPreferencesService {
               duration: Duration(seconds: data.duration),
               extras: {
                 'dummy': true,
+                // 分 P 数随队列恢复（随机播放权重用）
+                if (data.parts != null && data.parts! > 1) 'parts': data.parts,
               },
             ));
       } else if (data.local) {

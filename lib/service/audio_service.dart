@@ -15,6 +15,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/util/silent_audio.dart';
+import 'package:bmsc/util/weighted_shuffle.dart';
 import 'package:rxdart/rxdart.dart';
 
 final _logger = LoggerUtils.getLogger('AudioService');
@@ -24,10 +25,19 @@ final _logger = LoggerUtils.getLogger('AudioService');
 /// [DefaultShuffleOrder.insert] 把新源**随机散插**进随机序——本应用
 /// 的队列解析流程会在播放中不断把 dummy 替换为真实源（点击、预解析、
 /// 下载完成换源、切音质），每次替换都会重掷「下一首」：预解析好的
-/// 曲目并不是实际接下来播放的那首，多 P 视频的各分 P 也被打散，
-/// 随机模式下顺序反复无常。本实现默认行为与 DefaultShuffleOrder 一致
-///（随机散插），但替换式插入可通过 [anchorAfter] 锚定：新源按顺序
-/// 紧随被替换项在随机序中的位置，其随机序槽位保持不变。
+/// 曲目并不是实际接下来播放的那首，随机模式下顺序反复无常。本实现
+/// 默认行为与 DefaultShuffleOrder 一致（随机散插），但替换式插入
+/// 可通过锚定保持被替换项的随机序槽位：
+/// - [anchorAfter]：全部新源紧随槽位连续占位（1:1 换源/切音质）
+/// - [anchorFirstAfter]：仅**首个**新源占据槽位，其余按权重散插——
+///   dummy 解析展开为多分 P 时，入口分 P 占住槽位使「下一首」不变，
+///   其余分 P 随机散落（分 P 也随机）
+///
+/// 抽取按 [weightOfIndex] 提供的权重加权（算法见
+/// util/weighted_shuffle.dart）：dummy 在解析时会展开为多个分 P，
+/// 其权重为内部分 P 数而非单个分 P——多 P 视频整体的抽中概率等于
+/// 同等数量的单曲之和。dummy 占 1 个随机序槽位（权重 N）；解析展开
+/// 为 N 个真实源后每源权重 1（合计 N），替换前后总权重自洽。
 class AnchoredShuffleOrder extends ShuffleOrder {
   // 必须直接暴露可变列表（与 DefaultShuffleOrder 一致）：just_audio 的
   // _toMessage() 会把该列表的引用传给平台消息，应用的自定义后台
@@ -37,24 +47,38 @@ class AnchoredShuffleOrder extends ShuffleOrder {
   @override
   final indices = <int>[];
 
-  final _random = Random();
+  final Random _random;
   int? _anchorAfter;
+  bool _anchorFirstOnly = false;
+
+  AnchoredShuffleOrder({Random? random}) : _random = random ?? Random();
+
+  /// 各项的随机抽取权重（按 playlist 下标取）；未设置一律按 1。
+  /// just_audio 先更新 playlist.children 再回调本类的 insert（见
+  /// ConcatenatingAudioSource.insertAll），回调可安全同步读源信息。
+  int Function(int playlistIndex)? weightOfIndex;
+
+  int _weightOf(int playlistIndex) => weightOfIndex?.call(playlistIndex) ?? 1;
 
   /// 下一次 [insert] 的新源在随机序中紧随 [playlistIndex]（被替换的
   /// dummy/旧源）之后按序占位。一次性：首个 insert 消费后失效。
   void anchorAfter(int playlistIndex) => _anchorAfter = playlistIndex;
 
+  /// 同 [anchorAfter]，但只有第一个新源锚定占据槽位，其余新源按
+  /// 权重散插进随机序。一次性：首个 insert 消费后失效。
+  void anchorFirstAfter(int playlistIndex) {
+    _anchorAfter = playlistIndex;
+    _anchorFirstOnly = true;
+  }
+
   @override
   void shuffle({int? initialIndex}) {
     if (indices.length <= 1) return;
-    indices.shuffle(_random);
-    if (initialIndex == null) return;
-    const initialPos = 0;
-    final swapPos = indices.indexOf(initialIndex);
-    if (swapPos < 0) return;
-    final swapIndex = indices[initialPos];
-    indices[initialPos] = initialIndex;
-    indices[swapPos] = swapIndex;
+    final shuffled = weightedPermutation(indices, _weightOf, _random,
+        initialIndex: initialIndex);
+    indices
+      ..clear()
+      ..addAll(shuffled);
   }
 
   @override
@@ -67,20 +91,37 @@ class AnchoredShuffleOrder extends ShuffleOrder {
     }
     final newIndices = List.generate(count, (i) => index + i);
     final anchor = _anchorAfter;
+    final anchorFirst = _anchorFirstOnly;
     _anchorAfter = null;
+    _anchorFirstOnly = false;
     if (anchor != null) {
       // 锚定插入：紧随锚点（插入点前一项，即被替换的 dummy/旧源）
-      // 的随机序位置之后按序排布，替换后新源占据原槽位，随机序不变
+      // 的随机序位置之后排布，替换后新源占据原槽位，随机序不变
       final pos = indices.indexOf(anchor);
       if (pos >= 0) {
-        indices.insertAll(pos + 1, newIndices);
+        if (anchorFirst) {
+          // 仅首个新源（dummy 解析的入口分 P）占住槽位：
+          // 「下一首」不变；其余分 P 散插——分 P 也随机
+          indices.insert(pos + 1, newIndices.first);
+          for (final newIndex in newIndices.skip(1)) {
+            indices.insert(
+                weightedInsertionIndex(
+                    indices, _weightOf(newIndex), _weightOf, _random),
+                newIndex);
+          }
+        } else {
+          indices.insertAll(pos + 1, newIndices);
+        }
         return;
       }
     }
-    // 默认与 DefaultShuffleOrder 相同：随机散插
+    // 默认散插：按权重选位（与 weightedPermutation 同分布；
+    // DefaultShuffleOrder 为均匀散插，此处为其加权推广）
     for (final newIndex in newIndices) {
-      final insertionIndex = _random.nextInt(indices.length + 1);
-      indices.insert(insertionIndex, newIndex);
+      indices.insert(
+          weightedInsertionIndex(
+              indices, _weightOf(newIndex), _weightOf, _random),
+          newIndex);
     }
   }
 
@@ -100,6 +141,7 @@ class AnchoredShuffleOrder extends ShuffleOrder {
   void clear() {
     indices.clear();
     _anchorAfter = null;
+    _anchorFirstOnly = false;
   }
 }
 
@@ -182,6 +224,7 @@ class AudioService {
 
   static Future<AudioService> _init() async {
     final x = AudioService();
+    x._playlistShuffleOrder.weightOfIndex = x._weightOfPlaylistIndex;
     try {
       final restored = await SharedPreferencesService.getPlaylist();
       if (restored != null) {
@@ -459,6 +502,24 @@ class AudioService {
     return true;
   }
 
+  /// 队列项的随机抽取权重：dummy 为其内部分 P 数（一个 dummy 槽位
+  /// 在解析时会展开为多个分 P，权重不应等于单个分 P）；真实源与本地
+  /// 曲目恒为 1。分 P 数来自 dummy tag 中的 meta 缓存（未缓存/未知
+  /// 按 1 退化为原行为；跳过排除的分 P 不另扣减——排除是少数情况，
+  /// 权重作近似即可）。
+  int _weightOfPlaylistIndex(int playlistIndex) {
+    final children = playlist.children;
+    if (playlistIndex < 0 || playlistIndex >= children.length) return 1;
+    final child = children[playlistIndex];
+    if (child is! IndexedAudioSource) return 1;
+    final tag = child.tag;
+    if (tag is! MediaItem) return 1;
+    final extras = tag.extras;
+    if (extras == null || extras['dummy'] != true) return 1;
+    final parts = extras['parts'];
+    return parts is int && parts > 1 ? parts : 1;
+  }
+
   Future<UriAudioSource> getDummyAudioSource(Meta x) async {
     final silenceUri = await resolveSilentAudioUri();
     return AudioSource.uri(silenceUri,
@@ -469,7 +530,13 @@ class AudioService {
             artUri: Uri.http(x.artUri.substring(7, 19), x.artUri.substring(19)),
             artist: x.artist,
             duration: Duration(seconds: x.duration),
-            extras: {'dummy': true}));
+            extras: {
+              'dummy': true,
+              // 随机播放权重：dummy 解析时将展开为 parts 个分 P
+              //（见 AnchoredShuffleOrder.weightOfIndex）；
+              // 未知/单 P 不携带，按权重 1 处理
+              if (x.parts != null && x.parts! > 1) 'parts': x.parts,
+            }));
   }
 
   Future<void> restorePlayMode() async {
@@ -1262,6 +1329,13 @@ class AudioService {
         }
         return;
       }
+      // 分 P 也随机：随机模式下打乱分 P 顺序——入口分 P（打乱后首个）
+      // 锚定占据 dummy 的随机序槽位（「下一首」不变），其余分 P 散插
+      // 进随机序（见 AnchoredShuffleOrder.anchorFirstAfter）；
+      // 非随机模式保持 P1..PN 原序连播（专辑语义）
+      if (player.shuffleModeEnabled && srcs.length > 1) {
+        srcs.shuffle();
+      }
       if (identical(player.sequenceState.currentSource, dummy)) {
         // 兜底路径：dummy 已成为当前播放项（用户直接跳转/预解析未及时
         // 覆盖），用 iOS 安全顺序替换（先插→显式跳→再删）。
@@ -1319,8 +1393,9 @@ class AudioService {
     await doAndSavePlaylist(() async {
       final dummyIdx = _indexOfInPlaylist(dummy);
       if (dummyIdx == null) return;
-      // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
-      _playlistShuffleOrder.anchorAfter(dummyIdx);
+      // 入口分 P 锚定占据 dummy 的随机序槽位（替换不重掷「下一首」），
+      // 其余分 P 散插进随机序（分 P 也随机）
+      _playlistShuffleOrder.anchorFirstAfter(dummyIdx);
       await playlist.insertAll(dummyIdx + 1, srcs);
       // insertAll 的 await 窗口内自然推进/用户跳转可能使 dummy 刚成为当前项
       if (identical(player.sequenceState.currentSource, dummy)) {
@@ -1363,8 +1438,10 @@ class AudioService {
           if (isShuffle) await player.setShuffleModeEnabled(true);
           return;
         }
-        // 锚定随机序：新源占据 dummy 的随机序槽位，替换不重掷「下一首」
-        _playlistShuffleOrder.anchorAfter(dummyIdx);
+        // 入口分 P 锚定占据 dummy 的随机序槽位（替换不重掷「下一首」），
+        // 其余分 P 散插进随机序（分 P 也随机）；本路径结尾重新开启
+        // shuffle 会整体重排，锚定与否无实际差异，仅为语义一致
+        _playlistShuffleOrder.anchorFirstAfter(dummyIdx);
         await playlist.insertAll(dummyIdx + 1, srcs);
       }
       // shuffle/insert 的 await 窗口内用户可能已跳到其他曲目或 dummy 已

@@ -14,6 +14,10 @@ class PlaylistData {
   final int duration;
   final bool dummy;
 
+  /// dummy 占位源内部分 P 数（meta 缓存值；随机播放权重用，见
+  /// AnchoredShuffleOrder.weightOfIndex）。非 dummy / 未知为 null
+  final int? parts;
+
   /// 是否为本地音乐曲目（用户导入的设备文件，与 B 站源体系无关）
   final bool local;
 
@@ -37,6 +41,7 @@ class PlaylistData {
     required this.rawTitle,
     required this.duration,
     required this.dummy,
+    this.parts,
     this.local = false,
     this.filePath = '',
     this.album = '',
@@ -57,6 +62,7 @@ class PlaylistData {
         'raw_title': rawTitle,
         'duration': duration,
         'dummy': dummy,
+        'parts': parts,
         'local': local,
         'filePath': filePath,
         'album': album,
@@ -77,6 +83,7 @@ class PlaylistData {
         rawTitle: json['raw_title'],
         duration: json['duration'],
         dummy: json['dummy'],
+        parts: json['parts'],
         local: json['local'] ?? false,
         filePath: json['filePath'] ?? '',
         album: json['album'] ?? '',
