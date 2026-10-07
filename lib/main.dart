@@ -34,43 +34,49 @@ import 'util/string.dart';
 final _logger = LoggerUtils.getLogger('main');
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  await LoggerUtils.init();
-  // 匿名使用统计每日心跳（默认开启，设置 → 隐私 可关），不阻塞启动
-  unawaited(StatsService.maybePing());
-
-  if (Platform.isAndroid || Platform.isIOS) {
-    _logger.info('audio platform: ${Platform.operatingSystem}');
-
-    await JustAudioBackground.init(
-      androidNotificationChannelId: 'org.u2x1.bmsc.channel.audio',
-      androidNotificationChannelName: 'Audio Playback',
-      androidStopForegroundOnPause: true,
-    );
-  }
-
-  // 悬浮窗识曲（Android）：气泡点击 → 识别 → 点结果回链搜索
-  if (Platform.isAndroid) {
-    OverlayRecognitionService.instance.init();
-    OverlayRecognitionService.instance.onOpenSearch = (keyword) {
-      ErrorHandler.navigatorKey.currentState?.push(MaterialPageRoute<Widget>(
-          builder: (_) => SearchScreen(initialKeyword: keyword)));
-    };
-  }
-
-  if (Platform.isLinux || Platform.isWindows) {
-    JustAudioMediaKit.ensureInitialized();
-  }
-
-  await ThemeProvider.instance.init();
-  // 后台扫描并删除无 DB 记录的孤儿缓存文件（.part 残留、失效 .mime 等），
-  // 不阻塞启动。
-  unawaited(DatabaseManager.sweepOrphanCacheFiles());
-  if (!kDebugMode) _setupErrorHandlers();
   // 捕获第三方库（just_audio 等）内部 print 输出到应用日志。just_audio
   // 的代理请求失败只走 print，release 下不可见，诊断代理问题必需。
+  // 所有初始化（含 ensureInitialized）都必须发生在 runApp 同一个
+  // zone 内，否则 debug 下报 Zone mismatch，且白耗掉 Flutter 全进程
+  // 仅一次的完整异常报告名额（后续异常只剩摘要行）
   runZonedGuarded(
-    () => runApp(const MyApp()),
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      await LoggerUtils.init();
+      // 匿名使用统计每日心跳（默认开启，设置 → 隐私 可关），不阻塞启动
+      unawaited(StatsService.maybePing());
+
+      if (Platform.isAndroid || Platform.isIOS) {
+        _logger.info('audio platform: ${Platform.operatingSystem}');
+
+        await JustAudioBackground.init(
+          androidNotificationChannelId: 'org.u2x1.bmsc.channel.audio',
+          androidNotificationChannelName: 'Audio Playback',
+          androidStopForegroundOnPause: true,
+        );
+      }
+
+      // 悬浮窗识曲（Android）：气泡点击 → 识别 → 点结果回链搜索
+      if (Platform.isAndroid) {
+        OverlayRecognitionService.instance.init();
+        OverlayRecognitionService.instance.onOpenSearch = (keyword) {
+          ErrorHandler.navigatorKey.currentState?.push(
+              MaterialPageRoute<Widget>(
+                  builder: (_) => SearchScreen(initialKeyword: keyword)));
+        };
+      }
+
+      if (Platform.isLinux || Platform.isWindows) {
+        JustAudioMediaKit.ensureInitialized();
+      }
+
+      await ThemeProvider.instance.init();
+      // 后台扫描并删除无 DB 记录的孤儿缓存文件（.part 残留、失效 .mime 等），
+      // 不阻塞启动。
+      unawaited(DatabaseManager.sweepOrphanCacheFiles());
+      if (!kDebugMode) _setupErrorHandlers();
+      runApp(const MyApp());
+    },
     (error, stack) => _logger.severe('zone error', error, stack),
     zoneSpecification: ZoneSpecification(
       print: (self, parent, zone, line) {
