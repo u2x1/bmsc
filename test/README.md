@@ -15,7 +15,7 @@ dart test test/unit          # 或 flutter test test/unit
 | `bili_sign_test.dart` | TV / Android-HD / Android playurl 三套签名算法（含 Python 复算的参考向量）、percent-encode（对齐 Java URLEncoder）、buvid/deviceId 身份格式、login_session_id |
 | `crypto_test.dart` | WBI mixin key 置换表（参考向量）、RSA 密码/设备凭据加密、CSRF 提取 |
 | `login_model_test.dart` | 登录响应解析（Set-Cookie + body cookie_info 合并、status=2 风控、-105 重验证、TV poll 外层 code 兜底）、风控/重验证 URL 解析、极验/腾讯验证码结构 |
-| `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
+| `auth_layer_test.dart` | CookieJar 注入与拼装（含"不再携带伪造设备头"断言）、_callAPI 错误路径（412 明确抛错 / 5xx / 非 JSON / data 缺失 / callback 异常 → null 不崩溃）、会话失效信号（-101 + SESSDATA 才触发；未登录/-400/成功响应不触发）、TV 二维码生成/轮询解析、App playurl -101 失效处理 |
 | `feedback_test.dart` | 反馈通道 payload 组装：bilibili 凭据/Bearer token 脱敏、日志尾部截断、content trim 与空字段省略、meta 字段 |
 | `changelog_test.dart` | changelog.md 解析：版本分节顺序、多行条目合并、空行剔除、空输入、条目分组 |
 | `stats_test.dart` | 使用统计：匿名安装 ID 格式与随机性、UTC 日期（跨日界线）、每日心跳去重判断 |

@@ -396,7 +396,7 @@ class _FolderPickerDialogState extends State<_FolderPickerDialog> {
     try {
       final bs = await BilibiliService.instance;
       final mid = bs.myInfo?.mid ?? 0;
-      if (mid == 0) {
+      if (mid == 0 || bs.sessionExpired.value) {
         if (mounted) {
           setState(() {
             _loading = false;

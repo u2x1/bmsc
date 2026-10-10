@@ -768,6 +768,12 @@ class _DetailScreenState extends State<DetailScreen>
     final uid = bs.myInfo?.mid ?? 0;
     final favs = await bs.getFavs(uid, rid: src.tag.extras['aid']);
     if (favs == null || favs.isEmpty) {
+      // 会话已失效（-101）：明确提示重新登录，不再静默无响应
+      if (context.mounted && bs.sessionExpired.value) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('登录已过期，请重新登录')),
+        );
+      }
       return;
     }
 
@@ -785,7 +791,9 @@ class _DetailScreenState extends State<DetailScreen>
 
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(success ? '已添加到收藏夹 ${defaultFolderId.$2}' : '收藏失败'),
+          content: Text(bs.sessionExpired.value
+              ? '登录已过期，请重新登录'
+              : (success ? '已添加到收藏夹 ${defaultFolderId.$2}' : '收藏失败')),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -844,9 +852,9 @@ class _DetailScreenState extends State<DetailScreen>
         _checkFavoriteStatus(src.tag.extras['aid'], src.tag.extras['bvid']);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('操作失败'),
-              duration: Duration(seconds: 2),
+            SnackBar(
+              content: Text(bs.sessionExpired.value ? '登录已过期，请重新登录' : '操作失败'),
+              duration: const Duration(seconds: 2),
             ),
           );
         }

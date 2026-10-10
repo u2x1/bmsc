@@ -30,7 +30,9 @@ class HiddenFavScreenState extends State<HiddenFavScreen> {
     widget.onInit?.call(this);
     BilibiliService.instance.then((x) {
       setState(() {
-        signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+        signedin = x.myInfo?.mid != null &&
+            x.myInfo?.mid != 0 &&
+            !x.sessionExpired.value;
       });
       if (signedin) {
         loadFavorites(local: true);

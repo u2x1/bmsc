@@ -44,6 +44,12 @@ class FavScreenState extends State<FavScreen> {
   List<Fav> collectedFavList = [];
   Set<int>? hideFav;
 
+  /// 运行中登录态失效（如收藏操作触发 -101）时刷新到过期视图
+  BilibiliService? _bs;
+  VoidCallback? _sessionExpiredListener;
+
+  bool get sessionExpired => _bs?.sessionExpired.value ?? false;
+
   /// 各收藏夹的本地缓存封面（供网格拼贴缩略图），键为收藏夹 id
   Map<int, List<String>> favCovers = {};
 
@@ -87,8 +93,17 @@ class FavScreenState extends State<FavScreen> {
     DatabaseManager.localMusicVersion.addListener(_onLocalMusicChanged);
     _loadLocalPreview();
     BilibiliService.instance.then((x) {
+      if (!mounted) return;
+      _bs = x;
+      _sessionExpiredListener = () {
+        if (!mounted) return;
+        setState(() {
+          signedin = _isSignedIn(x);
+        });
+      };
+      x.sessionExpired.addListener(_sessionExpiredListener!);
       setState(() {
-        signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+        signedin = _isSignedIn(x);
       });
       if (signedin) {
         loadFavorites(local: true);
@@ -104,8 +119,19 @@ class FavScreenState extends State<FavScreen> {
     _loadLocalPreview();
   }
 
+  /// 登录态综合判定：有缓存 mid 且会话未失效（-101 过期信号）。
+  /// 过期后不再以缓存 myInfo 撑起假登录态（收藏夹列表被匿名空
+  /// 列表顶掉、收藏操作全部无响应）
+  bool _isSignedIn(BilibiliService x) =>
+      x.myInfo?.mid != null &&
+      x.myInfo?.mid != 0 &&
+      !x.sessionExpired.value;
+
   @override
   void dispose() {
+    if (_bs != null && _sessionExpiredListener != null) {
+      _bs!.sessionExpired.removeListener(_sessionExpiredListener!);
+    }
     DatabaseManager.favListVersion.removeListener(_onFavListChanged);
     DatabaseManager.localMusicVersion.removeListener(_onLocalMusicChanged);
     super.dispose();
@@ -137,7 +163,7 @@ class FavScreenState extends State<FavScreen> {
     final x = await BilibiliService.instance;
     if (!mounted) return;
     setState(() {
-      signedin = x.myInfo?.mid != null && x.myInfo?.mid != 0;
+      signedin = _isSignedIn(x);
     });
     if (signedin) {
       loadFavorites(local: true);
@@ -473,7 +499,7 @@ class FavScreenState extends State<FavScreen> {
       body: !signedin
           ? CustomScrollView(
               slivers: [
-                // 未登录：B 站相关板块收起为登录引导，
+                // 未登录/登录已过期：B 站相关板块收起为登录引导，
                 // 本地音乐板块不受影响（本地播放无需账号）
                 SliverToBoxAdapter(
                   child: SizedBox(
@@ -498,23 +524,32 @@ class FavScreenState extends State<FavScreen> {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.lock_outline,
-                                  size: 48, color: Colors.grey),
+                              Icon(
+                                sessionExpired
+                                    ? Icons.error_outline
+                                    : Icons.lock_outline,
+                                size: 48,
+                                color: sessionExpired
+                                    ? Theme.of(context).colorScheme.error
+                                    : Colors.grey,
+                              ),
                               const SizedBox(height: 12),
                               Text(
-                                '请先登录',
+                                sessionExpired ? '登录已过期' : '请先登录',
                                 style: TextStyle(
                                   fontSize: 16,
-                                  color:
-                                      Theme.of(context).colorScheme.secondary,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .secondary,
                                 ),
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                '点击登录',
+                                sessionExpired ? '点击重新登录' : '点击登录',
                                 style: TextStyle(
                                   fontSize: 13,
-                                  color: Theme.of(context).colorScheme.primary,
+                                  color:
+                                      Theme.of(context).colorScheme.primary,
                                 ),
                               ),
                             ],

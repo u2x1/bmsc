@@ -45,6 +45,11 @@ class BilibiliAPI {
   /// 开关（测试用：auth_layer_test 的短路行为依赖静态语义）
   final bool _enableConnectivity;
 
+  /// 会话失效回调：响应 -101（账号未登录）且本地持有 SESSDATA 时触发，
+  /// 即 cookie 过期或异地登录被踢。由 BilibiliService 注册，用于标记
+  /// 过期并引导用户重新登录。
+  void Function()? onSessionInvalid;
+
   BilibiliAPI({bool enableConnectivity = true})
       : _enableConnectivity = enableConnectivity {
     if (enableConnectivity) {
@@ -183,6 +188,19 @@ class BilibiliAPI {
     }
   }
 
+  /// -101（账号未登录）且本地持有 SESSDATA 时通知会话失效。
+  /// 网络故障不会返回 -101 的 JSON 业务码，因此这是明确的
+  /// 「SESSDATA 过期/异地登录被踢」信号；未登录用户（无 SESSDATA）
+  /// 的正常 -101 不触发，避免把「本来就没登录」误报成「登录过期」。
+  void _notifySessionInvalid(dynamic code) {
+    if (code != -101) return;
+    final sessdata = _cookieMap['SESSDATA'];
+    if (sessdata == null || sessdata.isEmpty) return;
+    _logger.warning(
+        'session invalid (-101 with SESSDATA): cookie expired or logged out elsewhere');
+    onSessionInvalid?.call();
+  }
+
   Future<T?> _callAPI<T>(String url,
       {Map<String, dynamic>? queryParameters,
       T? Function(dynamic data)? callback,
@@ -222,6 +240,9 @@ class BilibiliAPI {
           data[unwrapKey] == null) {
         _logger.info(
             '_callAPI returning null: code=${data['code']} unwrapKey=$unwrapKey hasData=${data[unwrapKey] != null}');
+        // 登录态失效信号（-101 + 本地持有 SESSDATA）：标记过期，
+        // 避免上层以缓存 myInfo 拼出假登录态（收藏夹静默清空、收藏无响应）
+        _notifySessionInvalid(data['code']);
         return null;
       }
       data = data[unwrapKey];

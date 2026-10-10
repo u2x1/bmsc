@@ -332,11 +332,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         builder: (context, snapshot) {
           final bs = snapshot.data;
           final myInfo = bs?.myInfo;
-          final isLoggedIn = myInfo != null && myInfo.mid != 0;
+          final sessionExpired = bs?.sessionExpired.value ?? false;
+          final isLoggedIn = myInfo != null &&
+              myInfo.mid != 0 &&
+              !sessionExpired;
           final username = myInfo?.name;
           return ListTile(
-            title: Text(isLoggedIn ? '退出登录' : '登录'),
-            subtitle: Text(isLoggedIn ? '当前已登录: $username' : '点击登录账号'),
+            title: Text(isLoggedIn
+                ? '退出登录'
+                : (sessionExpired ? '重新登录' : '登录')),
+            subtitle: Text(isLoggedIn
+                ? '当前已登录: $username'
+                : (sessionExpired ? '登录已过期，请重新登录' : '点击登录账号')),
             leading: Icon(isLoggedIn ? Icons.logout : Icons.login),
             onTap: () {
               if (isLoggedIn) {

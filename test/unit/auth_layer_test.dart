@@ -161,6 +161,55 @@ void main() {
     });
   });
 
+  group('会话失效信号（-101 + 本地持有 SESSDATA）', () {
+    test('持有 SESSDATA 时 -101 触发 onSessionInvalid（cookie 过期场景）', () async {
+      await api.setCookie('SESSDATA=stale; bili_jct=old_csrf');
+      var fired = 0;
+      api.onSessionInvalid = () => fired++;
+      adapter.onPath('/x/space/myinfo', {
+        'body': {'code': -101, 'message': '账号未登录'},
+      });
+      expect(await api.getMyInfo(), isNull);
+      expect(fired, 1);
+    });
+
+    test('未登录（无 SESSDATA）时 -101 不触发', () async {
+      var fired = 0;
+      api.onSessionInvalid = () => fired++;
+      adapter.onPath('/x/space/myinfo', {
+        'body': {'code': -101, 'message': '账号未登录'},
+      });
+      expect(await api.getMyInfo(), isNull);
+      expect(fired, 0);
+    });
+
+    test('code=0 成功响应不触发', () async {
+      await api.setCookie('SESSDATA=ok');
+      var fired = 0;
+      api.onSessionInvalid = () => fired++;
+      adapter.onPath('/x/space/myinfo', {
+        'body': {
+          'code': 0,
+          'message': 'OK',
+          'data': {'mid': 42, 'name': 'u', 'face': 'f', 'sign': 's'},
+        },
+      });
+      expect(await api.getMyInfo(), isNotNull);
+      expect(fired, 0);
+    });
+
+    test('其他错误码（如 -400）不触发', () async {
+      await api.setCookie('SESSDATA=stale');
+      var fired = 0;
+      api.onSessionInvalid = () => fired++;
+      adapter.onPath('/x/space/myinfo', {
+        'body': {'code': -400, 'message': '请求错误'},
+      });
+      expect(await api.getMyInfo(), isNull);
+      expect(fired, 0);
+    });
+  });
+
   group('登录接口解析（fake 网络）', () {
     test('TV 二维码生成解析 url/auth_code', () async {
       adapter.onPath('/x/passport-tv-login/qrcode/auth_code', {
