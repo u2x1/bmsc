@@ -125,6 +125,9 @@ class _DownloadScreenState extends State<DownloadScreen> {
                       ),
                       FilledButton(
                         onPressed: () async {
+                          // 对话框即将关闭，先捕获 App 级 messenger，
+                          // 避免跨异步使用已失效的对话框 context
+                          final messenger = ScaffoldMessenger.of(context);
                           Navigator.pop(context);
                           final dm = await DownloadManager.instance;
                           final all = await dm.tasks;
@@ -140,8 +143,8 @@ class _DownloadScreenState extends State<DownloadScreen> {
                             await dm.cancelTask(id);
                           }
                           _toggleSelectionMode();
-                          if (skipped > 0 && mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                          if (skipped > 0) {
+                            messenger.showSnackBar(
                               SnackBar(
                                 content: Text('已跳过 $skipped 个已完成的任务'),
                                 duration: const Duration(seconds: 2),

@@ -1557,12 +1557,13 @@ class _DetailScreenState extends State<DetailScreen>
                           );
                         } else if (task.status == DownloadStatus.pending ||
                             task.status == DownloadStatus.downloading) {
-                          (await DownloadManager.instance)
-                              .pauseTask('${task.bvid}-${task.cid}');
+                          // 闭包内跨 await 会丢失可空提升，先取值再用
+                          final id = '${task.bvid}-${task.cid}';
+                          (await DownloadManager.instance).pauseTask(id);
                         } else if (task.status == DownloadStatus.paused ||
                             task.status == DownloadStatus.failed) {
-                          (await DownloadManager.instance)
-                              .resumeTask('${task.bvid}-${task.cid}');
+                          final id = '${task.bvid}-${task.cid}';
+                          (await DownloadManager.instance).resumeTask(id);
                         }
                       },
                       borderRadius: BorderRadius.circular(8),
