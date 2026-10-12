@@ -1553,6 +1553,46 @@ class DatabaseManager {
     });
   }
 
+  /// 原子领取下载任务：仅当状态仍为 pending 时置为 downloading 并清空
+  /// 上次失败原因。返回 false 表示任务在「出队后、开下载前」被用户
+  /// 暂停/取消或已被处理，调用方应放弃下载。
+  static Future<bool> tryMarkDownloadTaskDownloading(
+      String bvid, int cid) async {
+    final db = await database;
+    final count = await db.update(
+      downloadTaskTable,
+      {'status': DownloadStatus.downloading.index, 'error': null},
+      where: 'bvid = ? AND cid = ? AND status = ?',
+      whereArgs: [bvid, cid, DownloadStatus.pending.index],
+    );
+    return count > 0;
+  }
+
+  /// 只更新 targetPath 列。避免 saveDownloadTask 的全量 REPLACE 用
+  /// 过期的内存状态覆盖并发写入的 status/progress。
+  static Future<void> updateDownloadTaskTargetPath(
+      String bvid, int cid, String? targetPath) async {
+    final db = await database;
+    await db.update(
+      downloadTaskTable,
+      {'targetPath': targetPath},
+      where: 'bvid = ? AND cid = ?',
+      whereArgs: [bvid, cid],
+    );
+  }
+
+  /// 持久化/清除失败原因（error 列随状态一起被 getAllDownloadTasks 读回）。
+  static Future<void> updateDownloadTaskError(
+      String bvid, int cid, String? error) async {
+    final db = await database;
+    await db.update(
+      downloadTaskTable,
+      {'error': error},
+      where: 'bvid = ? AND cid = ?',
+      whereArgs: [bvid, cid],
+    );
+  }
+
   static Future<void> removeDownloadTask(String bvid, int cid) async {
     final db = await database;
     await db.transaction((txn) async {

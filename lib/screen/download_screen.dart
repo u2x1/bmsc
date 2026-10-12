@@ -21,6 +21,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
   Set<String> _taskIds = {};
 
   Future<void> _handleTasksChanged(Map<String, DownloadTask> tasks) async {
+    if (!mounted) return;
     final ids = tasks.keys.toSet();
     _entityCache.removeWhere((id, _) => !ids.contains(id));
 
@@ -114,7 +115,9 @@ class _DownloadScreenState extends State<DownloadScreen> {
                   context: context,
                   builder: (context) => AlertDialog(
                     title: const Text('取消下载'),
-                    content: Text('确定要取消这 ${selectedItems.length} 个下载任务吗？'),
+                    content: Text(
+                        '确定要取消这 ${selectedItems.length} 个任务吗？已完成的任务会跳过（文件不受影响）；'
+                        '如需删除文件请使用删除按钮。'),
                     actions: [
                       TextButton(
                         onPressed: () => Navigator.pop(context),
@@ -124,10 +127,27 @@ class _DownloadScreenState extends State<DownloadScreen> {
                         onPressed: () async {
                           Navigator.pop(context);
                           final dm = await DownloadManager.instance;
+                          final all = await dm.tasks;
+                          var skipped = 0;
                           for (var id in selectedItems) {
+                            // cancelTask 会连已下载的文件一起删除，
+                            // 已完成的任务在此跳过，防止误删用户文件
+                            if (all[id]?.status ==
+                                DownloadStatus.completed) {
+                              skipped++;
+                              continue;
+                            }
                             await dm.cancelTask(id);
                           }
                           _toggleSelectionMode();
+                          if (skipped > 0 && mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('已跳过 $skipped 个已完成的任务'),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
                         },
                         child: const Text('确定'),
                       ),
@@ -144,7 +164,7 @@ class _DownloadScreenState extends State<DownloadScreen> {
               onPressed: () async {
                 final dm = await DownloadManager.instance;
                 for (var id in selectedItems) {
-                  dm.pauseTask(id);
+                  await dm.pauseTask(id);
                 }
                 _toggleSelectionMode();
               },
@@ -256,7 +276,11 @@ class _DownloadScreenState extends State<DownloadScreen> {
                     return TrackTile(
                       title: entity.partTitle,
                       author: entity.artist,
-                      len: _getStatusText(task.status),
+                      // 失败时展示具体原因（如目录不可写），便于用户定位
+                      len: task.status == DownloadStatus.failed &&
+                              task.error != null
+                          ? '下载失败：${task.error}'
+                          : _getStatusText(task.status),
                       pic: entity.artUri,
                       album: entity.part == 0 ? null : entity.bvidTitle,
                       color: isSelectionMode

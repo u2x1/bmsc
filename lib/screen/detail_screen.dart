@@ -1555,6 +1555,14 @@ class _DetailScreenState extends State<DetailScreen>
                               ],
                             ),
                           );
+                        } else if (task.status == DownloadStatus.pending ||
+                            task.status == DownloadStatus.downloading) {
+                          (await DownloadManager.instance)
+                              .pauseTask('${task.bvid}-${task.cid}');
+                        } else if (task.status == DownloadStatus.paused ||
+                            task.status == DownloadStatus.failed) {
+                          (await DownloadManager.instance)
+                              .resumeTask('${task.bvid}-${task.cid}');
                         }
                       },
                       borderRadius: BorderRadius.circular(8),
