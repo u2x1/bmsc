@@ -150,8 +150,18 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
   Future<void> _removeAt(AudioService service,
       List<IndexedAudioSource> playlist, int index) async {
     final removedSource = playlist[index];
+    // 删除当前播放项在 iOS 上触发 AVQueuePlayer 卡死（playing 但永不
+    // 下发媒体请求）：直接禁止
+    if (identical(
+        service.player.sequenceState.currentSource, removedSource)) {
+      _showNotice('不能删除正在播放的曲目');
+      return;
+    }
     await service.mutatePlaylist(() async {
-      await service.playlist.removeAt(index);
+      // 快照下标在等锁期间可能已漂移（预解析/解析持续插删队列），
+      // 按实例身份现查
+      final i = service.playlist.children.indexOf(removedSource);
+      if (i >= 0) await service.playlist.removeAt(i);
     });
     if (!mounted) return;
     _showNotice('已从播放列表删除', () async {
@@ -172,9 +182,16 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     final bvid = item.extras['bvid'] as String;
     final cid = item.extras['cid'] as int;
     final removedSource = playlist[index];
+    if (identical(
+        service.player.sequenceState.currentSource, removedSource)) {
+      _showNotice('不能屏蔽正在播放的曲目');
+      return;
+    }
     await DatabaseManager.addExcludedPart(bvid, cid);
     await service.mutatePlaylist(() async {
-      await service.playlist.removeAt(index);
+      // 同 _removeAt：快照下标可能已漂移，按实例身份现查
+      final i = service.playlist.children.indexOf(removedSource);
+      if (i >= 0) await service.playlist.removeAt(i);
     });
     if (!mounted) return;
     _showNotice('已屏蔽该分 P', () async {
@@ -223,21 +240,33 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
     );
     if (confirmed != true || !mounted) return;
     final removed = [for (final i in indices) playlist[i]];
+    // 删除当前播放项在 iOS 上触发 AVQueuePlayer 卡死：从批量删除中剔除
+    final current = service.player.sequenceState.currentSource;
+    final skipped =
+        current != null && removed.any((s) => identical(s, current));
+    removed.removeWhere((s) => identical(s, current));
+    if (removed.isEmpty) {
+      _toggleSelectionMode();
+      _showNotice('不能删除正在播放的曲目');
+      return;
+    }
     await service.mutatePlaylist(() async {
-      for (var k = indices.length - 1; k >= 0; k--) {
-        await service.playlist.removeAt(indices[k]);
+      // 快照下标在等锁期间可能已漂移：按实例身份逐个现查
+      for (final src in removed) {
+        final i = service.playlist.children.indexOf(src);
+        if (i >= 0) await service.playlist.removeAt(i);
       }
     });
     _toggleSelectionMode();
     if (!mounted) return;
-    _showNotice('已删除 ${removed.length} 首歌曲', () async {
+    _showNotice(
+        '已删除 ${removed.length} 首歌曲${skipped ? '（已跳过正在播放曲目）' : ''}',
+        () async {
       await service.mutatePlaylist(() async {
-        for (var k = 0; k < indices.length; k++) {
-          if (indices[k] <= service.playlist.length) {
-            await service.playlist.insert(indices[k], removed[k]);
-          } else {
-            await service.playlist.add(removed[k]);
-          }
+        // removed 可能已剔除当前播放项而短于 indices，下标不再对应；
+        // 撤销恢复内容即可，位置按快照尽力而为已无意义
+        for (final src in removed) {
+          await service.playlist.add(src);
         }
       });
     });
@@ -443,9 +472,15 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
         }
         _switching = true;
         try {
-          // 持互斥定位：防在途解析/预解析的插入删除使目标索引错位
-          await service.mutatePlaylist(
-              () async => service.player.seek(Duration.zero, index: index));
+          // 持互斥定位：防在途解析/预解析的插入删除使目标索引错位；
+          // 快照下标在等锁期间也可能已漂移，锁内按实例身份现查
+          final target = playlist[index];
+          await service.mutatePlaylist(() async {
+            final i = service.playlist.children.indexOf(target);
+            if (i >= 0) {
+              await service.player.seek(Duration.zero, index: i);
+            }
+          });
           await service.player.play();
         } finally {
           _switching = false;
@@ -781,11 +816,18 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                                               // Flutter 3.41+ 的 onReorderItem 已把
                                               // newIndex 调整为「移除后插入」的最终下标
                                               //（旧 onReorder 才需要手动 -1），
-                                              // 直接传给 move 即可
+                                              // 直接传给 move 即可。
+                                              // oldIndex 是快照下标，等锁期间可能已
+                                              // 漂移：先取被拖实例，锁内按身份现查
+                                              final moved = playlist[oldIndex];
                                               await service.mutatePlaylist(
                                                   () async {
+                                                final i = service
+                                                    .playlist.children
+                                                    .indexOf(moved);
+                                                if (i < 0) return;
                                                 await service.playlist
-                                                    .move(oldIndex, newIndex);
+                                                    .move(i, newIndex);
                                               });
                                             },
                                             itemBuilder: (context, index) {

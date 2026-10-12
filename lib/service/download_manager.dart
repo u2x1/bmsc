@@ -5,6 +5,7 @@ import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/download_task.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/util/download_range_plan.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:path/path.dart' as path;
 import 'package:dio/dio.dart';
@@ -411,32 +412,6 @@ class DownloadManager {
       await DatabaseManager.updateDownloadTaskTargetPath(
           task.bvid, task.cid, targetPath);
 
-      final localPath =
-          await DatabaseManager.getCachedPath(task.bvid, task.cid);
-      if (localPath != null) {
-        _logger
-            .info('Cached file found, copying it to target path: $localPath');
-        await File(localPath).copy(targetPath);
-
-        // Update task status to completed
-        await DatabaseManager.updateDownloadTaskStatus(
-            task.bvid, task.cid, DownloadStatus.completed);
-        await DatabaseManager.updateDownloadTaskProgress(
-            task.bvid, task.cid, 1.0);
-
-        // Save to downloads table
-        await DatabaseManager.saveDownload(task.bvid, task.cid, targetPath);
-
-        _activeDownloads.remove(taskId);
-
-        // Update the task controller with the latest tasks
-        final updatedTasks = await tasks;
-        _taskController.add(updatedTasks);
-
-        _processQueue();
-        return;
-      }
-
       // Atomically claim the task (pending -> downloading, clearing any
       // stale failure reason). Losing the race means the user paused or
       // cancelled it in the meantime; give up without touching status.
@@ -453,6 +428,55 @@ class DownloadManager {
       final cancelToken = CancelToken();
       _cancelTokens[taskId] = cancelToken;
       task.cancelToken = cancelToken;
+
+      final localPath =
+          await DatabaseManager.getCachedPath(task.bvid, task.cid);
+      if (localPath != null) {
+        _logger
+            .info('Cached file found, copying it to target path: $localPath');
+        await File(localPath).copy(targetPath);
+
+        // 拷贝窗口内用户可能暂停/取消：收尾前复核（否则刚被删除的
+        // 下载记录会被后续写入"复活"）
+        if (cancelToken.isCancelled) {
+          _handleDownloadError(task, taskId, 'Download cancelled');
+          return;
+        }
+
+        // 与正常完成路径一致：下载记录与任务完成态单事务落库
+        final db = await DatabaseManager.database;
+        await db.transaction((txn) async {
+          await txn.insert(
+            DatabaseManager.downloadTable,
+            {
+              'bvid': task.bvid,
+              'cid': task.cid,
+              'filePath': targetPath,
+            },
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+          await txn.update(
+            DatabaseManager.downloadTaskTable,
+            {
+              'status': DownloadStatus.completed.index,
+              'progress': 1.0,
+            },
+            where: 'bvid = ? AND cid = ?',
+            whereArgs: [task.bvid, task.cid],
+          );
+        });
+
+        _activeDownloads.remove(taskId);
+        _cancelTokens.remove(taskId);
+        task.cancelToken = null;
+
+        // Update the task controller with the latest tasks
+        final updatedTasks = await tasks;
+        _taskController.add(updatedTasks);
+
+        _processQueue();
+        return;
+      }
 
       // Update the task controller with the latest tasks
       final updatedTasks = await tasks;
@@ -493,19 +517,21 @@ class DownloadManager {
         throw TimeoutException('download response timed out');
       });
 
-      final statusCode = response.statusCode;
       final body = response.data.stream as Stream<List<int>>;
+      final plan = resolveDownloadRangePlan(
+        startBytes: startBytes,
+        statusCode: response.statusCode,
+        contentRange: response.headers.value('content-range'),
+        contentLength: response.headers.value('content-length'),
+      );
 
-      if (startBytes > 0 &&
-          statusCode == HttpStatus.requestedRangeNotSatisfiable) {
+      if (plan.mode == DownloadRangeMode.finalize) {
         // The temp file already contains the whole file (e.g. a previous
         // attempt died right before renaming): finalize it directly.
         _logger.info('Range not satisfiable, finalizing temp file');
         unawaited(body.drain<void>().catchError((_) {}));
       } else {
-        final resumed =
-            startBytes > 0 && statusCode == HttpStatus.partialContent;
-        if (startBytes > 0 && !resumed) {
+        if (plan.mode == DownloadRangeMode.restart && startBytes > 0) {
           // The server ignored the Range header and is sending the whole
           // file; appending that to the partial temp file would corrupt
           // the result, so restart from scratch.
@@ -513,16 +539,8 @@ class DownloadManager {
           await File(tempPath).delete();
           startBytes = 0;
         }
-
-        final total =
-            int.tryParse(response.headers.value('content-length') ?? '') ?? -1;
-        final contentRange = response.headers.value('content-range');
-        final totalBytes = resumed
-            ? (contentRange != null
-                ? int.tryParse(contentRange.split('/').last) ??
-                    total + startBytes
-                : total + startBytes)
-            : total;
+        final resumed = plan.mode == DownloadRangeMode.resume;
+        final totalBytes = plan.totalBytes;
 
         final file = File(tempPath);
         final raf =

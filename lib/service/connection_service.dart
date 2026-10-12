@@ -58,6 +58,11 @@ class ConnectionService {
       result = false;
     } on TimeoutException catch (_) {
       result = false;
+    } catch (_) {
+      // 非主流平台/ROM 上 DNS 接口可能抛非 Socket 系异常：逃逸出去
+      // 会变 unhandled async error（事件探活的 Future 无人接）。
+      // 探活失败保守判离线，由 recheck 的二次尝试兜底
+      result = false;
     }
     if (seq != _checkSeq) return hasConnection; // 已有更新的探活结论
 

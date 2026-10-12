@@ -36,6 +36,22 @@ void main() {
       expect(result.cookies['DedeUserID'], '123456');
       expect(result.accessToken, 'tok_abc');
       expect(result.refreshToken, 'tok_ref');
+      // Set-Cookie 属性不进入会话数据（曾污染 Cookie 头且持久化无法自清）
+      expect(result.cookies.containsKey('Path'), isFalse);
+      expect(result.cookies.containsKey('Expires'), isFalse);
+      expect(result.cookies.containsKey('HttpOnly'), isFalse);
+    });
+
+    test('Set-Cookie 带 Expires/Domain/Max-Age 属性时全部剔除', () {
+      final result = AppLoginResult.fromResponse({
+        'code': 0,
+        'message': 'OK',
+        'data': {'status': 0, 'mid': 1},
+      }, [
+        'SESSDATA=abc; Expires=Sun, 01-Jan-2030 00:00:00 GMT; '
+            'Domain=.bilibili.com; Path=/; Max-Age=31536000; SameSite=Lax',
+      ]);
+      expect(result.cookies, {'SESSDATA': 'abc'});
     });
 
     test('status=2 触发风控（needRiskVerification）', () {

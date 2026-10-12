@@ -187,12 +187,15 @@ class BilibiliService {
       }
       return DatabaseManager.getCachedCollectedFavList();
     }
-    return ret;
+    // 断网/超时失败时回退本地缓存（与 getFavs 对称）
+    return ret ?? DatabaseManager.getCachedCollectedFavList();
   }
 
   Future<List<Meta>?> getCollectionMetas(int mid) async {
     final ret = await _bilibiliAPI.getCollectionMetas(mid);
-    if (ret != null) {
+    // 同 getCollection：会话失效期间不信任网络结果——匿名视角的空列表
+    // 若写入全量替换型缓存会把已有内容抹成空（#17 修复未覆盖的路径）
+    if (ret != null && !sessionExpired.value) {
       DatabaseManager.cacheMetas(ret);
       DatabaseManager.cacheCollectedFavListVideo(
           ret.map((x) => x.bvid).toList(), mid);
@@ -202,7 +205,7 @@ class BilibiliService {
 
   Future<List<Meta>?> getFavMetas(int mid) async {
     final ret = await _bilibiliAPI.getFavMetas(mid);
-    if (ret != null) {
+    if (ret != null && !sessionExpired.value) {
       DatabaseManager.cacheMetas(ret);
       DatabaseManager.cacheFavListVideo(ret.map((x) => x.bvid).toList(), mid);
     }

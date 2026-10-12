@@ -127,12 +127,16 @@ class AppLoginResult {
   factory AppLoginResult.fromResponse(
       Map<String, dynamic> body, List<String> setCookieHeaders) {
     final cookies = <String, String>{};
-    // header Set-Cookie 解析
+    // header Set-Cookie 解析：只收会话数据，剔除 expires/path/
+    // domain 等属性——属性混进 Cookie 头会随会话持久化且无法自清
+    const attrs = {'expires', 'path', 'domain', 'max-age', 'samesite'};
     for (final line in setCookieHeaders) {
       for (final part in line.split(';')) {
         final idx = part.indexOf('=');
         if (idx > 0) {
-          cookies[part.substring(0, idx).trim()] = part.substring(idx + 1);
+          final name = part.substring(0, idx).trim();
+          if (attrs.contains(name.toLowerCase())) continue;
+          cookies[name] = part.substring(idx + 1);
         }
       }
     }

@@ -363,7 +363,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           Navigator.pop(dialogContext);
                           try {
                             await bs?.logout();
-                            await DatabaseManager.cacheFavList([]);
+                            // 四张收藏相关表全清（原只清 fav_list，关联
+                            // 表残留会让 isFaved 返回前账号状态、收藏页
+                            // 泄漏前账号的合集数据）
+                            await DatabaseManager.clearAllFavData();
                           } catch (e) {
                             pageMessenger.showSnackBar(
                               const SnackBar(content: Text('退出失败，请重试')),

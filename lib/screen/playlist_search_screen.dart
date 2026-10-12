@@ -137,6 +137,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   }
 
   void _toggleSearchPause() {
+    // 后台循环的失败分支也会调用本方法：页面退出后不得 setState
+    if (!mounted) return;
     setState(() {
       isSearchPaused = !isSearchPaused;
     });
@@ -146,6 +148,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   }
 
   void _toggleSavingPause() {
+    if (!mounted) return;
     setState(() {
       isSavingPaused = !isSavingPaused;
     });
@@ -728,7 +731,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
     if (_isSearchLoopRunning) return;
     _isSearchLoopRunning = true;
     try {
-      for (; processedTracks < results.length;) {
+      // mounted 并入循环条件：页面退出后立刻停止，不再白跑后续请求
+      for (; mounted && processedTracks < results.length;) {
         await flutterLocalNotificationsPlugin.show(
           id: 0,
           title: '歌单搜索',
@@ -837,7 +841,8 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
     if (_isSaveLoopRunning) return;
     _isSaveLoopRunning = true;
     try {
-      for (; processedFavorites < results.length;) {
+      // 同搜索循环：页面退出后立即停止
+      for (; mounted && processedFavorites < results.length;) {
         await flutterLocalNotificationsPlugin.show(
           id: 1,
           title: '添加收藏',
@@ -1110,6 +1115,7 @@ class _PlaylistSearchScreenState extends State<PlaylistSearchScreen> {
   @override
   void dispose() {
     _textController.dispose();
+    _scrollController.dispose();
     flutterLocalNotificationsPlugin.cancelAll();
     super.dispose();
   }

@@ -45,9 +45,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Timer? _smsCountdownTimer;
   int _smsCountdown = 0;
 
-  /// 当前极验参数（App 登录接口用）
-  CaptchaData? _captchaData;
-
   // ===== 密码登录风控（安全中心，对齐 BiliPai） =====
   RiskVerifyParams? _riskParams;
   String _riskHideTel = '';
@@ -72,21 +69,24 @@ class _LoginScreenState extends State<LoginScreen> {
       if (captcha == null) {
         throw Exception('Failed to get login captcha');
       }
-      _captchaData = CaptchaData(
+      // 局部变量随闭包捕获：重复点击登录/与短信验证码流程并发时，
+      // 各极验弹窗只用自己的 token/challenge（共享实例字段会被后开
+      // 的弹窗覆盖，先开的弹窗拿错配参数被 B 站 -105 拒绝）
+      final captchaData = CaptchaData(
         token: captcha['token'] ?? '',
         gt: captcha['gt'],
         challenge: captcha['challenge'],
       );
-      if (_captchaData!.gt == null || _captchaData!.challenge == null) {
+      if (captchaData.gt == null || captchaData.challenge == null) {
         throw Exception('缺少验证码参数');
       }
 
-      logger.info('Geetest gt: ${_captchaData!.gt}');
+      logger.info('Geetest gt: ${captchaData.gt}');
       final geetest = Gt3FlutterPlugin();
 
       Gt3RegisterData registerData = Gt3RegisterData(
-          gt: _captchaData!.gt!,
-          challenge: _captchaData!.challenge!,
+          gt: captchaData.gt!,
+          challenge: captchaData.challenge!,
           success: true);
 
       geetest.addEventHandler(onShow: (message) {
@@ -96,6 +96,7 @@ class _LoginScreenState extends State<LoginScreen> {
           logger.info('Geetest verification result: $result');
           final geetestResult = result['result'];
           if (geetestResult == null) {
+            if (!mounted) return;
             setState(() {
               _errorMessage = '人机验证失败，请重试';
             });
@@ -106,7 +107,7 @@ class _LoginScreenState extends State<LoginScreen> {
               (x) => x.passwordLoginApp(
                     _usernameController.text,
                     _passwordController.text,
-                    _captchaData,
+                    captchaData,
                     validate: result['geetest_validate'],
                     seccode: result['geetest_seccode'],
                     challenge: result['geetest_challenge'],
@@ -123,9 +124,9 @@ class _LoginScreenState extends State<LoginScreen> {
             await _beginRiskVerification(loginResult);
           } else if (loginResult.needRecaptcha) {
             // -105：URL 里带新的极验参数，重新验证
+            //（参数不必留存：下次登录会重新取 getLoginCaptcha）
             final newCaptcha = parseLoginRecaptchaUrl(loginResult.url);
             if (newCaptcha != null) {
-              _captchaData = newCaptcha;
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   const SnackBar(content: Text('请重新完成人机验证')),
@@ -246,6 +247,7 @@ class _LoginScreenState extends State<LoginScreen> {
           try {
             final geetestResult = result['result'];
             if (geetestResult == null) {
+              if (!mounted) return;
               setState(() {
                 _errorMessage = '人机验证失败，请重试';
               });
@@ -432,7 +434,8 @@ class _LoginScreenState extends State<LoginScreen> {
       if (gt == null || challenge == null) {
         throw Exception('recaptcha_url 缺少极验参数: $recaptchaUrl');
       }
-      _captchaData = CaptchaData(
+      // 局部变量随闭包捕获（同 _login）：与密码登录并发时互不覆盖
+      final captchaData = CaptchaData(
         token: qp['recaptcha_token'] ?? '',
         gt: gt,
         challenge: challenge,
@@ -440,8 +443,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final geetest = Gt3FlutterPlugin();
       Gt3RegisterData registerData = Gt3RegisterData(
-          gt: _captchaData!.gt!,
-          challenge: _captchaData!.challenge!,
+          gt: captchaData.gt!,
+          challenge: captchaData.challenge!,
           success: true);
 
       geetest.addEventHandler(
@@ -453,6 +456,7 @@ class _LoginScreenState extends State<LoginScreen> {
             logger.info('Geetest verification result: $result');
             final geetestResult = result['result'];
             if (geetestResult == null) {
+              if (!mounted) return;
               setState(() {
                 _errorMessage = '人机验证失败，请重试';
               });
@@ -463,7 +467,7 @@ class _LoginScreenState extends State<LoginScreen> {
             final (captchaKey, error, _) =
                 await BilibiliService.instance.then((x) => x.sendSmsCaptchaApp(
                       phone,
-                      _captchaData,
+                      captchaData,
                       validate: result['geetest_validate'],
                       seccode: result['geetest_seccode'],
                       challenge: result['geetest_challenge'],
@@ -569,6 +573,11 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _initQrcodeLogin({bool useTv = true}) async {
+    // 先停掉旧轮询再取新二维码：否则取码窗口期内旧轮询会拿着新
+    // authCode 提前轮询，旧二维码若恰在此窗口被扫还会错误完成会话
+    _qrcodeTimer?.cancel();
+    _qrcodePolling = false;
+    _qrcodeFinished = false;
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -602,9 +611,6 @@ class _LoginScreenState extends State<LoginScreen> {
         _qrcodeUrl = url;
       });
 
-      _qrcodeTimer?.cancel();
-      _qrcodePolling = false;
-      _qrcodeFinished = false;
       _qrcodeTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
         // 已结束（成功/终态）或上次轮询仍在进行时，直接跳过，
         // 保证成功分支的 pop 只发生一次

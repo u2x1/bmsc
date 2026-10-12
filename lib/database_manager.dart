@@ -225,43 +225,86 @@ class DatabaseManager {
         onUpgrade: (db, oldVersion, newVersion) async {
           _logger.info('Upgrading database from v$oldVersion to v$newVersion');
 
-          if (oldVersion <= 9) {
-            // 本地音乐曲库表（导入的设备音频文件，与 B 站缓存体系无关）
-            await _createLocalMusicTable(db);
+          // 分支必须按版本号升序执行：后序分支可能依赖前序分支创建的
+          // 表（如 <=8 给 play_stat 加列依赖 <=5 创建该表）。历史上按
+          // 降序执行，oldVersion<=5 的库升级即抛 no such table 且每次
+          // 启动重试都崩（P0）。
+          if (oldVersion <= 1) {
+            await db.transaction((txn) async {
+              await txn.execute('''
+                CREATE TABLE ${cacheTable}_new (
+                  bvid TEXT,
+                  cid INTEGER,
+                  filePath TEXT,
+                  fileSize INTEGER,
+                  playCount INTEGER DEFAULT 0,
+                  lastPlayed INTEGER,
+                  createdAt INTEGER,
+                  PRIMARY KEY (bvid, cid)
+                )
+              ''');
+
+              await txn.execute('''
+                INSERT INTO ${cacheTable}_new (bvid, cid, filePath, createdAt)
+                SELECT bvid, cid, filePath, createdAt
+                FROM $cacheTable
+              ''');
+
+              final rows = await txn.query('${cacheTable}_new');
+              final batch = txn.batch();
+
+              for (final row in rows) {
+                final filePath = row['filePath'] as String;
+                final file = File(filePath);
+                int fileSize = 0;
+                try {
+                  if (await file.exists()) {
+                    fileSize = await file.length();
+                  }
+                } catch (e) {
+                  _logger.warning('Failed to get file size for $filePath: $e');
+                }
+
+                batch.update(
+                  '${cacheTable}_new',
+                  {
+                    'fileSize': fileSize,
+                    'playCount': 0,
+                    'lastPlayed': DateTime.now().millisecondsSinceEpoch,
+                  },
+                  where: 'bvid = ? AND cid = ?',
+                  whereArgs: [row['bvid'] as String, row['cid'] as int],
+                );
+              }
+
+              await batch.commit();
+              await txn.execute('DROP TABLE $cacheTable');
+              await txn.execute(
+                  'ALTER TABLE ${cacheTable}_new RENAME TO $cacheTable');
+            });
           }
 
-          if (oldVersion <= 8) {
-            // play_stat 新增 last_cid 列：记录每首歌最近播放的分 P，
-            // 供「最近在听」点击时定位续播（而非从 P1 重头开始）
-            await db
-                .execute('ALTER TABLE $statTable ADD COLUMN last_cid INTEGER');
-          }
-
-          if (oldVersion <= 7) {
-            // 收藏夹/收藏合集列表新增 synced_count 列：记录上次全量同步
-            //（网络完整拉取并替换视频缓存）时的条数，供详情页判断本地
-            // 缓存是否完整（封面补拉只写入第一页，不代表全量）
-            await db.execute(
-                'ALTER TABLE $favListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
-            await db.execute(
-                'ALTER TABLE $collectedFavListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
-          }
-
-          if (oldVersion <= 6) {
-            // 收藏夹列表新增 cover 列：缓存列表 API 返回的收藏夹自身封面，
-            // 供主页网格拼贴兜底
-            await db.execute('ALTER TABLE $favListTable ADD COLUMN cover TEXT');
-            await db.execute(
-                'ALTER TABLE $collectedFavListTable ADD COLUMN cover TEXT');
-          }
-
-          if (oldVersion <= 5) {
+          if (oldVersion <= 2) {
             await db.execute('''
-              CREATE TABLE IF NOT EXISTS $statTable (
-                bvid TEXT PRIMARY KEY,
-                last_played INTEGER,
-                total_play_time INTEGER DEFAULT 0,
-                play_count INTEGER DEFAULT 0
+              CREATE TABLE IF NOT EXISTS $downloadTable (
+                bvid TEXT,
+                cid INTEGER,
+                filePath TEXT,
+                PRIMARY KEY (bvid, cid)
+              )
+            ''');
+          }
+
+          if (oldVersion <= 3) {
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS $downloadTaskTable (
+                bvid TEXT,
+                cid INTEGER,
+                targetPath TEXT,
+                status INTEGER,
+                progress REAL,
+                error TEXT,
+                PRIMARY KEY (bvid, cid)
               )
             ''');
           }
@@ -322,84 +365,45 @@ class DatabaseManager {
             });
           }
 
-          if (oldVersion <= 3) {
+          if (oldVersion <= 5) {
             await db.execute('''
-              CREATE TABLE IF NOT EXISTS $downloadTaskTable (
-                bvid TEXT,
-                cid INTEGER,
-                targetPath TEXT,
-                status INTEGER,
-                progress REAL,
-                error TEXT,
-                PRIMARY KEY (bvid, cid)
+              CREATE TABLE IF NOT EXISTS $statTable (
+                bvid TEXT PRIMARY KEY,
+                last_played INTEGER,
+                total_play_time INTEGER DEFAULT 0,
+                play_count INTEGER DEFAULT 0
               )
             ''');
           }
 
-          if (oldVersion <= 2) {
-            await db.execute('''
-              CREATE TABLE IF NOT EXISTS $downloadTable (
-                bvid TEXT,
-                cid INTEGER,
-                filePath TEXT,
-                PRIMARY KEY (bvid, cid)
-              )
-            ''');
+          if (oldVersion <= 6) {
+            // 收藏夹列表新增 cover 列：缓存列表 API 返回的收藏夹自身封面，
+            // 供主页网格拼贴兜底
+            await db.execute('ALTER TABLE $favListTable ADD COLUMN cover TEXT');
+            await db.execute(
+                'ALTER TABLE $collectedFavListTable ADD COLUMN cover TEXT');
           }
 
-          if (oldVersion <= 1) {
-            await db.transaction((txn) async {
-              await txn.execute('''
-                CREATE TABLE ${cacheTable}_new (
-                  bvid TEXT,
-                  cid INTEGER,
-                  filePath TEXT,
-                  fileSize INTEGER,
-                  playCount INTEGER DEFAULT 0,
-                  lastPlayed INTEGER,
-                  createdAt INTEGER,
-                  PRIMARY KEY (bvid, cid)
-                )
-              ''');
+          if (oldVersion <= 7) {
+            // 收藏夹/收藏合集列表新增 synced_count 列：记录上次全量同步
+            //（网络完整拉取并替换视频缓存）时的条数，供详情页判断本地
+            // 缓存是否完整（封面补拉只写入第一页，不代表全量）
+            await db.execute(
+                'ALTER TABLE $favListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
+            await db.execute(
+                'ALTER TABLE $collectedFavListTable ADD COLUMN synced_count INTEGER DEFAULT -1');
+          }
 
-              await txn.execute('''
-                INSERT INTO ${cacheTable}_new (bvid, cid, filePath, createdAt)
-                SELECT bvid, cid, filePath, createdAt
-                FROM $cacheTable
-              ''');
+          if (oldVersion <= 8) {
+            // play_stat 新增 last_cid 列：记录每首歌最近播放的分 P，
+            // 供「最近在听」点击时定位续播（而非从 P1 重头开始）
+            await db
+                .execute('ALTER TABLE $statTable ADD COLUMN last_cid INTEGER');
+          }
 
-              final rows = await txn.query('${cacheTable}_new');
-              final batch = txn.batch();
-
-              for (final row in rows) {
-                final filePath = row['filePath'] as String;
-                final file = File(filePath);
-                int fileSize = 0;
-                try {
-                  if (await file.exists()) {
-                    fileSize = await file.length();
-                  }
-                } catch (e) {
-                  _logger.warning('Failed to get file size for $filePath: $e');
-                }
-
-                batch.update(
-                  '${cacheTable}_new',
-                  {
-                    'fileSize': fileSize,
-                    'playCount': 0,
-                    'lastPlayed': DateTime.now().millisecondsSinceEpoch,
-                  },
-                  where: 'bvid = ? AND cid = ?',
-                  whereArgs: [row['bvid'] as String, row['cid'] as int],
-                );
-              }
-
-              await batch.commit();
-              await txn.execute('DROP TABLE $cacheTable');
-              await txn.execute(
-                  'ALTER TABLE ${cacheTable}_new RENAME TO $cacheTable');
-            });
+          if (oldVersion <= 9) {
+            // 本地音乐曲库表（导入的设备音频文件，与 B 站缓存体系无关）
+            await _createLocalMusicTable(db);
           }
         },
       );
@@ -641,12 +645,18 @@ class DatabaseManager {
 
     if (results.isNotEmpty) {
       final entities = await getEntities(bvid);
-      return results.map((result) {
+      final sources = <LazyAudioSource>[];
+      for (final result in results) {
         final filePath = result['filePath'] as String;
         int cid = result['cid'] as int;
+        // entity_cache 行可能缺失（DB 迁移会丢弃被屏蔽分 P 的 entity，
+        // 而屏蔽不删下载/缓存记录）：缺失时跳过该条而非让 StateError
+        // 穿透播放链路
         final entity = entities
-            .firstWhere((e) => e.bvid == bvid && e.cid == result['cid']);
-        return LazyAudioSource(bvid, cid,
+            .where((e) => e.bvid == bvid && e.cid == result['cid'])
+            .firstOrNull;
+        if (entity == null) continue;
+        sources.add(LazyAudioSource(bvid, cid,
             localFile: File(filePath),
             tag: MediaItem(
               id: '${bvid}_${result['cid']}',
@@ -663,8 +673,9 @@ class DatabaseManager {
                 'raw_title': entity.bvidTitle,
                 'cached': true
               },
-            ));
-      }).toList();
+            )));
+      }
+      return sources;
     }
     return null;
   }
@@ -705,8 +716,14 @@ class DatabaseManager {
         }
         _logger.info('Found cached audio for bvid: $bvid, cid: $cid');
         final entities = await getEntities(bvid);
-        final entity =
-            entities.firstWhere((e) => e.bvid == bvid && e.cid == cid);
+        // 同 getLocalAudioList：entity 缺失时回退网络解析而非抛 StateError
+        final entity = entities
+            .where((e) => e.bvid == bvid && e.cid == cid)
+            .firstOrNull;
+        if (entity == null) {
+          _logger.warning('entity missing for cached audio: $bvid/$cid');
+          return null;
+        }
         final tag = MediaItem(
             id: '${bvid}_$cid',
             title: entity.partTitle,
@@ -774,6 +791,10 @@ class DatabaseManager {
       final db = await database;
       final rows = await db.query(cacheTable, columns: ['filePath']);
       final knownPaths = rows.map((r) => r['filePath'] as String).toSet();
+      // 已完成下载与缓存同名格式（BV…-cid.m4a）：用户把下载目录配到
+      // 被扫描目录时（桌面端 Documents 是用户级目录）不得被误删
+      final downloadRows = await db.query(downloadTable, columns: ['filePath']);
+      knownPaths.addAll(downloadRows.map((r) => r['filePath'] as String));
 
       final cacheFilePattern =
           RegExp(r'^BV[^/\\]+-\d+\.m4a(\.(mime|part))?$');
@@ -820,18 +841,17 @@ class DatabaseManager {
       final now = DateTime.now().millisecondsSinceEpoch;
 
       await db.transaction((txn) async {
-        int ret = await txn.insert(
-            cacheTable,
-            {
-              'bvid': bvid,
-              'cid': cid,
-              'filePath': file.path,
-              'fileSize': await file.length(),
-              'playCount': 0,
-              'lastPlayed': now,
-              'createdAt': now,
-            },
-            conflictAlgorithm: ConflictAlgorithm.replace);
+        // 冲突（重复缓存/切音质后重缓存）只更新文件列，保留累计的
+        // 播放统计——REPLACE 会把 playCount/lastPlayed/createdAt 清零，
+        // 缓存淘汰评分随之退化为近似 FIFO
+        final ret = await txn.rawInsert('''
+          INSERT INTO $cacheTable
+            (bvid, cid, filePath, fileSize, playCount, lastPlayed, createdAt)
+          VALUES (?, ?, ?, ?, 0, ?, ?)
+          ON CONFLICT(bvid, cid) DO UPDATE SET
+            filePath = excluded.filePath,
+            fileSize = excluded.fileSize
+        ''', [bvid, cid, file.path, await file.length(), now, now]);
         if (ret != 0) {
           _logger.info('audio cache metadata saved');
         }
@@ -1009,34 +1029,39 @@ class DatabaseManager {
   static Future<void> cacheFavList(List<Fav> favs) async {
     final db = await database;
 
-    // synced_count 记录的是「上次全量同步视频缓存」的条数，重写收藏夹
-    // 列表（只是元数据）不应将其重置为 -1，否则详情页会反复全量拉取
-    final oldSyncedCounts = <int, int>{
-      for (final row in await db
-          .query(favListTable, columns: ['id', 'synced_count']))
-        row['id'] as int: (row['synced_count'] as int?) ?? -1
-    };
+    // 读-删-插必须在一个事务里：拆开的独立 await 若中途崩溃或与
+    // cacheFavListVideo 并发交错，会留下整表被清空或 synced_count
+    // 错位的中间态
+    await db.transaction((txn) async {
+      // synced_count 记录的是「上次全量同步视频缓存」的条数，重写收藏夹
+      // 列表（只是元数据）不应将其重置为 -1，否则详情页会反复全量拉取
+      final oldSyncedCounts = <int, int>{
+        for (final row in await txn
+            .query(favListTable, columns: ['id', 'synced_count']))
+          row['id'] as int: (row['synced_count'] as int?) ?? -1
+      };
 
-    await db.delete(favListTable);
+      await txn.delete(favListTable);
 
-    final batch = db.batch();
+      final batch = txn.batch();
 
-    for (int i = 0; i < favs.length; i++) {
-      batch.insert(
-        favListTable,
-        {
-          'id': favs[i].id,
-          'title': favs[i].title,
-          'mediaCount': favs[i].mediaCount,
-          'cover': favs[i].cover,
-          'list_order': i,
-          'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
+      for (int i = 0; i < favs.length; i++) {
+        batch.insert(
+          favListTable,
+          {
+            'id': favs[i].id,
+            'title': favs[i].title,
+            'mediaCount': favs[i].mediaCount,
+            'cover': favs[i].cover,
+            'list_order': i,
+            'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
 
-    await batch.commit();
+      await batch.commit();
+    });
     _logger.info('cached ${favs.length} fav lists');
   }
 
@@ -1044,33 +1069,48 @@ class DatabaseManager {
     final db = await database;
 
     // 同 cacheFavList：保留已有 synced_count，避免重置
-    final oldSyncedCounts = <int, int>{
-      for (final row in await db
-          .query(collectedFavListTable, columns: ['id', 'synced_count']))
-        row['id'] as int: (row['synced_count'] as int?) ?? -1
-    };
+    await db.transaction((txn) async {
+      final oldSyncedCounts = <int, int>{
+        for (final row in await txn
+            .query(collectedFavListTable, columns: ['id', 'synced_count']))
+          row['id'] as int: (row['synced_count'] as int?) ?? -1
+      };
 
-    await db.delete(collectedFavListTable);
+      await txn.delete(collectedFavListTable);
 
-    final batch = db.batch();
+      final batch = txn.batch();
 
-    for (int i = 0; i < favs.length; i++) {
-      batch.insert(
-        collectedFavListTable,
-        {
-          'id': favs[i].id,
-          'title': favs[i].title,
-          'mediaCount': favs[i].mediaCount,
-          'cover': favs[i].cover,
-          'list_order': i,
-          'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }
+      for (int i = 0; i < favs.length; i++) {
+        batch.insert(
+          collectedFavListTable,
+          {
+            'id': favs[i].id,
+            'title': favs[i].title,
+            'mediaCount': favs[i].mediaCount,
+            'cover': favs[i].cover,
+            'list_order': i,
+            'synced_count': oldSyncedCounts[favs[i].id] ?? -1,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
 
-    await batch.commit();
+      await batch.commit();
+    });
     _logger.info('cached collected ${favs.length} fav lists');
+  }
+
+  /// 退出登录清理：收藏夹列表与三张关联表全清——残留会让 isFaved
+  /// 返回前账号的收藏状态、收藏页泄漏前账号的合集数据
+  static Future<void> clearAllFavData() async {
+    final db = await database;
+    await db.transaction((txn) async {
+      await txn.delete(favListTable);
+      await txn.delete(favListVideoTable);
+      await txn.delete(collectedFavListTable);
+      await txn.delete(collectedFavListVideoTable);
+    });
+    favListVersion.value++;
   }
 
   static Future<List<Fav>> getCachedCollectedFavList() async {
@@ -1137,7 +1177,8 @@ class DatabaseManager {
     final db = await database;
     final batch = db.batch();
 
-    await db.delete(
+    // 删除并入 batch：与插入同一事务提交，避免「清空后未插入」中间态
+    batch.delete(
       favDetailTable,
       where: 'fav_id = ?',
       whereArgs: [favId],
@@ -1616,7 +1657,7 @@ class DatabaseManager {
               cid: row['cid'] as int,
               targetPath: row['targetPath'] as String?,
               status: DownloadStatus.values[row['status'] as int],
-              progress: row['progress'] as double,
+              progress: (row['progress'] as num).toDouble(),
               error: row['error'] as String?,
             ))
         .toList();
@@ -1641,7 +1682,7 @@ class DatabaseManager {
       cid: row['cid'] as int,
       targetPath: row['targetPath'] as String?,
       status: DownloadStatus.values[row['status'] as int],
-      progress: row['progress'] as double,
+      progress: (row['progress'] as num).toDouble(),
       error: row['error'] as String?,
     );
   }
@@ -1663,7 +1704,7 @@ class DatabaseManager {
               cid: row['cid'] as int,
               targetPath: row['targetPath'] as String?,
               status: DownloadStatus.values[row['status'] as int],
-              progress: row['progress'] as double,
+              progress: (row['progress'] as num).toDouble(),
               error: row['error'] as String?,
             ))
         .toList();

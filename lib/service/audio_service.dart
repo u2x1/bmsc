@@ -552,6 +552,9 @@ class AudioService {
 
   Future<void> setInterrupHandler(bool value) async {
     if (value) {
+      // 重入（开关再开）时旧订阅未取消会叠监听，duck/暂停/恢复逻辑
+      // 被执行两遍
+      await _interruptionEventSubscription?.cancel();
       _interruptionEventSubscription =
           session.interruptionEventStream.listen((event) {
         if (event.begin) {
@@ -685,16 +688,6 @@ class AudioService {
         _stopPlayPositionSaving();
       }
 
-      if (state.processingState == ProcessingState.ready) {
-        final index = player.currentIndex;
-        if (index == null) {
-          return;
-        }
-        if (state.playing == false) {
-          return;
-        }
-        _historyUpdateCnt = 0;
-      }
     });
 
     // iOS 卡死看门狗：playing=true 但进度恒为 0（AVQueuePlayer 队列卡死，
@@ -716,11 +709,12 @@ class AudioService {
         final source = player.sequenceState.currentSource;
         final extras = source?.tag?.extras;
         // 本地文件源不走看门狗：_unwedgeCurrentSourceIOS 只处理
-        // LazyAudioSource，本地文件也不存在代理卡死场景
+        // LazyAudioSource，本地文件也不存在代理卡死场景；换源后的
+        // 缓存文件源（UriAudioSource）同样直接跳过
         if (source == null ||
             extras == null ||
             extras['dummy'] == true ||
-            extras['local'] == true) {
+            source is! LazyAudioSource) {
           _watchdogStallTicks = 0;
           return;
         }
@@ -733,12 +727,13 @@ class AudioService {
         _watchdogStallTicks++;
         if (_watchdogStallTicks >= 4 &&
             !_watchdogUnwedgedSources.contains(source)) {
-          _watchdogUnwedgedSources.add(source);
           _watchdogStallTicks = 0;
           final idx = player.currentIndex;
           _logger.warning(
               'watchdog: playing but stuck at 0 for 20s, replace source at index=$idx');
           if (idx != null) {
+            // 「已救过」标记在施救真正开始后才打（见函数内），
+            // 提前打标会让早退的源从此被看门狗永久解除武装
             _unwedgeCurrentSourceIOS(idx, source);
           }
         }
@@ -788,70 +783,78 @@ class AudioService {
   /// 自动推进竞态。旧源进行中的下载先取消，避免与新源写同一 .part。
   Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) async {
     if (source is! LazyAudioSource) return;
-    // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更
+    // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更：
+    // 先取锁后 await——此前先 await（cancelDownload/localFile）再置位，
+    // 窗口期内解析/换源可正常取锁，看门狗 await 返回后复核只查源身份
+    // 不查锁，双方并发 insertAll/removeAt 会把 playlist 改坏
     if (_hijacking || _swapping) return;
-    final tag = source.tag;
-    if (tag is! MediaItem) return;
-    final extras = tag.extras;
-    final bvid = extras?['bvid'];
-    final cid = extras?['cid'];
-    if (bvid == null || cid == null) return;
-    final position = player.position;
-    final wasPlaying = player.playing;
-    await source.cancelDownload();
-    final file = await source.localFile;
-    // 复核时效性：cancelDownload 的 await 窗口内用户可能已切歌/队列
-    // 可能已推进——旧源不再是当前项时放弃解卡，绝不把播放强拽回旧曲目；
-    // 插入点也用旧源身份现查，不用捕获的固定 index。
-    final curIdx = _indexOfInPlaylist(source);
-    if (curIdx == null ||
-        !identical(player.sequenceState.currentSource, source)) {
-      _logger.warning('watchdog: source no longer current, abort unwedge');
-      return;
-    }
-    final fresh = LazyAudioSource(
-      bvid,
-      cid,
-      localFile: file.existsSync() ? file : null,
-      tag: tag,
-    );
-    // 切音质待恢复的位置迁移到克隆源：原源被解卡替换后，克隆源换源时
-    // 仍能恢复切音质时记录的位置。
-    final pending = _pendingSeekPositions.remove(source);
-    if (pending != null) {
-      _pendingSeekPositions[fresh] = pending;
-    }
-    // 克隆体继承「已救过」标记：慢网络下若克隆体仍无进展，不再反复
-    // 重载；一旦有播放进展，标记会被看门狗清除并重新武装。
-    _watchdogUnwedgedSources.add(fresh);
     _hijacking = true;
     _swapping = true;
     try {
-      _playlistShuffleOrder.anchorAfter(curIdx);
-      await doAndSavePlaylist(() async {
-        await playlist.insertAll(curIdx + 1, [fresh]);
-      });
-      // 同 swap：不能用固定 index+1（推进会导致 seek 落到下一P
-      // ——下一P继承本P进度），一律 identical 定位。
-      final insertIdx = _indexOfInPlaylist(fresh);
-      if (insertIdx != null) {
-        try {
-          await player
-              .seek(position, index: insertIdx)
-              .timeout(const Duration(seconds: 5));
-        } catch (e) {
-          _logger.warning('watchdog unwedge seek failed: $e');
-        }
-        if (wasPlaying) await player.play();
-      } else {
-        _logger.warning('watchdog: fresh source vanished from playlist');
+      final tag = source.tag;
+      if (tag is! MediaItem) return;
+      final extras = tag.extras;
+      final bvid = extras?['bvid'];
+      final cid = extras?['cid'];
+      if (bvid == null || cid == null) return;
+      final position = player.position;
+      final wasPlaying = player.playing;
+      await source.cancelDownload();
+      final file = await source.localFile;
+      // 复核时效性：cancelDownload 的 await 窗口内用户可能已切歌/队列
+      // 可能已推进——旧源不再是当前项时放弃解卡，绝不把播放强拽回旧曲目；
+      // 插入点也用旧源身份现查，不用捕获的固定 index。
+      final curIdx = _indexOfInPlaylist(source);
+      if (curIdx == null ||
+          !identical(player.sequenceState.currentSource, source)) {
+        _logger.warning('watchdog: source no longer current, abort unwedge');
+        return;
       }
-      await doAndSavePlaylist(() async {
-        final oldIdx = _indexOfInPlaylist(source);
-        if (oldIdx != null) await playlist.removeAt(oldIdx);
-      });
-    } catch (e) {
-      _logger.warning('watchdog unwedge failed: $e');
+      // 「已救过」标记只在施救真正开始时打上：调用方若在锁被占用
+      // 时打标，早退的源会被看门狗永久解除武装
+      _watchdogUnwedgedSources.add(source);
+      final fresh = LazyAudioSource(
+        bvid,
+        cid,
+        localFile: file.existsSync() ? file : null,
+        tag: tag,
+      );
+      // 切音质待恢复的位置迁移到克隆源：原源被解卡替换后，克隆源换源时
+      // 仍能恢复切音质时记录的位置。
+      final pending = _pendingSeekPositions.remove(source);
+      if (pending != null) {
+        _pendingSeekPositions[fresh] = pending;
+      }
+      // 克隆体继承「已救过」标记：慢网络下若克隆体仍无进展，不再反复
+      // 重载；一旦有播放进展，标记会被看门狗清除并重新武装。
+      _watchdogUnwedgedSources.add(fresh);
+      try {
+        _playlistShuffleOrder.anchorAfter(curIdx);
+        await doAndSavePlaylist(() async {
+          await playlist.insertAll(curIdx + 1, [fresh]);
+        });
+        // 同 swap：不能用固定 index+1（推进会导致 seek 落到下一P
+        // ——下一P继承本P进度），一律 identical 定位。
+        final insertIdx = _indexOfInPlaylist(fresh);
+        if (insertIdx != null) {
+          try {
+            await player
+                .seek(position, index: insertIdx)
+                .timeout(const Duration(seconds: 5));
+          } catch (e) {
+            _logger.warning('watchdog unwedge seek failed: $e');
+          }
+          if (wasPlaying) await player.play();
+        } else {
+          _logger.warning('watchdog: fresh source vanished from playlist');
+        }
+        await doAndSavePlaylist(() async {
+          final oldIdx = _indexOfInPlaylist(source);
+          if (oldIdx != null) await playlist.removeAt(oldIdx);
+        });
+      } catch (e) {
+        _logger.warning('watchdog unwedge failed: $e');
+      }
     } finally {
       _hijacking = false;
       _swapping = false;
@@ -1255,6 +1258,10 @@ class AudioService {
     // 插入/删除让 sequenceState 反复错位，真机实测级联在数秒内解析了
     // 44 个视频的整个队列并使播放条反复跳变）
     if (isCurrentChanged) {
+      // 播放计数的 tick 起点随真实切歌重置：原先在 playerState
+      // ready&&playing 事件上清零，暂停/恢复、卡顿恢复都会再次触发，
+      // 每次恢复播放 playCount 都被多计 1
+      _historyUpdateCnt = 0;
       _schedulePreResolveAhead();
     }
   }
@@ -1571,6 +1578,9 @@ class AudioService {
     for (final meta in metas) {
       srcs.add(await getDummyAudioSource(meta));
     }
+    // 部分 bvid 缺元数据时 srcs 短于 bvids：钳制防 seek 越界
+    //（playLocalTracks 已有同款钳制）
+    if (index >= srcs.length) index = 0;
     await player.pause();
     // 等在途的解析/换源/预解析变更完成再换队列：原实现直接覆写
     // _hijacking 旗标，与在途变更并发执行 clear/addAll 会互相改坏队列
@@ -1672,7 +1682,10 @@ class AudioService {
               .firstWhere((s) => s == ProcessingState.ready)
               .timeout(const Duration(seconds: 5));
           await player.seek(Duration.zero, index: index);
-        } catch (_) {}
+        } catch (e) {
+          // 超时/seek 失败：表现为「点第 N 首播第 1 首」，此前静默无迹
+          _logger.warning('playLocalTracks retry seek failed: $e');
+        }
       }
     } finally {
       _hijacking = false;
@@ -1745,13 +1758,19 @@ class AudioService {
   /// 若被索引监听误当真实切歌处理，会把统计/预解析打到错误曲目上
   ///（幻影事件，真机实测会连锁解析整个队列）。已在 _hijacking 内执行
   /// 的内部流程不应使用本方法（会等自己）。
-  Future<void> mutatePlaylist(Future<void> Function() func) async {
+  Future<bool> mutatePlaylist(Future<void> Function() func) async {
     final lockAcquired = await _waitMutationFree();
-    if (lockAcquired) _hijacking = true;
+    if (!lockAcquired) {
+      // 超时后无锁执行正是互斥要防的改坏场景：宁可放弃这次变更
+      _logger.warning('mutation timeout, aborting playlist mutation');
+      return false;
+    }
+    _hijacking = true;
     try {
       await doAndSavePlaylist(func);
+      return true;
     } finally {
-      if (lockAcquired) _hijacking = false;
+      _hijacking = false;
     }
   }
 
@@ -1775,42 +1794,46 @@ class AudioService {
       {int? insertIndex, Map<String, dynamic>? extraExtras}) async {
     int? ret;
     final uniqueSources = <IndexedAudioSource>[];
-    for (var source in sources) {
-      if (source.tag is! MediaItem) {
-        continue;
-      }
-      final mediaItem = source.tag as MediaItem;
-      final duplicatePos = playlist.children.indexWhere((child) =>
-          child is IndexedAudioSource &&
-          child.tag is MediaItem &&
-          _isSameMedia(child.tag as MediaItem, mediaItem));
-      final pendingPos = uniqueSources.indexWhere((child) =>
-          child.tag is MediaItem &&
-          _isSameMedia(child.tag as MediaItem, mediaItem));
-
-      if (duplicatePos == -1 && pendingPos == -1) {
-        if (extraExtras != null) {
-          mediaItem.extras?.addAll(extraExtras);
-        }
-        uniqueSources.add(source);
-        ret ??= insertIndex != null
-            ? insertIndex + uniqueSources.length - 1
-            : playlist.length + uniqueSources.length - 1;
-      } else if (duplicatePos != -1) {
-        ret = duplicatePos;
-      } else {
-        ret ??= insertIndex != null
-            ? insertIndex + pendingPos
-            : playlist.length + pendingPos;
-      }
+    // 去重与插入位置必须在持锁状态下基于当时的队列计算：锁外基于
+    // 取锁前快照去重/定位，等待窗口内解析/预解析的插入删除会使结果
+    // 错位（多 P 点播跳到错误分 P/曲目的历史 bug 同族）
+    if (!await _waitMutationFree()) {
+      _logger.warning('mutation timeout, aborting addUniqueSources');
+      return null;
     }
-    if (uniqueSources.isNotEmpty) {
-      final index = insertIndex;
-      // 插入也持有变更互斥：插入期间的 sequenceState 错位映射若被索引
-      // 监听当真实切歌处理，会把统计/预解析打到插入的曲目上
-      final lockAcquired = await _waitMutationFree();
-      if (lockAcquired) _hijacking = true;
-      try {
+    _hijacking = true;
+    try {
+      for (var source in sources) {
+        if (source.tag is! MediaItem) {
+          continue;
+        }
+        final mediaItem = source.tag as MediaItem;
+        final duplicatePos = playlist.children.indexWhere((child) =>
+            child is IndexedAudioSource &&
+            child.tag is MediaItem &&
+            _isSameMedia(child.tag as MediaItem, mediaItem));
+        final pendingPos = uniqueSources.indexWhere((child) =>
+            child.tag is MediaItem &&
+            _isSameMedia(child.tag as MediaItem, mediaItem));
+
+        if (duplicatePos == -1 && pendingPos == -1) {
+          if (extraExtras != null) {
+            mediaItem.extras?.addAll(extraExtras);
+          }
+          uniqueSources.add(source);
+          ret ??= insertIndex != null
+              ? insertIndex + uniqueSources.length - 1
+              : playlist.length + uniqueSources.length - 1;
+        } else if (duplicatePos != -1) {
+          ret = duplicatePos;
+        } else {
+          ret ??= insertIndex != null
+              ? insertIndex + pendingPos
+              : playlist.length + pendingPos;
+        }
+      }
+      if (uniqueSources.isNotEmpty) {
+        final index = insertIndex;
         // 批量插入后只保存一次
         await doAndSavePlaylist(() async {
           if (index != null) {
@@ -1819,9 +1842,9 @@ class AudioService {
             await playlist.addAll(uniqueSources);
           }
         });
-      } finally {
-        if (lockAcquired) _hijacking = false;
       }
+    } finally {
+      _hijacking = false;
     }
     return ret;
   }

@@ -68,15 +68,23 @@ class BilibiliAPI {
     return entries.map((e) => '${e.key}=${e.value}').join('; ');
   }
 
+  /// Set-Cookie 的属性名（小写）。这些是会话元数据而非会话数据，
+  /// 解析时若不剔除会混进 Cookie 请求头并持久化（污染且无法自清）
+  static const _cookieAttributes = {
+    'expires', 'path', 'domain', 'max-age', 'samesite',
+  };
+
   Future<void> setCookie(String cookie, {bool save = false}) async {
     if (save) {
       await SharedPreferencesService.setCookie(cookie);
     }
-    // 解析 k=v 对合并进 cookie 组
+    // 解析 k=v 对合并进 cookie 组（跳过 Set-Cookie 属性）
     for (final part in cookie.split(';')) {
       final idx = part.indexOf('=');
       if (idx > 0) {
-        _cookieMap[part.substring(0, idx).trim()] = part.substring(idx + 1).trim();
+        final name = part.substring(0, idx).trim();
+        if (_cookieAttributes.contains(name.toLowerCase())) continue;
+        _cookieMap[name] = part.substring(idx + 1).trim();
       }
     }
     cookies = _buildCookieString();
@@ -92,6 +100,10 @@ class BilibiliAPI {
       _cookieMap[name] = value;
     }
     cookies = _buildCookieString();
+    // 与 setCookie/applyLoginCookies 一致：请求头同步重建。
+    // 漏掉这步时 headers['cookie'] 与 cookies 分叉（曾致整个会话
+    // 的请求都不带注入的 DedeUserID）
+    _setupHeaders();
   }
 
   /// 登录成功后应用完整会话（cookie 合并 + buvid3/DedeUserID），可选持久化
@@ -273,20 +285,30 @@ class BilibiliAPI {
     List<T> ret = [];
     int pn = 1;
     dynamic data;
-    do {
+    while (true) {
       data = await _callAPI(url,
           queryParameters: {...?queryParameters, ...params(pn)});
       if (data == null) {
         return null;
       }
-      final pageItems = extract(data);
-      // 空页即终止：hasMoreCheck 依赖的计数若包含失效内容（B 站
-      // media_count 计失效条目而 medias 不返回），继续翻页只会
-      // 反复请求空数据甚至死循环
-      if (pageItems.isEmpty) break;
-      ret.addAll(pageItems);
+      bool more;
+      try {
+        final pageItems = extract(data);
+        // 空页即终止：hasMoreCheck 依赖的计数若包含失效内容（B 站
+        // media_count 计失效条目而 medias 不返回），继续翻页只会
+        // 反复请求空数据甚至死循环
+        if (pageItems.isEmpty) break;
+        ret.addAll(pageItems);
+        more = hasMoreCheck(data, ret.length);
+      } catch (e) {
+        // 响应结构异常（风控页/字段类型变化）时不让错误穿透到 UI：
+        // 已积累的内容照常返回，首页就坏则视为本次请求失败
+        _logger.warning('_callAPIMultiPage parse failed: $e');
+        return ret.isEmpty ? null : ret;
+      }
+      if (!more) break;
       ++pn;
-    } while (hasMoreCheck(data, ret.length));
+    }
     return ret;
   }
 

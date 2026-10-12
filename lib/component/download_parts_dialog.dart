@@ -42,6 +42,9 @@ class _DownloadPartsDialogState extends State<DownloadPartsDialog> {
     super.initState();
     _loadParts();
     DownloadManager.instance.then((dm) {
+      // 弹窗在 DownloadManager 初始化完成前被关闭时不得再挂订阅——
+      // dispose 已跑过，此后赋值的订阅永不 cancel，泄漏在单例流上
+      if (!mounted) return;
       _tasksSubscription = dm.tasksStream.listen(_onTasksChanged);
     });
   }

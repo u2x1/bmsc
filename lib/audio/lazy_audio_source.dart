@@ -502,7 +502,8 @@ class LazyAudioSource extends StreamAudioSource {
           ? 0
           : (sourceLength == 0)
               ? 100
-              : (100 * _progress ~/ sourceLength);
+              // CDN 实发可能多于 Content-Length：钳制防进度超 100%
+              : min(100, 100 * _progress ~/ sourceLength);
       updateProgress(newPercentProgress);
       sink.add(data);
       final readyRequests = _requests
@@ -535,69 +536,74 @@ class LazyAudioSource extends StreamAudioSource {
       // Prevent further data coming from the HTTP source until we have set up
       // an entry in inProgressResponses to continue receiving live HTTP data.
       subscription.pause();
-      await sink.flush();
-      // Process any requests that start within the cache.
-      for (var request in readyRequests) {
-        _requests.remove(request);
-        int? start, end;
-        if (originSupportsRangeRequests) {
-          start = request.start;
-          end = request.end;
-        } else {
-          // If the origin doesn't support range requests, the proxy should also
-          // ignore range requests and instead serve a complete 200 response
-          // which the client (AV or exo player) should know how to deal with.
+      try {
+        await sink.flush();
+        // Process any requests that start within the cache.
+        for (var request in readyRequests) {
+          _requests.remove(request);
+          int? start, end;
+          if (originSupportsRangeRequests) {
+            start = request.start;
+            end = request.end;
+          } else {
+            // If the origin doesn't support range requests, the proxy should also
+            // ignore range requests and instead serve a complete 200 response
+            // which the client (AV or exo player) should know how to deal with.
+          }
+          final effectiveStart = start ?? 0;
+          // 直播流模式：始终向文件尾流式输出，但响应头不携带长度/偏移，
+          // 客户端（AVPlayer）按无界直播流处理；
+          // 渐进式模式：对外宣告的长度可能被截断（见 advertisedLengthCapBytes），
+          // 数据服务范围同步钳制在宣告长度内（宣告范围内的数据随下载按序到达）。
+          final advertised = advertisedSourceLength();
+          var effectiveEnd =
+              _serveAsLiveStream ? sourceLength : (end ?? advertised);
+          if (!_serveAsLiveStream &&
+              effectiveEnd != null &&
+              advertised != null &&
+              effectiveEnd > advertised) {
+            effectiveEnd = advertised;
+          }
+          Stream<List<int>> responseStream;
+          if (effectiveEnd != null && effectiveEnd <= _progress) {
+            responseStream =
+                getEffectiveCacheFile().openRead(effectiveStart, effectiveEnd);
+          } else {
+            final cacheResponse = _InProgressCacheResponse(end: effectiveEnd);
+            inProgressResponses.add(cacheResponse);
+            responseStream = Rx.concatEager([
+              // NOTE: The cache file part of the stream must not overlap with
+              // the live part. "_progress" should
+              // to the cache file at the time
+              getEffectiveCacheFile().openRead(effectiveStart, _progress),
+              cacheResponse.controller.stream,
+            ]);
+          }
+          if (_serveAsLiveStream) {
+            request.complete(StreamAudioResponse(
+              rangeRequestsSupported: false,
+              sourceLength: null,
+              contentLength: null,
+              offset: null,
+              contentType: mimeType,
+              stream: responseStream.asBroadcastStream(),
+            ));
+          } else {
+            request.complete(StreamAudioResponse(
+              rangeRequestsSupported: originSupportsRangeRequests,
+              sourceLength: start != null ? advertised : null,
+              contentLength:
+                  effectiveEnd != null ? effectiveEnd - effectiveStart : null,
+              offset: start,
+              contentType: mimeType,
+              stream: responseStream.asBroadcastStream(),
+            ));
+          }
         }
-        final effectiveStart = start ?? 0;
-        // 直播流模式：始终向文件尾流式输出，但响应头不携带长度/偏移，
-        // 客户端（AVPlayer）按无界直播流处理；
-        // 渐进式模式：对外宣告的长度可能被截断（见 advertisedLengthCapBytes），
-        // 数据服务范围同步钳制在宣告长度内（宣告范围内的数据随下载按序到达）。
-        final advertised = advertisedSourceLength();
-        var effectiveEnd = _serveAsLiveStream ? sourceLength : (end ?? advertised);
-        if (!_serveAsLiveStream &&
-            effectiveEnd != null &&
-            advertised != null &&
-            effectiveEnd > advertised) {
-          effectiveEnd = advertised;
-        }
-        Stream<List<int>> responseStream;
-        if (effectiveEnd != null && effectiveEnd <= _progress) {
-          responseStream =
-              getEffectiveCacheFile().openRead(effectiveStart, effectiveEnd);
-        } else {
-          final cacheResponse = _InProgressCacheResponse(end: effectiveEnd);
-          inProgressResponses.add(cacheResponse);
-          responseStream = Rx.concatEager([
-            // NOTE: The cache file part of the stream must not overlap with
-            // the live part. "_progress" should
-            // to the cache file at the time
-            getEffectiveCacheFile().openRead(effectiveStart, _progress),
-            cacheResponse.controller.stream,
-          ]);
-        }
-        if (_serveAsLiveStream) {
-          request.complete(StreamAudioResponse(
-            rangeRequestsSupported: false,
-            sourceLength: null,
-            contentLength: null,
-            offset: null,
-            contentType: mimeType,
-            stream: responseStream.asBroadcastStream(),
-          ));
-        } else {
-          request.complete(StreamAudioResponse(
-            rangeRequestsSupported: originSupportsRangeRequests,
-            sourceLength: start != null ? advertised : null,
-            contentLength:
-                effectiveEnd != null ? effectiveEnd - effectiveStart : null,
-            offset: start,
-            contentType: mimeType,
-            stream: responseStream.asBroadcastStream(),
-          ));
-        }
+      } finally {
+        // 中途抛错必须恢复订阅，否则订阅永久 pause、下载停摆
+        subscription.resume();
       }
-      subscription.resume();
       // Process any requests that start beyond the cache.
       // 注：此处如实宣告真实 sourceLength（不做截断）——截断宣告后 AVPlayer
       // 视资源为 N MB，只有拖动越过宣告边界时才可能产生这类请求，此时
@@ -655,6 +661,7 @@ class LazyAudioSource extends StreamAudioSource {
       }
       if (!localFile.existsSync()) {
         _logger.severe('[$bvid:$cid] download artifact missing after done');
+        _response = null; // 与失败路径一致：允许后续 request 重启下载
         _downloading = false;
         if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
           _inflightDownloads.remove(_downloadKey);
@@ -690,8 +697,14 @@ class LazyAudioSource extends StreamAudioSource {
       // Clean up cache as a separate operation
       DatabaseManager.cleanupCache(ignoreFile: localFile);
     }, onError: (Object e, StackTrace stackTrace) async {
-      (await _partialCacheFile).deleteSync();
+      // .part 可能已被并发清理：删除失败不得阻断后续清理与错误完成
+      try {
+        (await _partialCacheFile).deleteSync();
+      } catch (_) {}
       httpClient.close();
+      // 允许后续 request 重启下载：否则 _response 滞留已完成（错误）
+      // 的 future，新请求入队后无人服务，播放永久挂死
+      _response = null;
       // Fail all pending requests
       for (final req in _requests) {
         req.fail(e, stackTrace);
@@ -768,6 +781,17 @@ class LazyAudioSource extends StreamAudioSource {
         // Cancel any pending request
         for (final req in _requests) {
           req.fail(error, stackTrace);
+        }
+        // _fetch 在 listen 挂接前失败（playurl 解析失败、DNS/TLS、CDN
+        // 5xx 等）时流内 onError 不会运行：必须在此补齐清理三件套，否则
+        // _downloading 滞留 true、in-flight 占位永不完成，等待同曲
+        // 下载的其他实例永久挂死且无任何错误上报
+        _downloading = false;
+        if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+          _inflightDownloads.remove(_downloadKey);
+        }
+        if (!_downloadCompleteCompleter.isCompleted) {
+          _downloadCompleteCompleter.completeError(error, stackTrace);
         }
         return Future<HttpClientResponse>.error(error as Object, stackTrace);
       });

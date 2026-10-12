@@ -185,11 +185,14 @@ class _DetailScreenState extends State<DetailScreen>
           _dismissDragOffset = animation.value;
         });
       });
-      controller.forward().whenComplete(() {
+      controller.forward().then((_) {
         if (_dismissAnimController == controller) {
           _dismissAnimController = null;
         }
         controller.dispose();
+      }, onError: (_) {
+        // 外部 dispose 打断 forward 时收到 TickerCanceled：静默吞掉
+        // （否则成为未处理异步错误），控制器由外部负责销毁
       });
     }
   }
@@ -886,8 +889,15 @@ class _DetailScreenState extends State<DetailScreen>
           ),
           child: Padding(
             padding: EdgeInsets.all(isSmallScreen ? 6.0 : 8.0),
-            child:
-                _playPauseButton(playerState, player, context, isSmallScreen),
+            // playing/processingState 变化不产生 sequenceState 事件，
+            // 整页重建只由 sequenceState 驱动——播放/暂停按钮必须自挂
+            // playerStateStream，否则暂停后图标与回调停在旧状态「假死」
+            child: StreamBuilder<PlayerState>(
+              stream: player.playerStateStream,
+              initialData: playerState,
+              builder: (context, snapshot) => _playPauseButton(
+                  snapshot.data, player, context, isSmallScreen),
+            ),
           ),
         ),
         IconButton(
@@ -935,8 +945,13 @@ class _DetailScreenState extends State<DetailScreen>
           Icons.replay,
           size: iconSize,
         ),
-        onPressed: () =>
-            player.seek(Duration.zero, index: player.effectiveIndices.first),
+        onPressed: () {
+          // 播放完毕且队列恰被清空的竞争窗口下 effectiveIndices 为空
+          final idx = player.effectiveIndices.firstOrNull;
+          if (idx != null) {
+            player.seek(Duration.zero, index: idx);
+          }
+        },
       );
     }
   }
@@ -1785,13 +1800,13 @@ class _DetailScreenState extends State<DetailScreen>
         // 检查字幕是否与当前播放的视频匹配
         if ('${currentAid}_$currentCid' != currentKey) {
           currentKey = '${currentAid}_$currentCid';
+          // 新字幕落盘前先清掉旧字幕：避免切歌后短暂显示上一首的歌词
+          _subtitles = null;
           Future.microtask(() => _loadSubtitles(currentAid, currentCid));
 
-          if (_subtitles == null) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
-          }
+          return const Center(
+            child: CircularProgressIndicator(),
+          );
         }
 
         final tracks = _subtitleTracksCache[currentKey ?? ''];

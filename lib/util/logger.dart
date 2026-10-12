@@ -17,7 +17,12 @@ class LoggerUtils {
     Logger.root.level = Level.ALL;
     final levelName = prefs.getString(_loggingLevelKey);
     if (levelName != null) {
-      Logger.root.level = Level.LEVELS.firstWhere((e) => e.name == levelName);
+      // 持久化的级别名与未来 logging 包版本不符时回退 ALL，
+      // 否则 firstWhere 抛 StateError 直接崩在启动路径
+      Logger.root.level = Level.LEVELS
+              .where((e) => e.name == levelName)
+              .firstOrNull ??
+          Level.ALL;
     }
 
     Logger.root.onRecord.listen((record) {

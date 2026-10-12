@@ -120,12 +120,15 @@ class _RecognitionScreenState extends State<RecognitionScreen>
 
   Future<void> _start() async {
     if (!await _service.ensureMicPermission()) {
+      // 系统权限弹窗期间页面可能已被销毁
+      if (!mounted) return;
       setState(() {
         _error = '未获得麦克风权限，请在系统设置中允许后重试';
         _phase = _Phase.done;
       });
       return;
     }
+    if (!mounted) return;
     setState(() {
       _phase = _Phase.recording;
       _countdown = _recordSeconds;
@@ -136,6 +139,7 @@ class _RecognitionScreenState extends State<RecognitionScreen>
     try {
       await _service.startRecording();
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _phase = _Phase.done;
         _error = '无法开始录音：$e';

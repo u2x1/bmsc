@@ -294,14 +294,15 @@ class _JustAudioPlayer extends AudioPlayerPlatform {
   @override
   Future<SetWebCrossOriginResponse> setWebCrossOrigin(
       SetWebCrossOriginRequest request) async {
-    _playerAudioHandler.customSetWebCrossOrigin(request);
+    await _playerAudioHandler.customSetWebCrossOrigin(request);
     return SetWebCrossOriginResponse();
   }
 
   @override
-  Future<SetWebSinkIdResponse> setWebSinkId(SetWebSinkIdRequest request) {
-    _playerAudioHandler.customSetWebSinkId(request);
-    throw SetWebSinkIdResponse();
+  Future<SetWebSinkIdResponse> setWebSinkId(SetWebSinkIdRequest request) async {
+    // 此前误用 throw 代替 return（响应对象被当异常抛）且未 await
+    await _playerAudioHandler.customSetWebSinkId(request);
+    return SetWebSinkIdResponse();
   }
 
   @override

@@ -51,6 +51,7 @@ class ClipPlayer extends ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 250));
           if (_playingId != id) break;
           final ms = await _ch.invokeMethod<int>('clipPosition') ?? _durationMs;
+          if (_posController.isClosed) break;
           _posController.add(Duration(milliseconds: ms));
           if (_durationMs > 0 && ms >= _durationMs - 100) break;
         }
@@ -58,7 +59,9 @@ class ClipPlayer extends ChangeNotifier {
       } else {
         final p = AudioPlayer(handleInterruptions: false);
         _jaPlayer = p;
-        final sub = p.positionStream.listen(_posController.add);
+        final sub = p.positionStream.listen((d) {
+          if (!_posController.isClosed) _posController.add(d);
+        });
         await p.setFilePath(path);
         await p.play(); // play() 在播放结束或停止时才完成
         await sub.cancel();
@@ -91,8 +94,10 @@ class ClipPlayer extends ChangeNotifier {
 
   @override
   void dispose() {
-    unawaited(stop());
-    _posController.close();
+    // stop 是异步的：Android 轮询循环与非 Android 的 positionStream
+    // 订阅在 stop 落定前还会 _posController.add 一段时间。先同步
+    // close 会导致「add after close」StateError——等 stop 完成再关
+    unawaited(stop().whenComplete(() => _posController.close()));
     super.dispose();
   }
 }
