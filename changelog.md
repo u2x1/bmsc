@@ -1,8 +1,5 @@
 # 2.2.3
-- fix 播放全部失败：匿名身份只有本地合成 buvid3、缺 buvid4，playurl 被风控以 code=0 返回 `{v_voucher}`（无 dash）——启动改用 finger/spi 下发真实 buvid3+buvid4+b_nut，playurl 补齐 gaia_source/dm_img 等反风控参数（对齐 PiliPlus），v_voucher 时刷新身份与 WBI key 重试一次
-- fix playurl 风控响应类型强转崩溃（`Null is not a subtype of String`）：改为直接解析 dash，无音频流时返回明确错误而非把空 URI 交给 HttpClient
-- fix App playurl -351：Android-HD 登录 token 改用 HD appkey 签名并携带 buvid/App 头（token 与登录 appkey 绑定）；连续 -351 后 10 分钟内直接走 web，避免每次播放先撞风控
-- fix WBI key 按 UTC 日缓存：北京时间 16:00–24:00 会继续用前一天已失效的 key，改按北京时间日缓存
+- fix 播放全部失败：playurl 风控修复——改用 finger/spi 真实设备指纹（buvid3/buvid4/b_nut），补齐反风控参数，v_voucher 时刷新重试；App 端签名改用 HD appkey
 - fix 数据库升级致命错误：迁移分支按降序执行，v5 及更早版本的库升级必崩且每次启动重试都崩——重排为升序
 - fix 桌面端误删已完成下载：缓存孤儿文件清扫只认缓存表不认下载表，下载目录配到用户级 Documents 时启动即被当孤儿删除
 - fix 播放「无声挂死」家族：缓存下载在挂接前失败时清理三件套缺失（in-flight 占位永不完成，等待同曲的实例永久挂死且无错误上报）；下载中途出错不重置响应，重试请求入队无人服务；订阅暂停后中途抛错不恢复致下载停摆
