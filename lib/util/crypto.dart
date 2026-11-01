@@ -98,25 +98,33 @@ String getMixinKey(String rawWbiKey) {
   return mixinKeyEncTab.map((e) => rawWbiKey[e]).join('').substring(0, 32);
 }
 
-Future<Map<String, dynamic>?> encodeParams(Map<String, dynamic> params) async {
-  final rawWbiKey = await (await BilibiliService.instance).getRawWbiKey();
-  if (rawWbiKey == null) return null;
+/// 用已知的 raw WBI key 对参数签名（不依赖 BilibiliService 单例，便于
+/// BilibiliAPI 内部直接复用与单元测试）。
+Map<String, String> signWbiParams(Map<String, dynamic> params, String rawWbiKey,
+    {int? timestamp}) {
   final mixinKey = getMixinKey(rawWbiKey);
-  final wts = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-  params['wts'] = wts.toString();
+  final wts = timestamp ?? DateTime.now().millisecondsSinceEpoch ~/ 1000;
   final chrFilter = RegExp(r"[!'()*]");
-  params = Map.fromEntries(params.entries
+  final withWts = Map<String, dynamic>.from(params)..['wts'] = wts.toString();
+  final sorted = Map<String, dynamic>.fromEntries(withWts.entries
       .map((e) => MapEntry(e.key, e.value.toString().replaceAll(chrFilter, '')))
       .toList()
     ..sort((a, b) => a.key.compareTo(b.key)));
-  final query = Uri(queryParameters: params).query;
-  final encryptedQuery = query + mixinKey;
-  final wRid = md5.convert(utf8.encode(encryptedQuery)).toString();
-  _logger.info('encoded params with w_rid and wts');
+  final query = Uri(queryParameters: sorted).query;
+  final wRid = md5.convert(utf8.encode(query + mixinKey)).toString();
   return {
-    ...params,
+    for (final e in sorted.entries) e.key: e.value.toString(),
     'w_rid': wRid,
   };
+}
+
+Future<Map<String, dynamic>?> encodeParams(Map<String, dynamic> params,
+    {bool forceRefreshWbi = false}) async {
+  final rawWbiKey = await (await BilibiliService.instance)
+      .getRawWbiKey(forceRefresh: forceRefreshWbi);
+  if (rawWbiKey == null) return null;
+  _logger.info('encoded params with w_rid and wts');
+  return signWbiParams(params, rawWbiKey);
 }
 
 String generateDmImgStr() {

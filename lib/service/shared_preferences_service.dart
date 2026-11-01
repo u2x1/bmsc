@@ -85,13 +85,13 @@ class SharedPreferencesService {
       if (Platform.isAndroid) {
         value = '/storage/emulated/0/Download/BMSC';
       } else if (Platform.isIOS) {
-        value =
-            p.join((await getApplicationDocumentsDirectory()).path, 'Downloads');
+        value = p.join(
+            (await getApplicationDocumentsDirectory()).path, 'Downloads');
       } else if (Platform.isWindows) {
         value = p.join((await getDownloadsDirectory())?.path ?? '.', 'BMSC');
       } else {
-        value = p.join(
-            (await getApplicationSupportDirectory()).path, 'Download');
+        value =
+            p.join((await getApplicationSupportDirectory()).path, 'Download');
       }
     }
     return value;
@@ -289,6 +289,28 @@ class SharedPreferencesService {
     return prefs.getString('buvid3');
   }
 
+  /// 匿名 web 身份 buvid4（与 buvid3 成对，playurl 风控校验必需）
+  static Future<void> setBuvid4(String buvid4) async {
+    final prefs = await instance;
+    await prefs.setString('buvid4', buvid4);
+  }
+
+  static Future<String?> getBuvid4() async {
+    final prefs = await instance;
+    return prefs.getString('buvid4');
+  }
+
+  /// buvid3/buvid4 的签发时间（UNIX 秒），playurl 风控校验用
+  static Future<void> setBNut(String bNut) async {
+    final prefs = await instance;
+    await prefs.setString('b_nut', bNut);
+  }
+
+  static Future<String?> getBNut() async {
+    final prefs = await instance;
+    return prefs.getString('b_nut');
+  }
+
   /// 登录后获取到的 access_key 是否可用（App 接口签名用）
   static Future<bool> hasAccessToken() async {
     final prefs = await instance;
@@ -448,8 +470,7 @@ class SharedPreferencesService {
             title: data.title,
             artist: data.artist,
             album: data.album.isEmpty ? null : data.album,
-            artUri:
-                data.artUri.isEmpty ? null : Uri.parse(data.artUri),
+            artUri: data.artUri.isEmpty ? null : Uri.parse(data.artUri),
             duration: Duration(seconds: data.duration),
             extras: {
               'local': true,
@@ -459,7 +480,8 @@ class SharedPreferencesService {
         );
       } else {
         final uri = data.audioUri == "" ? null : Uri.parse(data.audioUri);
-        final file = uri != null && uri.isScheme('file') ? File(uri.path) : null;
+        final file =
+            uri != null && uri.isScheme('file') ? File(uri.path) : null;
         // 恢复的本地文件可能来自旧安装（容器路径失效），失效时回退为
         // 网络源（localFile 置 null），避免 iOS 上创建文件时抛权限异常。
         if (file != null && !file.existsSync()) {

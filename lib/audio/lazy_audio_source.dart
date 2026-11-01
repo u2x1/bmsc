@@ -116,8 +116,14 @@ class LazyAudioSource extends StreamAudioSource {
     return await _uriMemoizer.runOnce(() async {
       final service = await BilibiliService.instance;
       final audio = await service.getAudio(bvid, cid);
-      qualityId = audio?.firstOrNull?.id;
-      return Uri.parse(audio?.firstOrNull?.baseUrl ?? '');
+      final first = audio?.firstOrNull;
+      if (first == null || first.baseUrl.isEmpty) {
+        // 不要把空串交给 HttpClient：会抛出无上下文的
+        // 「No host specified in URI」，掩盖真实原因（多为 playurl 风控）
+        throw Exception('无法解析音频地址：B 站接口未返回可播放流（可能触发风控，请稍后重试）');
+      }
+      qualityId = first.id;
+      return Uri.parse(first.baseUrl);
     });
   }
 
@@ -204,8 +210,7 @@ class LazyAudioSource extends StreamAudioSource {
       _inflightDownloads.remove(_downloadKey);
     }
     if (!_downloadCompleteCompleter.isCompleted) {
-      _downloadCompleteCompleter
-          .completeError(Exception('download cancelled'));
+      _downloadCompleteCompleter.completeError(Exception('download cancelled'));
     }
   }
 
@@ -223,7 +228,8 @@ class LazyAudioSource extends StreamAudioSource {
   /// 按 URL 扩展名推断真实音频类型，兼容两端。
   static String sniffMimeFromUri(Uri uri, [String fallback = 'audio/mpeg']) {
     final path = uri.path.toLowerCase();
-    if (path.endsWith('.m4s') || path.endsWith('.m4a') ||
+    if (path.endsWith('.m4s') ||
+        path.endsWith('.m4a') ||
         path.endsWith('.mp4')) {
       return 'audio/mp4';
     }
@@ -269,7 +275,10 @@ class LazyAudioSource extends StreamAudioSource {
       return 'audio/flac';
     }
     // 'RIFF'....'WAVE'
-    if (eq(0, 0x52) && eq(1, 0x49) && eq(2, 0x46) && eq(3, 0x46) &&
+    if (eq(0, 0x52) &&
+        eq(1, 0x49) &&
+        eq(2, 0x46) &&
+        eq(3, 0x46) &&
         eq(8, 0x57) &&
         eq(9, 0x41) &&
         eq(10, 0x56) &&
@@ -350,7 +359,8 @@ class LazyAudioSource extends StreamAudioSource {
       // 对应的音质 id，重试落到其他音质流时同步更正 qualityId。
       final retryCandidates = <({Uri url, int id})>[
         for (final a in candidates)
-          if (a.baseUrl.isNotEmpty) (url: Uri.parse(a.baseUrl), id: a.id as int),
+          if (a.baseUrl.isNotEmpty)
+            (url: Uri.parse(a.baseUrl), id: a.id as int),
         for (final a in candidates)
           ...?a.backupUrl?.map((u) => (url: Uri.parse(u), id: a.id as int)),
       ];
@@ -408,6 +418,7 @@ class LazyAudioSource extends StreamAudioSource {
     }
 
     _progress = 0;
+
     /// 实际宣告的截断长度：静态上限 advertisedLengthCapBytes，且至少覆盖
     /// 约 45s 可播时长（按 tag 时长与真实大小折算码率）——否则慢网络下
     /// AVPlayer 播完宣告的数据而完整下载未竟，item 会提前结束或卡死
@@ -438,7 +449,8 @@ class LazyAudioSource extends StreamAudioSource {
       var offset = 0;
       while (offset + 8 <= bytes.length) {
         final size32 = bd.getUint32(offset);
-        final type = String.fromCharCodes(bytes.sublist(offset + 4, offset + 8));
+        final type =
+            String.fromCharCodes(bytes.sublist(offset + 4, offset + 8));
         if (type == 'moov') {
           moovFront = true;
           final real = sourceLength;

@@ -34,9 +34,6 @@ class BilibiliService {
     // 登录身份：Android-HD buvid（持久化）/ deviceId（进程级）
     await service._loadLoginIdentity();
 
-    // CookieJar 匿名身份 buvid3
-    await service._bilibiliAPI.ensureBuvid3();
-
     final cookie = await SharedPreferencesService.getCookie();
 
     if (cookie != null) {
@@ -46,6 +43,10 @@ class BilibiliService {
       await service._bilibiliAPI.resetCookies();
     }
 
+    // CookieJar 匿名身份必须在持久化 cookie 之后加载：旧版本 cookie 串里
+    // 可能存着本地合成的 buvid3，先加载会被它覆盖，playurl 直接 v_voucher。
+    await service._bilibiliAPI.ensureAnonymousIdentity();
+
     service.myInfo = await SharedPreferencesService.getMyInfo();
 
     // 会话失效信号（-101 + 持有 SESSDATA）：标记过期。必须在
@@ -54,8 +55,7 @@ class BilibiliService {
     service._bilibiliAPI.onSessionInvalid = () {
       if (service.sessionExpired.value) return;
       service.sessionExpired.value = true;
-      _logger.warning(
-          'session expired: cookie invalid or logged in elsewhere');
+      _logger.warning('session expired: cookie invalid or logged in elsewhere');
     };
 
     final newInfo = await service._bilibiliAPI.getMyInfo();
@@ -81,8 +81,8 @@ class BilibiliService {
     _loginBuvid = buvid;
     _deviceId = BiliSign.createDeviceId();
     _loginIdentityReady.complete();
-    _logger.info(
-        'login identity loaded: buvid=$_loginBuvid deviceId=$_deviceId');
+    _logger
+        .info('login identity loaded: buvid=$_loginBuvid deviceId=$_deviceId');
   }
 
   Future<(String, String)> getLoginIdentity() async {
@@ -112,6 +112,8 @@ class BilibiliService {
   Future<void> logout() async {
     await _bilibiliAPI.resetCookies();
     _bilibiliAPI.clearCookies();
+    // 清空会话后恢复匿名设备指纹（buvid3/buvid4 已持久化，不触网）
+    await _bilibiliAPI.ensureAnonymousIdentity();
     _bilibiliAPI.onSessionInvalid = null;
     sessionExpired.value = false;
     myInfo = null;
@@ -151,8 +153,7 @@ class BilibiliService {
 
   /// TV 二维码登录成功后应用会话
   Future<void> applyTvLoginSession(TvQrPollResult result) async {
-    await _bilibiliAPI
-        .applyLoginCookies(result.cookies, save: true);
+    await _bilibiliAPI.applyLoginCookies(result.cookies, save: true);
     if (result.accessToken.isNotEmpty) {
       await SharedPreferencesService.setAccessToken(result.accessToken);
       await SharedPreferencesService.setRefreshToken(result.refreshToken);
@@ -294,8 +295,9 @@ class BilibiliService {
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
     // App 端 playurl 优先（appkey 签名 + access_key，对齐 BiliPai）；失败回退 web WBI
     final accessToken = await SharedPreferencesService.getAccessToken();
-    final appResult =
-        await _bilibiliAPI.getAudioApp(bvid, cid, accessToken: accessToken);
+    final (buvid, _) = await getLoginIdentity();
+    final appResult = await _bilibiliAPI.getAudioApp(bvid, cid,
+        accessToken: accessToken, buvid: buvid);
     if (appResult != null && appResult.isNotEmpty) {
       return appResult;
     }
@@ -480,12 +482,13 @@ class BilibiliService {
   Future<bool> refreshTvToken() async {
     final accessToken = await SharedPreferencesService.getAccessToken();
     final refreshToken = await SharedPreferencesService.getRefreshToken();
-    if (accessToken == null || refreshToken == null ||
-        accessToken.isEmpty || refreshToken.isEmpty) {
+    if (accessToken == null ||
+        refreshToken == null ||
+        accessToken.isEmpty ||
+        refreshToken.isEmpty) {
       return false;
     }
-    final result =
-        await _bilibiliAPI.refreshTvToken(accessToken, refreshToken);
+    final result = await _bilibiliAPI.refreshTvToken(accessToken, refreshToken);
     if (result == null) return false;
     await SharedPreferencesService.setAccessToken(result.accessToken);
     await SharedPreferencesService.setRefreshToken(result.refreshToken);
@@ -567,8 +570,8 @@ class BilibiliService {
     return _bilibiliAPI.checkQrcodeLoginStatus(qrcodeKey);
   }
 
-  Future<String?> getRawWbiKey() {
-    return _bilibiliAPI.getRawWbiKey();
+  Future<String?> getRawWbiKey({bool forceRefresh = false}) {
+    return _bilibiliAPI.getRawWbiKey(forceRefresh: forceRefresh);
   }
 
   Future<List<Map<String, dynamic>>?> getHotSearch() {
@@ -687,8 +690,7 @@ class BilibiliService {
 
       await prefs.setString(
           'last_recommendations_update', now.toIso8601String());
-      await prefs.setInt(
-          'daily_recommendations_folder', defaultFavFolder.$1);
+      await prefs.setInt('daily_recommendations_folder', defaultFavFolder.$1);
       await prefs.setString('daily_recommendations',
           jsonEncode(recommendedVideos.map((v) => v.toJson()).toList()));
 

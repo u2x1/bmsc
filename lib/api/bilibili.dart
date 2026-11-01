@@ -25,9 +25,14 @@ import 'package:dio/dio.dart';
 class BilibiliAPI {
   static final _logger = LoggerUtils.getLogger('BilibiliAPI');
 
+  static const String _webUserAgent =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0";
+
   /// 完整 cookie 串（buvid3;SESSDATA;bili_jct;DedeUserID;...）
-  late String cookies;
-  late Map<String, String> headers;
+  /// 用空值初始化而非 late：首次启动 resetCookies 失败时 catch 分支会读
+  /// cookies，late 字段会抛 LateInitializationError 掩盖真实网络错误。
+  String cookies = '';
+  Map<String, String> headers = {};
   Dio dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 10),
     sendTimeout: const Duration(seconds: 10),
@@ -39,7 +44,9 @@ class BilibiliAPI {
   /// cookie 组件（CookieJar 模式，对齐 BiliPai：自动注入完整 cookie 组）
   final Map<String, String> _cookieMap = {};
 
-  String _buvid3 = '';
+  /// App playurl 连续 -351（风控）后短期跳过，避免每次播放都先撞一次
+  /// 风控接口、进一步加重风控。
+  DateTime? _appPlayUrlCooldownUntil;
 
   /// false = 完全不做连通性管理（事件监听 + 探活自愈），noNetwork 为纯静态
   /// 开关（测试用：auth_layer_test 的短路行为依赖静态语义）
@@ -71,7 +78,11 @@ class BilibiliAPI {
   /// Set-Cookie 的属性名（小写）。这些是会话元数据而非会话数据，
   /// 解析时若不剔除会混进 Cookie 请求头并持久化（污染且无法自清）
   static const _cookieAttributes = {
-    'expires', 'path', 'domain', 'max-age', 'samesite',
+    'expires',
+    'path',
+    'domain',
+    'max-age',
+    'samesite',
   };
 
   Future<void> setCookie(String cookie, {bool save = false}) async {
@@ -106,15 +117,17 @@ class BilibiliAPI {
     _setupHeaders();
   }
 
-  /// 登录成功后应用完整会话（cookie 合并 + buvid3/DedeUserID），可选持久化
+  /// 登录成功后应用完整会话（cookie 合并 + DedeUserID），可选持久化。
+  /// App 登录身份（XY...）与 Web playurl 的 buvid3/buvid4 是两套体系：
+  /// 登录响应若带 buvid 字段，覆盖匿名指纹会让 buvid3/buvid4 不成对，
+  /// playurl 直接 v_voucher——这里只合并会话凭据，保留匿名指纹。
   Future<void> applyLoginCookies(Map<String, String> sessionCookies,
       {bool save = false}) async {
-    final buvid3 = sessionCookies['buvid3'] ?? sessionCookies['buvid'];
-    if (buvid3 != null && buvid3.isNotEmpty) {
-      _buvid3 = buvid3;
-      await SharedPreferencesService.setBuvid3(buvid3);
-    }
-    _cookieMap.addAll(sessionCookies);
+    final session = Map<String, String>.from(sessionCookies)
+      ..remove('buvid')
+      ..remove('buvid3')
+      ..remove('buvid4');
+    _cookieMap.addAll(session);
     cookies = _buildCookieString();
     if (save) {
       await SharedPreferencesService.setCookie(cookies);
@@ -129,22 +142,22 @@ class BilibiliAPI {
   }
 
   void _setupHeaders() {
-    final ua =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/113.0";
     // 只保留正常 Web 端请求头（对齐 BiliPai：不携带伪造的 app-key / x-bili-* 设备指纹头）
     headers = {
       if (cookies.isNotEmpty) 'cookie': cookies,
-      'User-Agent': ua,
+      'User-Agent': _webUserAgent,
       'referer': "https://www.bilibili.com",
       'Origin': "https://www.bilibili.com",
     };
     dio.interceptors.clear();
     dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
-        // App 端登录请求（带 app-key 头）不混入 Web 端指纹头（cookie/
+        // App 端请求（带 app-key 头）不混入 Web 端指纹头（cookie/
         // referer/Origin/桌面 UA）：passport 风控校验 UA 与 app 签名 body
         // 的一致性，桌面 UA 会以 -105「验证码错误」拒绝（真机实测）。
-        if (options.headers.containsKey('app-key')) {
+        // skipWebHeaders 用于 finger/spi 这类必须不带任何 Cookie 的请求。
+        if (options.headers.containsKey('app-key') ||
+            options.extra['skipWebHeaders'] == true) {
           return handler.next(options);
         }
         final merged = <String, dynamic>{...headers}..addAll(options.headers);
@@ -174,17 +187,115 @@ class BilibiliAPI {
     }
   }
 
-  /// 确保 buvid3 匿名身份存在（对齐 BiliPai CookieJar，UUID+infoc）
-  Future<void> ensureBuvid3() async {
-    if (_buvid3.isNotEmpty) return;
-    var buvid3 = await SharedPreferencesService.getBuvid3();
-    if (buvid3 == null || buvid3.isEmpty) {
+  /// 真实设备指纹格式（finger/spi 下发的 buvid3 带连字符；旧版本
+  /// 本地合成的 `hex+infoc` 没有连字符，playurl 会返回 v_voucher 风控）。
+  static bool _isDeviceBuvid(String? buvid) =>
+      buvid != null && buvid.length >= 32 && buvid.contains('-');
+
+  /// 确保匿名设备身份存在。playurl 风控同时校验 buvid3 + buvid4，
+  /// 只带合成的 buvid3 会返回 `{v_voucher: ...}`（无 dash）。
+  Future<void> ensureAnonymousIdentity() async {
+    final persisted3 = await SharedPreferencesService.getBuvid3();
+    final persisted4 = await SharedPreferencesService.getBuvid4();
+    final persistedNut = await SharedPreferencesService.getBNut();
+
+    if (_isDeviceBuvid(persisted3) &&
+        persisted4 != null &&
+        persisted4.isNotEmpty) {
+      _applyAnonymousIdentity(persisted3!, persisted4, persistedNut);
+      return;
+    }
+
+    final fetched = await _fetchAnonymousIdentity();
+    if (fetched != null) {
+      await _persistAnonymousIdentity(fetched.$1, fetched.$2, fetched.$3);
+      return;
+    }
+
+    // finger/spi 不可用时的兜底：保留旧版合成 buvid3，至少其它接口可用
+    var buvid3 = persisted3;
+    if (!_isDeviceBuvid(buvid3)) {
       buvid3 =
           '${DateTime.now().microsecondsSinceEpoch.toRadixString(16)}${Random().nextInt(1 << 30).toRadixString(16)}infoc';
       await SharedPreferencesService.setBuvid3(buvid3);
     }
-    _buvid3 = buvid3;
+    _applyAnonymousIdentity(buvid3!, persisted4 ?? '', persistedNut);
+    _logger.warning(
+        'anonymous identity unavailable: playurl may be risk-controlled');
+  }
+
+  Future<void>? _identityRefreshInFlight;
+
+  /// 强制刷新设备指纹（playurl 返回 v_voucher 时调用）。
+  /// 单飞：并发预解析可能同时触发多个 v_voucher，重复换指纹只会互相覆盖。
+  Future<void> refreshAnonymousIdentity() {
+    return _identityRefreshInFlight ??=
+        _refreshAnonymousIdentity().whenComplete(() {
+      _identityRefreshInFlight = null;
+    });
+  }
+
+  Future<void> _refreshAnonymousIdentity() async {
+    final fetched = await _fetchAnonymousIdentity();
+    if (fetched == null) {
+      _logger.warning('refreshAnonymousIdentity failed');
+      return;
+    }
+    await _persistAnonymousIdentity(fetched.$1, fetched.$2, fetched.$3);
+  }
+
+  Future<(String, String, String)?> _fetchAnonymousIdentity() async {
+    try {
+      final response = await dio.get(
+        apiFingerSpiUrl,
+        options: Options(
+          headers: {
+            'User-Agent': _webUserAgent,
+            'referer': 'https://www.bilibili.com',
+          },
+          // 必须不带任何旧 Cookie：服务端看到 buvid3 会沿用旧身份
+          extra: {'skipWebHeaders': true},
+        ),
+      );
+      final body = response.data;
+      if (body is! Map || body['code'] != 0) {
+        _logger.warning(
+            'finger/spi failed: code=${body is Map ? body['code'] : '-'}');
+        return null;
+      }
+      final data = body['data'];
+      if (data is! Map) return null;
+      final buvid3 = data['b_3']?.toString() ?? '';
+      final buvid4 = data['b_4']?.toString() ?? '';
+      if (!_isDeviceBuvid(buvid3) || buvid4.isEmpty) {
+        _logger.warning('finger/spi returned invalid identity');
+        return null;
+      }
+      final bNut = (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
+      return (buvid3, buvid4, bNut);
+    } catch (e) {
+      _logger.warning('finger/spi error: $e');
+      return null;
+    }
+  }
+
+  Future<void> _persistAnonymousIdentity(
+      String buvid3, String buvid4, String bNut) async {
+    await SharedPreferencesService.setBuvid3(buvid3);
+    await SharedPreferencesService.setBuvid4(buvid4);
+    await SharedPreferencesService.setBNut(bNut);
+    _applyAnonymousIdentity(buvid3, buvid4, bNut);
+    _logger.info('anonymous identity ready: buvid3=$buvid3');
+  }
+
+  void _applyAnonymousIdentity(String buvid3, String buvid4, String? bNut) {
     _cookieMap['buvid3'] = buvid3;
+    if (buvid4.isNotEmpty) {
+      _cookieMap['buvid4'] = buvid4;
+    }
+    if (bNut != null && bNut.isNotEmpty) {
+      _cookieMap['b_nut'] = bNut;
+    }
     cookies = _buildCookieString();
     _setupHeaders();
   }
@@ -195,8 +306,7 @@ class BilibiliAPI {
     final body = response.data;
     if (body is Map && body['code'] == -101) {
       _logger.warning('access_key invalid (-101), clearing token');
-      SharedPreferencesService.setAccessToken('')
-          .catchError((_) {});
+      SharedPreferencesService.setAccessToken('').catchError((_) {});
     }
   }
 
@@ -567,27 +677,84 @@ class BilibiliAPI {
 
   Future<List<Audio>?> getAudio(String bvid, int cid) async {
     final quality = await SharedPreferencesService.getAudioQuality();
-    final params = await crypto.encodeParams({
+    var data = await _requestPlayUrl(bvid, cid);
+    if (data == null) return null;
+
+    // WBI 签名错误 / 设备指纹缺失时，B 站会以 code=0 返回
+    // `{v_voucher: ...}`（无 dash）。刷新 buvid3/buvid4 + WBI key 后重试一次。
+    if (data['v_voucher'] != null) {
+      _logger.warning(
+          'playurl risk-controlled (v_voucher), refreshing identity + WBI key');
+      await refreshAnonymousIdentity();
+      data = await _requestPlayUrl(bvid, cid, forceRefreshWbi: true);
+      if (data == null || data['v_voucher'] != null) {
+        _logger.severe('playurl still risk-controlled after identity refresh');
+        return null;
+      }
+    }
+    return _parseAudioData(data, quality);
+  }
+
+  Future<Map<String, dynamic>?> _requestPlayUrl(String bvid, int cid,
+      {bool forceRefreshWbi = false}) async {
+    final rawWbiKey = await getRawWbiKey(forceRefresh: forceRefreshWbi);
+    if (rawWbiKey == null) return null;
+    // 反风控上下文参数与官方 web 播放器一致（对齐 PiliPlus）：
+    // 缺 gaia_source/dm_img 时 playurl 更容易返回 v_voucher。
+    final params = crypto.signWbiParams({
       'bvid': bvid,
       'cid': cid,
       'fnval': 4048,
       'fnver': '0',
       'fourk': '1',
-    });
-    if (params == null) return null;
-    return _callAPI(apiAudioUrl, queryParameters: params,
+      'voice_balance': 0,
+      'gaia_source': 'pre-load',
+      'isGaiaAvoided': true,
+      'web_location': 1315873,
+      'dm_img_list': '[]',
+      'dm_img_str': crypto.generateDmImgStr(),
+      'dm_cover_img_str': crypto.generateDmCoverImgStr(),
+      'dm_img_inter': '{"ds":[],"wh":[0,0,0],"of":[0,0,0]}',
+    }, rawWbiKey);
+    return _callAPI<Map<String, dynamic>>(apiAudioUrl,
+        queryParameters: params,
         callback: (data) =>
-            _orderAudioByQuality(TrackResult.fromJson(data).dash, quality));
+            data is Map ? Map<String, dynamic>.from(data) : null);
+  }
+
+  List<Audio>? _parseAudioData(Map<String, dynamic> data, int quality) {
+    final dash = data['dash'];
+    if (dash is! Map) {
+      _logger.warning('playurl returned no dash: keys=${data.keys.toList()}');
+      return null;
+    }
+    try {
+      final ordered = _orderAudioByQuality(
+          Dash.fromJson(Map<String, dynamic>.from(dash)), quality);
+      if (ordered.isEmpty) {
+        _logger.warning('playurl dash has no audio streams');
+        return null;
+      }
+      return ordered;
+    } catch (e) {
+      _logger.severe('playurl dash parse failed: $e');
+      return null;
+    }
   }
 
   /// App 端 playurl（appkey 签名 + access_key，对齐 BiliPai）。
   /// 需要 access_token；拿不到（未登录/-101）时返回 null，调用方回退 web 接口。
   Future<List<Audio>?> getAudioApp(String bvid, int cid,
-      {String? accessToken}) async {
+      {String? accessToken, String? buvid}) async {
     if (accessToken == null || accessToken.isEmpty) return null;
+    if (_appPlayUrlCooldownUntil?.isAfter(DateTime.now()) ?? false) {
+      return null;
+    }
     final quality = await SharedPreferencesService.getAudioQuality();
-    final usesTv = await SharedPreferencesService.getAccessTokenPlatform() ==
-        'tv';
+    final usesTv =
+        await SharedPreferencesService.getAccessTokenPlatform() == 'tv';
+    // access_token 与登录 appkey 绑定：HD 登录必须继续用 HD appkey 签名
+    final appKey = usesTv ? BiliSign.tvAppKey : BiliSign.androidHdAppKey;
     final params = <String, String>{
       'bvid': bvid,
       'cid': cid.toString(),
@@ -603,28 +770,45 @@ class BilibiliAPI {
       'fnver': '0',
       'fourk': '1',
       'access_key': accessToken,
-      'appkey': usesTv ? BiliSign.tvAppKey : BiliSign.androidAppKey,
+      'appkey': appKey,
       'ts': BiliSign.getTimestamp(),
       'platform': 'android',
-      'mobi_app': usesTv ? 'android_tv_yst' : 'android',
+      'mobi_app': usesTv ? 'android_tv_yst' : 'android_hd',
       'device': 'android',
+      if (!usesTv) 'build': '2001100',
+      if (!usesTv) 'channel': 'master',
+      if (!usesTv && buvid != null && buvid.isNotEmpty) 'buvid': buvid,
     };
     final signed = usesTv
         ? BiliSign.signForTv(params)
-        : BiliSign.signForAndroidApi(params);
+        : BiliSign.signForAndroidHdApi(params);
     try {
-      final resp = await dio.get(apiAppPlayUrlUrl, queryParameters: signed);
+      final resp = await dio.get(
+        apiAppPlayUrlUrl,
+        queryParameters: signed,
+        // TV 保持原有 Web 头行为；Android-HD 用 App 头，避免 UA/Referer
+        // 与 appkey 签名身份不一致触发 -351
+        options: usesTv
+            ? null
+            : Options(headers: BiliSign.androidPlayHeaders(buvid ?? '')),
+      );
       final body = resp.data;
       if (body['code'] != 0) {
-        _logger.info('getAudioApp failed: code=${body['code']} ${body['message']}');
+        _logger.info(
+            'getAudioApp failed: code=${body['code']} ${body['message']}');
         if (body['code'] == -101) {
           await SharedPreferencesService.setAccessToken('');
+        } else if (body['code'] == -351 || body['code'] == -352) {
+          // 风控：冷却期内直接走 web，避免每次播放都先撞一次
+          _appPlayUrlCooldownUntil =
+              DateTime.now().add(const Duration(minutes: 10));
         }
         return null;
       }
-      // 与 web 版一致：TrackResult 解析的是 data 子对象（非整个响应体）
-      return _orderAudioByQuality(
-          TrackResult.fromJson(body['data']).dash, quality);
+      _appPlayUrlCooldownUntil = null;
+      final data = body['data'];
+      if (data is! Map) return null;
+      return _parseAudioData(Map<String, dynamic>.from(data), quality);
     } catch (e) {
       _logger.severe('getAudioApp error: $e');
       return null;
@@ -725,12 +909,20 @@ class BilibiliAPI {
         isPost: true);
   }
 
-  Future<String?> getRawWbiKey() async {
+  /// WBI key 在北京时间零点轮换；按 UTC 日缓存会在 16:00–24:00 UTC
+  /// 继续使用前一天已失效的 key，导致 playurl 返回 v_voucher。
+  static int _wbiCacheDay(DateTime now) {
+    final beijing = now.toUtc().add(const Duration(hours: 8));
+    return beijing.millisecondsSinceEpoch ~/ 86400000;
+  }
+
+  Future<String?> getRawWbiKey({bool forceRefresh = false}) async {
     final prefs = await SharedPreferencesService.instance;
     final rawWbiKey = prefs.getString('raw_wbi_key');
     final lastUpdateDay = prefs.getInt('img_sub_key_last_update');
-    final currentDay = (DateTime.now().millisecondsSinceEpoch ~/ 86400000);
-    if (lastUpdateDay != null &&
+    final currentDay = _wbiCacheDay(DateTime.now());
+    if (!forceRefresh &&
+        lastUpdateDay != null &&
         rawWbiKey != null &&
         lastUpdateDay == currentDay) {
       return rawWbiKey;
@@ -1038,8 +1230,7 @@ class BilibiliAPI {
         'mobi_app': 'android_hd',
         'platform': 'android',
         's_locale': 'zh_CN',
-        'statistics':
-            '{"appId":5,"platform":3,"version":"2.0.1","abtest":""}',
+        'statistics': '{"appId":5,"platform":3,"version":"2.0.1","abtest":""}',
         'ts': ts.toString(),
       };
 
@@ -1057,7 +1248,7 @@ class BilibiliAPI {
       };
 
   Map<String, String> _geetestParams(CaptchaData? captcha,
-          {String? validate, String? seccode, String? challenge}) {
+      {String? validate, String? seccode, String? challenge}) {
     // challenge 必须用极验 SDK 回显值：原生 SDK 可能给回显 challenge
     // 追加后缀（实测出现 challenge+'lx'），validate 与回显 challenge
     // 绑定；回传注册时的原始 challenge 会被 B 站以 -105「验证码错误」
@@ -1132,8 +1323,7 @@ class BilibiliAPI {
           validate: validate, seccode: seccode, challenge: challenge),
       'buvid': buvid,
       'local_id': buvid,
-      'login_session_id':
-          BiliSign.createLoginSessionId(buvid, ts),
+      'login_session_id': BiliSign.createLoginSessionId(buvid, ts),
       'cid': '86',
       'tel': phone,
     };
@@ -1213,11 +1403,9 @@ class BilibiliAPI {
 
   /// 获取安全中心极验预捕获参数
   Future<SafeCenterCaptchaPre?> getSafeCenterCaptchaPre() async {
-    final options =
-        Options(contentType: Headers.formUrlEncodedContentType);
+    final options = Options(contentType: Headers.formUrlEncodedContentType);
     try {
-      final resp = await dio.post(apiSafeCenterCaptchaPreUrl,
-          options: options);
+      final resp = await dio.post(apiSafeCenterCaptchaPreUrl, options: options);
       final body = resp.data;
       if (body['code'] != 0) return null;
       return SafeCenterCaptchaPre.fromJson(body['data']);

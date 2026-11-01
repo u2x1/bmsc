@@ -45,7 +45,7 @@ void main() {
       SharedPreferences.setMockInitialValues({});
       api = BilibiliAPI(enableConnectivity: false);
       api.noNetwork = false;
-      await api.ensureBuvid3();
+      await api.ensureAnonymousIdentity();
       session = await LiveSession.ensure(api);
       if (session != null) {
         await api.applyLoginCookies(session!.cookies, save: false);

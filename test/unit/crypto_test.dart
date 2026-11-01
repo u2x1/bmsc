@@ -21,9 +21,24 @@ void main() {
     });
 
     test('输出恒为 32 字符 hex', () {
-      final raw =
-          List.generate(64, (i) => (i % 16).toRadixString(16)).join();
+      final raw = List.generate(64, (i) => (i % 16).toRadixString(16)).join();
       expect(getMixinKey(raw), matches(RegExp(r'^[0-9a-f]{32}$')));
+    });
+  });
+
+  group('signWbiParams（playurl WBI 签名）', () {
+    test('与参考向量一致（bilibili-API-collect 算法）', () {
+      const raw64 = '7cd084941338484aae1ad9425b84077c'
+          '4932caff0ff746eab6f01bf08b70ac45';
+      final signed = signWbiParams({
+        'bvid': 'BV15r55zQEfV',
+        'cid': 29873603133,
+        'fnval': 4048,
+        'fnver': '0',
+        'fourk': '1',
+      }, raw64, timestamp: 1792574705);
+      expect(signed['wts'], '1792574705');
+      expect(signed['w_rid'], '6cf353e56d4564e8cd88782b9fa551fa');
     });
   });
 
@@ -43,15 +58,13 @@ void main() {
 
     test('encryptDeviceToken 输出 base64', () {
       final token = BiliSign.createRandomString(16);
-      final encrypted =
-          encryptDeviceToken(_testPublicKeyPem, token);
+      final encrypted = encryptDeviceToken(_testPublicKeyPem, token);
       expect(encrypted, matches(RegExp(r'^[A-Za-z0-9+/=]+$')));
       expect(encrypted.length, greaterThan(100)); // 1024-bit RSA 密文 > 100B
     });
 
     test('非法 PEM 抛出异常（调用方自行兜底）', () {
-      expect(() => encryptPassword('p', 'not-a-pem', 'h'),
-          throwsA(anything));
+      expect(() => encryptPassword('p', 'not-a-pem', 'h'), throwsA(anything));
     });
   });
 

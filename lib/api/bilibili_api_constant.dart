@@ -35,6 +35,7 @@ const String apiEditFavFolderUrl = '$_baseUrl/x/v3/fav/folder/edit';
 const String apiRelatedVideosUrl = '$_baseUrl/x/web-interface/archive/related';
 const String apiSearchSuggestionsUrl = '$_searchUrl/main/suggest';
 const String apiNavUrl = '$_baseUrl/x/web-interface/nav';
+const String apiFingerSpiUrl = '$_baseUrl/x/frontend/finger/spi';
 const String apiGeetestParamsUrl = '$_passportUrl/x/passport-login/web/key';
 const String apiLoginCaptchaUrl = '$_passportUrl/x/passport-login/captcha';
 const String apiLoginKeyUrl = '$_passportUrl/x/passport-login/web/key';

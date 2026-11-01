@@ -42,6 +42,21 @@ class BiliSign {
       };
   static const String _androidHdAppSec = 'b5475a8825547a4fc26c7d518eaaa02e';
 
+  /// Android-HD 业务接口（playurl 等）请求头。
+  /// 带 app-key 头同时用于让 dio 拦截器跳过 Web 指纹头：App 接口若混入
+  /// 桌面 UA / Web Referer，会与 appkey 签名身份不一致而触发 -351 风控。
+  static Map<String, String> androidPlayHeaders(String buvid) => {
+        'env': 'prod',
+        'app-key': 'android_hd',
+        'user-agent': androidHdUserAgent,
+        'x-bili-trace-id':
+            '11111111111111111111111111111111:1111111111111111:0:0',
+        'x-bili-aurora-eid': '',
+        'x-bili-aurora-zone': '',
+        'bili-http-engine': 'cronet',
+        if (buvid.isNotEmpty) 'buvid': buvid,
+      };
+
   /// 与 Java URLEncoder.encode(s, UTF-8) 一致（再把 '+' 换成 '%20'，对齐 BiliPai）。
   /// 保留 [A-Za-z0-9\-_.*]，空格 -> %20，其余按 UTF-8 字节 percent 编码（大写十六进制）。
   static String percentEncode(String s) {
@@ -73,8 +88,7 @@ class BiliSign {
   }
 
   /// Android-HD 登录签名：key/value 先 percent-encode 再按 key 排序拼接 + appsec，MD5。
-  static Map<String, String> signForAndroidHdLogin(
-      Map<String, String> params) {
+  static Map<String, String> signForAndroidHdLogin(Map<String, String> params) {
     final withAppKey = params.containsKey('appkey')
         ? params
         : {...params, 'appkey': androidHdAppKey};
@@ -88,11 +102,21 @@ class BiliSign {
   }
 
   /// Android APP API 签名（playurl 等）：raw 值按 key 排序拼接 + appsec，MD5。
-  static Map<String, String> signForAndroidApi(Map<String, String> params) {
+  static Map<String, String> signForAndroidApi(Map<String, String> params) =>
+      _signRaw(params, _androidAppSec);
+
+  /// Android-HD APP API 签名。access_token 与登录时的 appkey 绑定：
+  /// HD 登录拿到的 token 必须继续用 HD appkey 签名，混用粉版 appkey
+  /// 会被 playurl 以 -351 风控拒绝。
+  static Map<String, String> signForAndroidHdApi(Map<String, String> params) =>
+      _signRaw(params, _androidHdAppSec);
+
+  static Map<String, String> _signRaw(
+      Map<String, String> params, String appSec) {
     final sorted = Map<String, String>.fromEntries(
         params.entries.toList()..sort((a, b) => a.key.compareTo(b.key)));
     final qs = sorted.entries.map((e) => '${e.key}=${e.value}').join('&');
-    final sign = _md5Hex(qs + _androidAppSec);
+    final sign = _md5Hex(qs + appSec);
     return {...sorted, 'sign': sign};
   }
 
@@ -137,10 +161,10 @@ class BiliSign {
   static String createRandomString(int length) {
     const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
     final random = Random.secure();
-    return List.generate(
-        length, (_) => chars[random.nextInt(chars.length)]).join();
+    return List.generate(length, (_) => chars[random.nextInt(chars.length)])
+        .join();
   }
 
-  static String getTimestamp() => (DateTime.now().millisecondsSinceEpoch ~/ 1000)
-      .toString();
+  static String getTimestamp() =>
+      (DateTime.now().millisecondsSinceEpoch ~/ 1000).toString();
 }

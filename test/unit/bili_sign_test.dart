@@ -101,6 +101,20 @@ void main() {
     });
   });
 
+  group('BiliSign.signForAndroidHdApi（HD playurl 签名）', () {
+    test('使用 HD appsec（access_token 与登录 appkey 绑定）', () {
+      final signed = BiliSign.signForAndroidHdApi({
+        'appkey': BiliSign.androidHdAppKey,
+        'bvid': 'BV1GJ411x7h7',
+        'cid': '12345',
+        'qn': '64',
+        'fnval': '16',
+        'ts': '1700000000',
+      });
+      expect(signed['sign'], 'b8d72cc6be6ccf3728e0e5d66103b05f');
+    });
+  });
+
   group('BiliSign.percentEncode（对齐 Java URLEncoder UTF-8）', () {
     test('URL 字符被编码', () {
       expect(BiliSign.percentEncode('bilibili://user_center/mine'),
@@ -155,7 +169,8 @@ void main() {
     test('getTimestamp 为 10 位秒级时间戳', () {
       final ts = BiliSign.getTimestamp();
       expect(ts.length, 10);
-      expect(int.parse(ts), closeTo(DateTime.now().millisecondsSinceEpoch ~/ 1000, 5));
+      expect(int.parse(ts),
+          closeTo(DateTime.now().millisecondsSinceEpoch ~/ 1000, 5));
     });
   });
 }

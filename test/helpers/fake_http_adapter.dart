@@ -16,6 +16,7 @@ import 'package:dio/dio.dart';
 /// ```
 class FakeHttpAdapter implements HttpClientAdapter {
   final Map<String, Map<String, dynamic>> _routes = {};
+  final Map<String, List<Map<String, dynamic>>> _pending = {};
 
   /// 捕获的所有请求（按发起顺序），断言请求头/Query 用
   final List<RequestOptions> requests = [];
@@ -29,6 +30,15 @@ class FakeHttpAdapter implements HttpClientAdapter {
   /// 按 URL path 注册响应（自动归一化：绝对 URL → path）
   void onPath(String path, Map<String, dynamic> response) {
     _routes[_norm(path)] = response;
+    _pending.remove(_norm(path));
+  }
+
+  /// 按 URL path 依次返回多个响应（用于重试/刷新场景）
+  void onPathSequence(String path, List<Map<String, dynamic>> responses) {
+    if (responses.isEmpty) return;
+    final key = _norm(path);
+    _routes[key] = responses.first;
+    _pending[key] = responses.skip(1).toList();
   }
 
   static String _norm(String url) {
@@ -39,6 +49,7 @@ class FakeHttpAdapter implements HttpClientAdapter {
 
   void clear() {
     _routes.clear();
+    _pending.clear();
     requests.clear();
   }
 
@@ -46,15 +57,20 @@ class FakeHttpAdapter implements HttpClientAdapter {
   Future<ResponseBody> fetch(RequestOptions options,
       Stream<Uint8List>? requestStream, Future<void>? cancelFuture) async {
     requests.add(options);
-    final resp = _routes[_norm(options.path)] ?? fallback;
+    final key = _norm(options.path);
+    final resp = _routes[key] ?? fallback;
+    final pending = _pending[key];
+    if (pending != null && pending.isNotEmpty) {
+      _routes[key] = pending.removeAt(0);
+    }
     final body = resp['body'];
     final text = body is String ? body : jsonEncode(body);
     final headers =
         Map<String, List<String>>.from((resp['headers'] as Map?) ?? const {});
     if (body is! String) {
       // dio 依据 content-type 决定是否 JSON 解码；fake 响应需显式声明
-      headers.putIfAbsent('content-type',
-          () => ['application/json; charset=utf-8']);
+      headers.putIfAbsent(
+          'content-type', () => ['application/json; charset=utf-8']);
     }
     return ResponseBody.fromString(text, resp['status'] as int? ?? 200,
         headers: headers);
