@@ -929,7 +929,7 @@ class _DetailScreenState extends State<DetailScreen>
           Icons.play_arrow,
           size: iconSize,
         ),
-        onPressed: player.play,
+        onPressed: _audioService!.play,
       );
     } else if (processingState != ProcessingState.completed) {
       return IconButton(

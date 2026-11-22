@@ -6,7 +6,9 @@ library;
 
 import 'package:bmsc/api/bilibili.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/util/logger.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:test/test.dart';
 
@@ -37,12 +39,14 @@ const testVideoBvids = ['BV1GJ411x7h7', 'BV1xx411c7mD', 'BV1Q541167Qg'];
 DioException? _lastNetworkError;
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   group('真实接口冒烟（BMSC_LIVE=1 启用）', () {
     late BilibiliAPI api;
     LiveSession? session;
 
     setUpAll(() async {
       SharedPreferences.setMockInitialValues({});
+      await LoggerUtils.init();
       api = BilibiliAPI(enableConnectivity: false);
       api.noNetwork = false;
       await api.ensureAnonymousIdentity();
@@ -135,6 +139,27 @@ void main() {
       expect(hot, isNotNull);
       expect(hot, isNotEmpty);
       print('  热搜数: ${hot!.length}');
+    }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
+
+    test('视频搜索（issue #23，公共）', () async {
+      final result = await probe(
+          'search(周杰伦)', () => api.search('周杰伦', 1));
+      expect(result, isNotNull, reason: '视频搜索返回 null');
+      expect(result!.page, 1);
+      expect(result.result, isNotEmpty);
+      expect(result.result.any((item) => item.bvid.isNotEmpty), isTrue);
+      print('  搜索结果: ${result.result.length} 条 / 共 ${result.numPages} 页');
+    }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
+
+    test('UP 主 season 合集完整加载（issue #9，公共）', () async {
+      final metas = await probe('getCollectionMetas(1519400)',
+          () => api.getCollectionMetas(1519400));
+      expect(metas, isNotNull, reason: '合集返回 null');
+      expect(metas!.length, greaterThan(30), reason: '只加载了第一页');
+      final bvids = metas.map((meta) => meta.bvid).toList();
+      expect(bvids.every((bvid) => bvid.isNotEmpty), isTrue);
+      expect(bvids.toSet().length, bvids.length, reason: '合集存在重复 BVID');
+      print('  合集完整稿件数: ${metas.length}');
     }, skip: !isLive ? 'BMSC_LIVE=1 时启用' : null);
 
     test('web 二维码可生成', () async {

@@ -10,9 +10,10 @@ import '../component/track_tile.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
 class UserDetailScreen extends StatefulWidget {
-  const UserDetailScreen({super.key, required this.mid});
+  const UserDetailScreen({super.key, required this.mid, this.seasonId});
 
   final int mid;
+  final int? seasonId;
 
   @override
   State<StatefulWidget> createState() => _UserDetailScreenState();
@@ -40,10 +41,20 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
       _isLoading = true;
       _loadFailed = false;
     });
-    final rst =
-        await (await BilibiliService.instance).getUserUploads(widget.mid, pn);
+    final service = await BilibiliService.instance;
+    (List<Meta>, int)? rst;
+    final seasonId = widget.seasonId;
+    if (seasonId != null) {
+      final metas = await service.getCollectionMetas(seasonId);
+      if (metas != null) {
+        rst = (metas, -1);
+      }
+    } else {
+      rst = await service.getUserUploads(widget.mid, pn);
+    }
     if (!mounted) return;
-    if (rst == null) {
+    final result = rst;
+    if (result == null) {
       setState(() {
         _isLoading = false;
         _loadFailed = true;
@@ -52,8 +63,8 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
     }
     setState(() {
       final bvids = vidList.map((x) => x.bvid).toSet();
-      vidList.addAll(rst.$1.where((x) => bvids.add(x.bvid)));
-      pn = rst.$2;
+      vidList.addAll(result.$1.where((x) => bvids.add(x.bvid)));
+      pn = result.$2;
       _isLoading = false;
     });
   }
@@ -70,7 +81,7 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
         appBar: AppBar(
-          title: const Text("用户详细"),
+          title: Text(widget.seasonId == null ? "用户详细" : "合集"),
         ),
         body: NotificationListener<ScrollEndNotification>(
           onNotification: (scrollEnd) {
@@ -146,7 +157,9 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
             Padding(
               padding: const EdgeInsets.all(14.0),
               child: Text(
-                "全部稿件 (${info?.archiveCount ?? 0})",
+                widget.seasonId == null
+                    ? "全部稿件 (${info?.archiveCount ?? 0})"
+                    : "合集 (${vidList.length})",
                 style: const TextStyle(fontSize: 16),
               ),
             ),
@@ -154,12 +167,17 @@ class _UserDetailScreenState extends State<UserDetailScreen> {
               padding: const EdgeInsets.all(8.0),
               child: ElevatedButton.icon(
                 icon: const Icon(Icons.play_arrow),
-                label: Text('播放已加载(${vidList.length})'),
-                onPressed: () async {
-                  final bvids = vidList.map((x) => x.bvid).toList();
-                  await AudioService.instance
-                      .then((x) => x.playByBvids(bvids));
-                },
+                label: Text(widget.seasonId == null
+                    ? '播放已加载(${vidList.length})'
+                    : '播放全部(${vidList.length})'),
+                onPressed: widget.seasonId != null &&
+                        (_isLoading || vidList.isEmpty)
+                    ? null
+                    : () async {
+                        final bvids = vidList.map((x) => x.bvid).toList();
+                        await AudioService.instance
+                            .then((x) => x.playByBvids(bvids));
+                      },
               ),
             )
           ],

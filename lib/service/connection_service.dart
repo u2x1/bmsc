@@ -2,14 +2,24 @@ import 'dart:io';
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 
 class ConnectionService {
   static final ConnectionService _singleton = ConnectionService._internal();
-  ConnectionService._internal();
+  ConnectionService._internal(
+      {Future<List<InternetAddress>> Function(String host)? lookup})
+      : _lookup = lookup ?? InternetAddress.lookup;
+
+  @visibleForTesting
+  factory ConnectionService.forTest(
+      {required Future<List<InternetAddress>> Function(String host)
+          lookup}) = ConnectionService._internal;
 
   static ConnectionService getInstance() => _singleton;
 
   bool hasConnection = true;
+
+  final Future<List<InternetAddress>> Function(String host) _lookup;
 
   StreamController<bool> connectionChangeController =
       StreamController.broadcast();
@@ -51,8 +61,8 @@ class ConnectionService {
 
     bool result;
     try {
-      final lookup = await InternetAddress.lookup('bilibili.com')
-          .timeout(const Duration(seconds: 5));
+      final lookup =
+          await _lookup('bilibili.com').timeout(const Duration(seconds: 5));
       result = lookup.isNotEmpty && lookup[0].rawAddress.isNotEmpty;
     } on SocketException catch (_) {
       result = false;
@@ -64,7 +74,9 @@ class ConnectionService {
       // 探活失败保守判离线，由 recheck 的二次尝试兜底
       result = false;
     }
-    if (seq != _checkSeq) return hasConnection; // 已有更新的探活结论
+    // 旧探活不得覆盖新共享状态，但调用方仍需要本次探活的真实结果；
+    // 否则 recheck 会把已经成功的旧探活误读为最新共享状态中的离线。
+    if (seq != _checkSeq) return result;
 
     hasConnection = result;
     if (previousConnection != hasConnection) {

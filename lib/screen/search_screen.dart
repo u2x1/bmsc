@@ -32,6 +32,7 @@ class _SearchScreenState extends State<SearchScreen> {
   bool _hasMore = false;
   bool _isLoading = false;
   bool _searchFailed = false;
+  String _searchError = '加载失败，请重试';
   int _searchToken = 0;
   int _curPage = 1;
   String _curSearch = "";
@@ -159,7 +160,7 @@ class _SearchScreenState extends State<SearchScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text('加载失败，请检查网络后重试'),
+              Text(_searchError, textAlign: TextAlign.center),
               const SizedBox(height: 8),
               FilledButton(onPressed: loadMore, child: const Text('重试')),
             ],
@@ -383,8 +384,22 @@ class _SearchScreenState extends State<SearchScreen> {
 
   void onSearching(String? value, {bool fromClipboard = false}) async {
     _searchToken++;
-    if (fromClipboard == true && _clipboardUrl != null) {
-      final vidDetail = await getVidDetailFromUrl(_clipboardUrl!);
+    final urlText = fromClipboard ? _clipboardUrl : value;
+    if (urlText != null) {
+      final seasonLink = await getSeasonLinkFromUrl(urlText);
+      if (!mounted) return;
+      if (seasonLink != null) {
+        _focusNode.unfocus();
+        Navigator.push(
+            context,
+            MaterialPageRoute(
+                builder: (context) => UserDetailScreen(
+                    mid: seasonLink.mid, seasonId: seasonLink.seasonId)));
+        return;
+      }
+
+      final vidDetail = await getVidDetailFromUrl(urlText);
+      if (!mounted) return;
       if (vidDetail != null) {
         setState(() {
           _hasMore = false;
@@ -434,15 +449,21 @@ class _SearchScreenState extends State<SearchScreen> {
       if (!mounted || token != _searchToken) return;
       setState(() {
         _searchFailed = ret == null;
-        if (ret != null) {
+        if (ret == null) {
+          _searchError = '加载失败，请重试';
+        } else {
           _hasMore = ret.page < ret.numPages;
           _curPage++;
           vidList.addAll(ret.result);
         }
       });
-    } catch (_) {
+    } catch (e) {
       if (mounted && token == _searchToken) {
-        setState(() => _searchFailed = true);
+        setState(() {
+          _searchFailed = true;
+          final message = e.toString().replaceFirst('Exception: ', '');
+          _searchError = message.contains('错误代码 412') ? message : '加载失败，请重试';
+        });
       }
     } finally {
       if (token == _searchToken) {

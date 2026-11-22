@@ -12,6 +12,7 @@ const String apiCollectionUrl = '$_baseUrl/x/v3/fav/folder/collected/list';
 const String apiCollectionMetasUrl = '$_baseUrl/x/space/fav/season/list';
 const String apiFavMetasUrl = '$_baseUrl/x/v3/fav/resource/list';
 const String apiSearchUrl = '$_baseUrl/x/web-interface/wbi/search/type';
+const String apiSearchAllUrl = '$_baseUrl/x/web-interface/search/all/v2';
 const String apiHistoryUrl = '$_baseUrl/x/web-interface/history/cursor';
 const String apiDynamicUrl = '$_baseUrl/x/polymer/web-dynamic/v1/feed/all';
 const String apiAudioUrl = '$_baseUrl/x/player/wbi/playurl';

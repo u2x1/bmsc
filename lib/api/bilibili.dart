@@ -599,12 +599,62 @@ class BilibiliAPI {
   }
 
   Future<SearchResult?> search(String value, int pn) async {
-    final params = await crypto
-        .encodeParams({'search_type': 'video', 'keyword': value, 'page': pn});
-    if (params == null) return null;
-    return _callAPI(apiSearchUrl,
+    var data = await _requestSearch(value, pn);
+    if (data == null) return null;
+
+    // 搜索与 playurl 共用风控形态：code=0 但 data 只有 v_voucher。
+    // 直接交给 SearchResult 会因必填字段缺失而被误报成「网络失败」。
+    if (data['v_voucher'] != null) {
+      _logger.warning(
+          'search risk-controlled (v_voucher), refreshing identity + WBI key');
+      await refreshAnonymousIdentity();
+      data = await _requestSearch(value, pn, forceRefreshWbi: true);
+      if (data == null) return null;
+      if (data['v_voucher'] != null) {
+        // 连续 v_voucher 说明该 IP/会话在分类搜索上被限制，刷新指纹
+        // 并不能解除。回退到无需 WBI 的综合搜索，并只取其中的视频块；
+        // 该路径同样支持 page 参数，不能让加载下一页重新变成第一页。
+        _logger.warning('search still risk-controlled, fallback to search/all');
+        data = await _requestSearchAll(value, pn);
+        if (data == null) {
+          _logger.severe('search/all fallback failed');
+          return null;
+        }
+      }
+    }
+    try {
+      return SearchResult.fromJson(data);
+    } catch (e) {
+      _logger.severe('search response parse failed: $e');
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _requestSearch(String value, int pn,
+      {bool forceRefreshWbi = false}) async {
+    final rawWbiKey = await getRawWbiKey(forceRefresh: forceRefreshWbi);
+    if (rawWbiKey == null) return null;
+    final params = crypto.signWbiParams(
+        {'search_type': 'video', 'keyword': value, 'page': pn}, rawWbiKey);
+    return _callAPI<Map<String, dynamic>>(apiSearchUrl,
         queryParameters: params,
-        callback: (data) => SearchResult.fromJson(data));
+        callback: (data) =>
+            data is Map ? Map<String, dynamic>.from(data) : null);
+  }
+
+  Future<Map<String, dynamic>?> _requestSearchAll(String value, int pn) {
+    return _callAPI<Map<String, dynamic>>(apiSearchAllUrl,
+        queryParameters: {'keyword': value, 'page': pn}, callback: (data) {
+      if (data is! Map || data['result'] is! List) return null;
+      for (final block in data['result'] as List) {
+        if (block is Map && block['result_type'] == 'video') {
+          final videos = block['data'];
+          if (videos is! List) return null;
+          return {...data, 'result': videos};
+        }
+      }
+      return null;
+    });
   }
 
   Future<HistoryResult?> getHistory(int? timestamp) {

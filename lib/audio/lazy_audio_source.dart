@@ -10,6 +10,7 @@ import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/util/logger.dart';
+import 'package:flutter/foundation.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
 
@@ -26,6 +27,13 @@ class LazyAudioSource extends StreamAudioSource {
   final Future<File> localFile;
   int _progress = 0;
   final bool isLocal;
+
+  /// 本地 HTTP 断流测试注入点；生产环境始终为 null/false。
+  @visibleForTesting
+  final Uri? debugAudioUri;
+  @visibleForTesting
+  final bool debugSkipCacheMetadata;
+
   final _requests = <_StreamingByteRangeRequest>[];
   final _downloadProgressSubject = BehaviorSubject<double>();
   bool _downloading = false;
@@ -103,6 +111,8 @@ class LazyAudioSource extends StreamAudioSource {
     this.cid, {
     File? localFile,
     super.tag,
+    this.debugAudioUri,
+    this.debugSkipCacheMetadata = false,
   })  : localFile = localFile != null
             ? Future.value(localFile)
             : DatabaseManager.prepareFileForCaching(bvid, cid),
@@ -338,9 +348,11 @@ class LazyAudioSource extends StreamAudioSource {
     File getEffectiveCacheFile() =>
         partialCacheFile.existsSync() ? partialCacheFile : localFile;
 
-    var uri = await this.uri;
+    var uri = debugAudioUri ?? await this.uri;
     _logger.info('[$bvid:$cid] fetch: playurl resolved (${sw.elapsed})');
-    final headers = (await BilibiliService.instance).headers;
+    final headers = debugAudioUri != null
+        ? null
+        : (await BilibiliService.instance).headers;
 
     final httpClient = _httpClient = HttpClient();
     var httpRequest = await _getUrl(httpClient, uri, headers: headers);
@@ -491,6 +503,41 @@ class LazyAudioSource extends StreamAudioSource {
         return advertisedLengthCap(real);
       }
       return real;
+    }
+
+    Future<void> failDownload(Object error, StackTrace stackTrace) async {
+      try {
+        await _sink?.flush();
+        await _sink?.close();
+      } catch (_) {}
+      _sink = null;
+      _subscription = null;
+      httpClient.close();
+      if (identical(_httpClient, httpClient)) _httpClient = null;
+      try {
+        final part = await _partialCacheFile;
+        if (part.existsSync()) await part.delete();
+      } catch (_) {}
+      // 允许后续 fresh source 重启下载，并结束所有等待者，避免挂死。
+      _response = null;
+      for (final req in _requests) {
+        req.fail(error, stackTrace);
+      }
+      _requests.clear();
+      for (final res in inProgressResponses) {
+        if (!res.controller.isClosed) {
+          res.controller.addError(error, stackTrace);
+          res.controller.close();
+        }
+      }
+      inProgressResponses.clear();
+      _downloading = false;
+      if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
+        _inflightDownloads.remove(_downloadKey);
+      }
+      if (!_downloadCompleteCompleter.isCompleted) {
+        _downloadCompleteCompleter.completeError(error, stackTrace);
+      }
     }
 
     subscription = _subscription = response.listen((data) async {
@@ -651,6 +698,15 @@ class LazyAudioSource extends StreamAudioSource {
         });
       }
     }, onDone: () async {
+      // 某些 CDN 会以正常 EOF 结束一个短于 Content-Length 的响应。
+      // 这种 .part 绝不能提升为正式缓存，否则后续播放只会反复读取坏文件。
+      if (sourceLength != null && _progress < sourceLength) {
+        final error = StateError(
+            'truncated download: $_progress bytes received, expected $sourceLength');
+        _logger.severe('[$bvid:$cid] $error');
+        await failDownload(error, StackTrace.current);
+        return;
+      }
       _logger.info('[$bvid:$cid] fetch: download complete (${sw.elapsed})');
       if (sourceLength == null) {
         updateProgress(100);
@@ -693,7 +749,9 @@ class LazyAudioSource extends StreamAudioSource {
       _downloading = false;
 
       // Save cache metadata first
-      await DatabaseManager.saveCacheMetadata(bvid, cid, localFile);
+      if (!debugSkipCacheMetadata) {
+        await DatabaseManager.saveCacheMetadata(bvid, cid, localFile);
+      }
 
       // 文件已改名、元数据已落库：此刻起换源监听者可安全使用主文件
       if (!_downloadCompleteCompleter.isCompleted) {
@@ -707,33 +765,11 @@ class LazyAudioSource extends StreamAudioSource {
       await Future.delayed(const Duration(milliseconds: 100));
 
       // Clean up cache as a separate operation
-      DatabaseManager.cleanupCache(ignoreFile: localFile);
+      if (!debugSkipCacheMetadata) {
+        DatabaseManager.cleanupCache(ignoreFile: localFile);
+      }
     }, onError: (Object e, StackTrace stackTrace) async {
-      // .part 可能已被并发清理：删除失败不得阻断后续清理与错误完成
-      try {
-        (await _partialCacheFile).deleteSync();
-      } catch (_) {}
-      httpClient.close();
-      // 允许后续 request 重启下载：否则 _response 滞留已完成（错误）
-      // 的 future，新请求入队后无人服务，播放永久挂死
-      _response = null;
-      // Fail all pending requests
-      for (final req in _requests) {
-        req.fail(e, stackTrace);
-      }
-      _requests.clear();
-      // Close all in progress requests
-      for (final res in inProgressResponses) {
-        res.controller.addError(e, stackTrace);
-        res.controller.close();
-      }
-      _downloading = false;
-      if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
-        _inflightDownloads.remove(_downloadKey);
-      }
-      if (!_downloadCompleteCompleter.isCompleted) {
-        _downloadCompleteCompleter.completeError(e, stackTrace);
-      }
+      await failDownload(e, stackTrace);
     }, cancelOnError: true);
     return response;
   }

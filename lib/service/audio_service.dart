@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:bmsc/audio/audio_recovery_policy.dart';
 import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/local_track.dart';
@@ -210,6 +211,8 @@ class AudioService {
   StreamSubscription<AudioInterruptionEvent>? _interruptionEventSubscription;
   bool _playInterrupted = false;
   bool _hijacking = false;
+  final _sourceRecoveryPolicy = AudioRecoveryPolicy();
+  Timer? _sourceRecoveryResetTimer;
   double? _volumeBeforeDuck;
   double? _userVolumeBeforeFade;
 
@@ -619,6 +622,22 @@ class AudioService {
       }
     });
 
+    // Android ExoPlayer 在 CDN 断流后进入 TYPE_SOURCE(0)/idle，单纯 play
+    // 或 seek 不会重建已经失败的 MediaSource。退避后用全新
+    // LazyAudioSource 替换当前项，保留原位置；绝不自动跳下一首。
+    player.errorStream.listen((error) {
+      if (!Platform.isAndroid || error.code != 0) return;
+      final index = player.currentIndex;
+      final source = player.sequenceState.currentSource;
+      if (index == null ||
+          source is! LazyAudioSource ||
+          source.isLocal ||
+          (error.index != null && error.index != index)) {
+        return;
+      }
+      _scheduleSourceRecovery(index, source);
+    });
+
     Rx.combineLatest2(player.loopModeStream, player.shuffleModeEnabledStream,
         (a, b) => (a, b)).listen((data) async {
       final (loopMode, shuffleModeEnabled) = data;
@@ -645,6 +664,11 @@ class AudioService {
         _scheduleTrackResync();
         return;
       }
+      // 真实切歌使旧曲的退避/在途恢复失效；恢复自身的 seek 处于
+      // _hijacking 窗口，已在上方跳过，不会被误取消。
+      _sourceRecoveryPolicy.invalidatePending();
+      _sourceRecoveryResetTimer?.cancel();
+      _sourceRecoveryResetTimer = null;
       // 解析必须先于 setInt 的 await 调用：等待会越过 _hijacking
       // 保护期，使解析自身 seek 产生的索引事件触发连锁解析
       //（级联跳歌，真机实测：点第一首自动跳第二首）。
@@ -679,6 +703,7 @@ class AudioService {
       final enableHistoryReport =
           await SharedPreferencesService.getHistoryReported();
       if (state.playing) {
+        _armSourceRecoveryResetIfNeeded();
         if (enableHistoryReport) {
           _startCloudHistoryReporting();
         }
@@ -777,12 +802,48 @@ class AudioService {
     });
   }
 
-  /// iOS 看门狗解卡：用全新实例替换当前源（新实例 = 新原生 AVPlayerItem =
-  /// 全新资源加载，旧 item 的内部卡死状态随之丢弃）。操作顺序与 _replaceCurrentDummy
+  void _scheduleSourceRecovery(int index, LazyAudioSource source,
+      {bool immediate = false}) {
+    final task = _sourceRecoveryPolicy.schedule(source);
+    if (task == null) return;
+    _logger.warning(
+        'source error recovery ${task.attempt}/${AudioRecoveryPolicy.maxAttempts} '
+        'scheduled for $index in ${immediate ? 0 : task.delay.inSeconds}s');
+    Timer(immediate ? Duration.zero : task.delay, () {
+      if (!_sourceRecoveryPolicy.consume(task)) return;
+      void retryIfNeeded() {
+        // 锁冲突或装源失败时旧源仍在队列中；原生端不一定再发一次错误，
+        // 必须自行安排下一次退避，而不是消耗次数后永久停留。
+        if (_sourceRecoveryPolicy.isCurrent(task) &&
+            _indexOfInPlaylist(source) != null) {
+          _scheduleSourceRecovery(index, source);
+        }
+      }
+
+      unawaited(_reloadCurrentSource(index, source, recoveryTask: task)
+          .then((_) => retryIfNeeded())
+          .catchError((Object e, StackTrace stackTrace) {
+        _logger.warning('source recovery failed: $e\n$stackTrace');
+        retryIfNeeded();
+      }));
+    });
+  }
+
+  Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) =>
+      _reloadCurrentSource(index, source, watchdog: true);
+
+  /// 用全新实例替换当前源（新实例 = 新原生播放器 item = 全新资源加载，
+  /// 旧 item 的错误/卡死状态随之丢弃）。操作顺序与 _replaceCurrentDummy
   /// 一致：先插到当前项后面 → 显式跳 → 再删旧项，规避 removeItem(当前项)
   /// 自动推进竞态。旧源进行中的下载先取消，避免与新源写同一 .part。
-  Future<void> _unwedgeCurrentSourceIOS(int index, AudioSource source) async {
+  Future<void> _reloadCurrentSource(int index, AudioSource source,
+      {bool watchdog = false, AudioRecoveryTask? recoveryTask}) async {
     if (source is! LazyAudioSource) return;
+    if (recoveryTask != null &&
+        !_sourceRecoveryPolicy.isCurrent(recoveryTask)) {
+      return;
+    }
+    final operation = watchdog ? 'watchdog' : 'source recovery';
     // 与解析/换源/其他看门狗执行互斥，避免并发 playlist 变更：
     // 先取锁后 await——此前先 await（cancelDownload/localFile）再置位，
     // 窗口期内解析/换源可正常取锁，看门狗 await 返回后复核只查源身份
@@ -806,13 +867,16 @@ class AudioService {
       // 插入点也用旧源身份现查，不用捕获的固定 index。
       final curIdx = _indexOfInPlaylist(source);
       if (curIdx == null ||
-          !identical(player.sequenceState.currentSource, source)) {
-        _logger.warning('watchdog: source no longer current, abort unwedge');
+          !identical(player.sequenceState.currentSource, source) ||
+          (recoveryTask != null &&
+              !_sourceRecoveryPolicy.isCurrent(recoveryTask))) {
+        _logger.warning(
+            '$operation: source no longer current, abort index=$index');
         return;
       }
       // 「已救过」标记只在施救真正开始时打上：调用方若在锁被占用
       // 时打标，早退的源会被看门狗永久解除武装
-      _watchdogUnwedgedSources.add(source);
+      if (watchdog) _watchdogUnwedgedSources.add(source);
       final fresh = LazyAudioSource(
         bvid,
         cid,
@@ -827,7 +891,10 @@ class AudioService {
       }
       // 克隆体继承「已救过」标记：慢网络下若克隆体仍无进展，不再反复
       // 重载；一旦有播放进展，标记会被看门狗清除并重新武装。
-      _watchdogUnwedgedSources.add(fresh);
+      if (watchdog) _watchdogUnwedgedSources.add(fresh);
+      if (recoveryTask != null) {
+        _sourceRecoveryPolicy.inheritAttempt(source, fresh);
+      }
       try {
         _playlistShuffleOrder.anchorAfter(curIdx);
         await doAndSavePlaylist(() async {
@@ -842,23 +909,65 @@ class AudioService {
                 .seek(position, index: insertIdx)
                 .timeout(const Duration(seconds: 5));
           } catch (e) {
-            _logger.warning('watchdog unwedge seek failed: $e');
+            _logger.warning('$operation seek failed: $e');
           }
           if (wasPlaying) await player.play();
         } else {
-          _logger.warning('watchdog: fresh source vanished from playlist');
+          _logger.warning('$operation: fresh source vanished from playlist');
         }
         await doAndSavePlaylist(() async {
           final oldIdx = _indexOfInPlaylist(source);
           if (oldIdx != null) await playlist.removeAt(oldIdx);
         });
+        if (recoveryTask != null) {
+          _armSourceRecoveryResetIfNeeded(fresh);
+        }
       } catch (e) {
-        _logger.warning('watchdog unwedge failed: $e');
+        _logger.warning('$operation failed: $e');
       }
     } finally {
       _hijacking = false;
       _swapping = false;
     }
+  }
+
+  void _armSourceRecoveryResetIfNeeded([AudioSource? recoveredSource]) {
+    final source = recoveredSource ?? player.sequenceState.currentSource;
+    if (source is! LazyAudioSource ||
+        _sourceRecoveryPolicy.attemptsFor(source) == 0) {
+      return;
+    }
+    if (recoveredSource != null) _sourceRecoveryResetTimer?.cancel();
+    if (_sourceRecoveryResetTimer?.isActive ?? false) return;
+    // 连续播放 30 秒才重置；ready 只代表装源成功，之后仍可能马上断流。
+    _sourceRecoveryResetTimer = Timer(const Duration(seconds: 30), () {
+      _sourceRecoveryResetTimer = null;
+      if (identical(player.sequenceState.currentSource, source) &&
+          player.playing) {
+        _sourceRecoveryPolicy.reset(source);
+      }
+    });
+  }
+
+  /// 播放按钮在自动恢复次数耗尽后也走换源重载，而不是对失败的
+  /// MediaSource 裸调 play（原生端不会因此重建资源）。
+  Future<void> play() async {
+    final index = player.currentIndex;
+    final source = player.sequenceState.currentSource;
+    if (source is LazyAudioSource && _sourceRecoveryPolicy.isPending(source)) {
+      return;
+    }
+    if (Platform.isAndroid &&
+        index != null &&
+        source is LazyAudioSource &&
+        !source.isLocal &&
+        _sourceRecoveryPolicy.attemptsFor(source) >=
+            AudioRecoveryPolicy.maxAttempts) {
+      _sourceRecoveryPolicy.reset(source);
+      _scheduleSourceRecovery(index, source, immediate: true);
+      return;
+    }
+    await player.play();
   }
 
   void _startCloudHistoryReporting() async {

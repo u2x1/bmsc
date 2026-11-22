@@ -277,7 +277,9 @@ class _PlayingCardState extends State<PlayingCard> {
                                           ? null
                                           : playing
                                               ? player.pause
-                                              : player.play,
+                                              : () async =>
+                                                  (await AudioService.instance)
+                                                      .play(),
                                     ),
                                   ),
                                   IconButton(
