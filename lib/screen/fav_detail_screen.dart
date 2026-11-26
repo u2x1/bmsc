@@ -83,21 +83,22 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
   }
 
   void _filterFavInfos() {
+    setState(() => favInfo = _applyFilter(rawFavInfo));
+  }
+
+  /// 按搜索框过滤。列表数据更新（后台补全/刷新完成）后也必须经过它，
+  /// 否则搜索中途网络列表到达会把过滤结果整个替换成全量列表
+  List<Meta> _applyFilter(List<Meta> metas) {
     final query = _searchController.text.toLowerCase();
-    setState(() {
-      if (query.isEmpty) {
-        favInfo = List.from(rawFavInfo);
-      } else {
-        favInfo = rawFavInfo.where((file) {
-          final title = file.title.toLowerCase();
-          final artist = file.artist.toLowerCase();
-          final bvidTitle = file.bvid.toLowerCase();
-          return title.contains(query) ||
-              artist.contains(query) ||
-              bvidTitle.contains(query);
-        }).toList();
-      }
-    });
+    if (query.isEmpty) return List.from(metas);
+    return metas.where((file) {
+      final title = file.title.toLowerCase();
+      final artist = file.artist.toLowerCase();
+      final bvidTitle = file.bvid.toLowerCase();
+      return title.contains(query) ||
+          artist.contains(query) ||
+          bvidTitle.contains(query);
+    }).toList();
   }
 
   void _toggleSearch() {
@@ -127,7 +128,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
       _logger.info('Loaded ${cachedData.length} items from cache');
       setState(() {
         rawFavInfo = cachedData;
-        favInfo = rawFavInfo;
+        favInfo = _applyFilter(rawFavInfo);
       });
       await _loadItemInfos();
       // 本地缓存可能只是主页封面补拉写入的第一页（~20 条），
@@ -189,7 +190,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
         if (!mounted) return;
         setState(() {
           rawFavInfo = metas;
-          favInfo = rawFavInfo;
+          favInfo = _applyFilter(rawFavInfo);
         });
         await _loadItemInfos();
       } else {
@@ -346,6 +347,7 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
               onPressed: _toggleViewMode,
             ),
             IconButton(
+              tooltip: isSearching ? '关闭搜索' : '搜索',
               icon: Icon(isSearching ? Icons.close : Icons.search),
               onPressed: _toggleSearch,
             ),
@@ -401,14 +403,11 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
       if (widget.homeSection != null) {
         unawaited(SectionHabitService.recordPlaySource(widget.homeSection!));
       }
-      final List<String> bvids;
-      if (_searchController.text.isNotEmpty) {
-        bvids = favInfo.map((m) => m.bvid).toList();
-      } else {
-        bvids = widget.isCollected
-            ? await DatabaseManager.getCachedCollectionBvids(widget.fav.id)
-            : await DatabaseManager.getCachedFavBvids(widget.fav.id);
-      }
+      // 队列即当前展示列表：index 是 favInfo 下标。原先非搜索态取
+      // 缓存表 bvids，但展示列表可能来自网络（首次全量同步进行中缓存
+      // 只有封面补拉的首页）或经 getMetas 剔除了无元数据的条目，两者
+      // 下标错位，点击播的是别的歌
+      final bvids = favInfo.map((m) => m.bvid).toList();
       await AudioService.instance
           .then((x) => x.playByBvids(bvids, index: index));
     } catch (e, stackTrace) {
@@ -491,11 +490,16 @@ class _FavDetailScreenState extends State<FavDetailScreen> {
                 );
 
                 if (success) {
+                  final removed = favInfo[index];
                   setState(() {
-                    final removed = favInfo.removeAt(index);
+                    favInfo.removeAt(index);
                     rawFavInfo.removeWhere((x) => x.bvid == removed.bvid);
                     _itemInfoCache.remove(removed.bvid);
                   });
+                  // 同步本地缓存：原实现只改了页面列表，缓存仍判定完整，
+                  // 重新进入时已取消的视频又出现，主页计数也不变
+                  await DatabaseManager.rmFav(removed.bvid,
+                      mid: widget.fav.id);
                 }
               },
             ),

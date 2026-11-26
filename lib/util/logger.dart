@@ -8,6 +8,12 @@ class LoggerUtils {
   static const String _loggingEnabledKey = 'logging_enabled';
   static const String _loggingLevelKey = 'logging_level';
   static final List<LogRecord> _logs = [];
+
+  /// 内存日志上限：日志只存内存，开启后长时间播放（每次代理请求、每 5 秒
+  /// 进度保存都会记一条）会无限增长。超限时成批丢弃最早的记录，避免
+  /// 每条都挪动列表，也减少日志页多选范围（按下标）错位的次数
+  static const int _maxLogs = 6000;
+  static const int _trimBatch = 1000;
   static final _logStream = StreamController<LogRecord>.broadcast();
   static bool _isLoggingEnabled = kDebugMode;
 
@@ -28,6 +34,7 @@ class LoggerUtils {
     Logger.root.onRecord.listen((record) {
       if (!_isLoggingEnabled) return;
       _logs.add(record);
+      if (_logs.length > _maxLogs) _logs.removeRange(0, _trimBatch);
       _logStream.add(record);
 
       if (!kDebugMode) {

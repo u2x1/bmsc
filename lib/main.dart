@@ -17,6 +17,7 @@ import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
 import 'package:bmsc/util/url.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:bmsc/screen/search_screen.dart';
 import 'package:flutter/services.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
@@ -113,6 +114,11 @@ class MyApp extends StatelessWidget {
           theme: ThemeProvider.lightTheme,
           darkTheme: ThemeProvider.instance.activeDarkTheme,
           themeMode: ThemeProvider.instance.themeMode,
+          // 界面文案均为中文：Material 内置组件（时间选择器、文本选择菜单、
+          // 返回按钮的无障碍标签等）也固定中文，否则显示英文
+          locale: const Locale('zh', 'CN'),
+          supportedLocales: const [Locale('zh', 'CN')],
+          localizationsDelegates: GlobalMaterialLocalizations.delegates,
           home: Builder(builder: (context) {
             return Scaffold(
               body: MyHomePage(title: 'BiliMusic'),

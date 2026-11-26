@@ -544,6 +544,12 @@ class SharedPreferencesService {
     return prefs.getInt('play_position') ?? 0;
   }
 
+  /// 只更新当前曲目序号（不重写整个队列）：真实切歌时调用
+  static Future<void> setCurrentIndex(int index) async {
+    final prefs = await SharedPreferencesService.instance;
+    await prefs.setInt('currentIndex', index);
+  }
+
   static Future<void> setPlayPosition(int position) async {
     final prefs = await SharedPreferencesService.instance;
     await prefs.setInt('play_position', position);

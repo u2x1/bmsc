@@ -197,7 +197,18 @@ class _CacheScreenState extends State<CacheScreen> {
       final fileName = '${file['title']} - ${file['artist']}.m4a';
       final sanitizedFileName =
           fileName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
-      final targetPath = '${downloadDir.path}/$sanitizedFileName';
+      var targetPath = '${downloadDir.path}/$sanitizedFileName';
+      final target = File(targetPath);
+      if (await target.exists()) {
+        // 已导出过同一文件：视为成功，不重复复制
+        if (await target.length() == await sourceFile.length()) return true;
+        // 不同文件同名（多 P 分 P 标题相同等）：原实现直接覆盖且计为
+        // 成功，批量导出时前面的文件被悄悄替换掉
+        final dot = sanitizedFileName.lastIndexOf('.');
+        targetPath = '${downloadDir.path}/'
+            '${sanitizedFileName.substring(0, dot)} (${file['cid']})'
+            '${sanitizedFileName.substring(dot)}';
+      }
 
       await sourceFile.copy(targetPath);
       return true;

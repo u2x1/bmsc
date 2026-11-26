@@ -84,4 +84,72 @@ void main() {
       if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
     }
   });
+
+  test('主地址建连即断开时回退备用 CDN 地址（issue #22）', () async {
+    final tempDir = await Directory('/data/tmp/opencode')
+        .createTemp('bmsc-lazy-fallback-');
+    final cacheFile = File('${tempDir.path}/audio.m4a');
+    final bytes = List<int>.generate(64 * 1024, (index) => index % 251);
+    // 主地址：接受连接后不发响应头直接断开（PCDN 节点的典型表现）
+    final broken = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    var brokenConnections = 0;
+    final brokenSubscription = broken.listen((socket) {
+      brokenConnections++;
+      socket.destroy();
+    });
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final serverSubscription = server.listen((request) async {
+      request.response.headers.contentType = ContentType('audio', 'mp4');
+      request.response.contentLength = bytes.length;
+      request.response.add(bytes);
+      await request.response.close();
+    });
+
+    try {
+      final source = LazyAudioSource(
+        'BVfallback',
+        1,
+        localFile: cacheFile,
+        debugAudioUri: Uri.parse('http://127.0.0.1:${broken.port}/a.m4s'),
+        debugFallbackUris: [
+          Uri.parse('http://${server.address.host}:${server.port}/a.m4s'),
+        ],
+        debugSkipCacheMetadata: true,
+      );
+      final response =
+          await source.request().timeout(const Duration(seconds: 5));
+      final received = <int>[];
+      await for (final chunk in response.stream) {
+        received.addAll(chunk);
+      }
+      await source.downloadComplete.timeout(const Duration(seconds: 5));
+
+      expect(brokenConnections, greaterThanOrEqualTo(1));
+      expect(received, bytes);
+      expect(cacheFile.readAsBytesSync(), bytes);
+    } finally {
+      await brokenSubscription.cancel();
+      await broken.close();
+      await serverSubscription.cancel();
+      await server.close(force: true);
+      if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    }
+  });
+
+  test('PCDN 候选排到正规 CDN 之后，同类保持原顺序', () {
+    final ordered = LazyAudioSource.orderCdnCandidates([
+      'https://xy1x2x3x4xy.mcdn.bilivideo.cn:8082/v1/resource/a.m4s',
+      'https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/a.m4s',
+      'https://abc.szbdyd.com/upgcxcode/a.m4s',
+      'https://upos-sz-mirrorali.bilivideo.com/upgcxcode/a.m4s',
+      'https://upos-sz-mirrorcos.bilivideo.com/upgcxcode/a.m4s',
+      '',
+    ]).map((u) => u.host).toList();
+    expect(ordered, [
+      'upos-sz-mirrorcos.bilivideo.com',
+      'upos-sz-mirrorali.bilivideo.com',
+      'xy1x2x3x4xy.mcdn.bilivideo.cn',
+      'abc.szbdyd.com',
+    ]);
+  });
 }

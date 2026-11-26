@@ -1076,9 +1076,11 @@ class _DetailScreenState extends State<DetailScreen>
   }
 
   void _showSleepTimerOptionsDialog(BuildContext context) {
+    // context 为详情页自身：弹窗 builder 的 context 随弹窗关闭而卸载，
+    // 之后的时间选择器 await 返回时已 unmounted，确认提示永远不显示
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: const Text('定时停止播放'),
         content: SizedBox(
           width: double.maxFinite,
@@ -1099,14 +1101,17 @@ class _DetailScreenState extends State<DetailScreen>
                     ListTile(
                       dense: true,
                       title: const Text('自定义时间'),
-                      onTap: () => _showCustomTimerDialog(context),
+                      onTap: () {
+                        Navigator.pop(dialogContext);
+                        _showCustomTimerDialog(context);
+                      },
                     ),
                     ...[5, 10, 15, 30, 45, 60, 90].map((minutes) => ListTile(
                           dense: true,
                           title: Text('$minutes 分钟'),
                           onTap: () {
                             _audioService!.setSleepTimer(minutes);
-                            Navigator.pop(context);
+                            Navigator.pop(dialogContext);
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text('将在 $minutes 分钟后停止播放'),
@@ -1127,7 +1132,10 @@ class _DetailScreenState extends State<DetailScreen>
               ListTile(
                 dense: true,
                 title: const Text('选择时间'),
-                onTap: () => _showTimePickerDialog(context),
+                onTap: () {
+                  Navigator.pop(dialogContext);
+                  _showTimePickerDialog(context);
+                },
               ),
             ],
           ),
@@ -1137,7 +1145,6 @@ class _DetailScreenState extends State<DetailScreen>
   }
 
   void _showCustomTimerDialog(BuildContext context) {
-    Navigator.pop(context);
     final controller = TextEditingController();
     showDialog(
       context: context,
@@ -1178,11 +1185,10 @@ class _DetailScreenState extends State<DetailScreen>
   }
 
   Future<void> _showTimePickerDialog(BuildContext context) async {
-    Navigator.pop(context);
-
-    // 获取当前时间作为初始值
-    final now = DateTime.now();
-    final initialTime = TimeOfDay(hour: now.hour, minute: now.minute);
+    // 初始值取 30 分钟后：取当前时刻的话直接点确定会因「已过去」被
+    // 顺延到明天，定时变成将近 24 小时
+    final initialTime =
+        TimeOfDay.fromDateTime(DateTime.now().add(const Duration(minutes: 30)));
 
     // 显示时间选择器
     final selectedTime = await showTimePicker(

@@ -89,6 +89,40 @@ void main() {
         .singleWhere((r) => r.uri.path == '/x/web-interface/search/all/v2');
     expect(fallback.queryParameters['page'], 2);
   });
+
+  test('综合搜索视频块混入直播间条目时跳过而非整页失败（#23）', () async {
+    adapter.onPathSequence('/x/web-interface/nav', [
+      _navRoute(_wbiKey1),
+      _navRoute(_wbiKey2),
+    ]);
+    adapter.onPath('/x/frontend/finger/spi', _fingerSpiRoute());
+    adapter.onPathSequence('/x/web-interface/wbi/search/type', [
+      _vVoucherRoute(),
+      _vVoucherRoute(),
+    ]);
+    final route = _searchAllRoute();
+    final block = (route['body']['data']['result'] as List).single as Map;
+    final video = Map<String, dynamic>.from((block['data'] as List).single);
+    // 真实响应（搜 y/a）：直播间条目无 bvid/aid，play 为 null
+    block['data'] = [
+      {
+        'type': 'live_room',
+        'uname': '主播',
+        'uid': 2,
+        'roomid': 3,
+        'title': '直播中',
+        'play': null,
+      },
+      {...video, 'type': 'video'},
+      {...video, 'type': 'video', 'bvid': 'BVbroken', 'aid': null},
+    ];
+    adapter.onPath('/x/web-interface/search/all/v2', route);
+
+    final result = await api.search('y', 1);
+
+    expect(result, isNotNull);
+    expect(result!.result.map((r) => r.bvid), ['BVsearch0001']);
+  });
 }
 
 const _wbiKey1 =

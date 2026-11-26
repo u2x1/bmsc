@@ -141,6 +141,10 @@ class _PlayingCardState extends State<PlayingCard> {
                       state?.currentSource?.tag.artUri?.toString() ?? "";
                   final duration = data?.$2 ?? Duration.zero;
                   final playing = data?.$3.playing ?? false;
+                  // just_audio 播完后 playing 仍为 true：只看 playing 会显示
+                  // 暂停键，首次点击只是 pause()，要点两次才能重播
+                  final completed = playing &&
+                      data?.$3.processingState == ProcessingState.completed;
                   final isLoadingOrBuffering = [
                     ProcessingState.loading,
                     ProcessingState.buffering
@@ -158,11 +162,14 @@ class _PlayingCardState extends State<PlayingCard> {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 16, vertical: 8),
-                          // 窄窗（分屏/小窗）下紧凑布局：封面缩小、
-                          // 只保留播放/下一首，避免行向右溢出
+                          // 窄窗下紧凑布局：封面缩小、去掉上一首，避免行向右
+                          // 溢出。360dp 宽的常见手机（扣除边距 328dp）也落入
+                          // 紧凑档，播放列表按钮须保留——它是各页面进入队列的
+                          // 唯一快捷入口；只在更窄的分屏/小窗下才隐藏
                           child: LayoutBuilder(
                             builder: (context, box) {
                               final compact = box.maxWidth < 340;
+                              final tiny = box.maxWidth < 260;
                               return Row(
                             children: [
                               // Album art
@@ -261,6 +268,7 @@ class _PlayingCardState extends State<PlayingCard> {
                                 children: [
                                   if (!compact)
                                     IconButton(
+                                      tooltip: '上一首',
                                       icon: const Icon(Icons.skip_previous),
                                       onPressed: player.hasPrevious
                                           ? player
@@ -270,27 +278,48 @@ class _PlayingCardState extends State<PlayingCard> {
                                   Opacity(
                                     opacity: isLoadingOrBuffering ? 0.6 : 1.0,
                                     child: IconButton(
-                                      icon: Icon(playing
-                                          ? Icons.pause
-                                          : Icons.play_arrow),
+                                      tooltip: completed
+                                          ? '重播'
+                                          : playing
+                                              ? '暂停'
+                                              : '播放',
+                                      icon: Icon(completed
+                                          ? Icons.replay
+                                          : playing
+                                              ? Icons.pause
+                                              : Icons.play_arrow),
                                       onPressed: isLoadingOrBuffering
                                           ? null
-                                          : playing
-                                              ? player.pause
-                                              : () async =>
-                                                  (await AudioService.instance)
-                                                      .play(),
+                                          : completed
+                                              // 与详情页一致：回到队列首曲重播
+                                              ? () {
+                                                  final idx = player
+                                                      .effectiveIndices
+                                                      .firstOrNull;
+                                                  if (idx != null) {
+                                                    player.seek(Duration.zero,
+                                                        index: idx);
+                                                  }
+                                                }
+                                              : playing
+                                                  ? player.pause
+                                                  : () async =>
+                                                      (await AudioService
+                                                              .instance)
+                                                          .play(),
                                     ),
                                   ),
                                   IconButton(
+                                    tooltip: '下一首',
                                     icon: const Icon(Icons.skip_next),
                                     onPressed: player.hasNext
                                         ? player.seekToNextRegardlessOfLoopMode
                                         : null,
                                   ),
                                   // Add playlist button
-                                  if (!compact)
+                                  if (!tiny)
                                     IconButton(
+                                      tooltip: '播放列表',
                                       icon: const Icon(Icons.queue_music),
                                       onPressed: () {
                                         showModalBottomSheet(

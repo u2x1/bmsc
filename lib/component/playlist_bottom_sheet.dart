@@ -314,6 +314,11 @@ class _PlaylistBottomSheetState extends State<PlaylistBottomSheet> {
                   final success = await BilibiliService.instance.then(
                           (x) => x.favoriteVideo(aid, [folder.id], [])) ??
                       false;
+                  // 同详情页：同步本地收藏夹缓存，主页计数/封面即时更新
+                  final bvid = extras['bvid'] as String?;
+                  if (success && bvid != null) {
+                    await DatabaseManager.addFav(bvid, folder.id);
+                  }
                   if (!mounted) return;
                   _showNotice(success ? '已收藏' : '操作失败');
                 },

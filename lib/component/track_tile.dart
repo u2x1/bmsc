@@ -349,6 +349,7 @@ class TrackTile extends StatelessWidget {
                       ),
                       if (onAddToPlaylistButtonPressed != null)
                         IconButton(
+                          tooltip: '添加到播放列表',
                           onPressed: onAddToPlaylistButtonPressed,
                           icon: const Icon(
                             Icons.add_circle_outline_rounded,

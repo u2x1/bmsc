@@ -58,6 +58,7 @@ class _SearchScreenState extends State<SearchScreen> {
   void dispose() {
     _debounceTimer?.cancel();
     _focusNode.dispose();
+    fieldTextController.dispose();
     super.dispose();
   }
 
@@ -94,7 +95,10 @@ class _SearchScreenState extends State<SearchScreen> {
     _debounceTimer = Timer(const Duration(milliseconds: 500), () async {
       final suggestions =
           await (await BilibiliService.instance).getSearchSuggestions(value);
-      if (!mounted) return;
+      // 请求期间已提交搜索或改了输入：丢弃过期联想，否则搜索结果出来后
+      // 一次重建（如收起键盘）就会被换成这份联想列表
+      if (!mounted || fieldTextController.text != value) return;
+      if (_debounceTimer == null) return;
       setState(() {
         _suggestions = suggestions ?? [];
       });
@@ -224,7 +228,7 @@ class _SearchScreenState extends State<SearchScreen> {
           ? vid.pic
           : vid.pic.startsWith('//')
               ? 'https:${vid.pic}'
-              : 'https://$vid.pic',
+              : 'https://${vid.pic}',
       title: stripHtmlIfNeeded(vid.title),
       author: vid.author,
       len: duration,
@@ -324,9 +328,15 @@ class _SearchScreenState extends State<SearchScreen> {
                 if (_clipboardUrl == null || _clipboardUrl!.isEmpty) return;
                 final vid = extractBiliUrl(_clipboardUrl!);
                 if (vid == null) {
+                  // 原实现把 _clipboardUrl 设为「未找到视频」，再点一次就
+                  // 把这几个字当链接/关键词拿去搜
                   setState(() {
-                    _clipboardUrl = "未找到视频";
+                    _clipboardUrl = "";
                   });
+                  if (!context.mounted) return;
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('剪贴板中未找到 B 站视频链接')),
+                  );
                   return;
                 } else {
                   setState(() {
@@ -383,6 +393,12 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   void onSearching(String? value, {bool fromClipboard = false}) async {
+    // 空关键词不发请求（原实现会以 "" 搜索，B 站返回失败）
+    if (!fromClipboard && (value == null || value.trim().isEmpty)) return;
+    // 打完字立即回车（500ms 内）时联想防抖尚未触发：取消，并清掉旧联想
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    _suggestions = [];
     _searchToken++;
     final urlText = fromClipboard ? _clipboardUrl : value;
     if (urlText != null) {
@@ -404,6 +420,8 @@ class _SearchScreenState extends State<SearchScreen> {
         setState(() {
           _hasMore = false;
           _searchFailed = false;
+          // 同下：在途的上一次搜索 token 已失效，不复位会一直显示加载圈
+          _isLoading = false;
           _curPage = 1;
           vidList = [
             Result(
@@ -431,6 +449,9 @@ class _SearchScreenState extends State<SearchScreen> {
       _searchFailed = false;
       _curPage = 1;
       vidList.clear();
+      // 上一次搜索若仍在途，其 token 已失效、finally 不会复位
+      // _isLoading：不在此复位则 loadMore 直接 return，新搜索永远转圈
+      _isLoading = false;
     });
     await loadMore();
   }

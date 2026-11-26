@@ -38,10 +38,14 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
   void initState() {
     super.initState();
     _load();
+    // 原实现只在 initState 加载一次：应用运行期间播放的曲目要重启才
+    // 出现在主页（清空数据后首次播放时整个板块都不显示）
+    DatabaseManager.playHistoryVersion.addListener(_load);
   }
 
   @override
   void dispose() {
+    DatabaseManager.playHistoryVersion.removeListener(_load);
     _pageController.dispose();
     super.dispose();
   }

@@ -48,6 +48,10 @@ class DatabaseManager {
   /// 主页「本地音乐」板块监听它刷新计数与预览列表
   static final ValueNotifier<int> localMusicVersion = ValueNotifier(0);
 
+  /// 播放历史变更版本号：某曲目在本次播放中首次计入播放次数时自增
+  /// （周期性的时长累加不计），主页「最近在听」监听它刷新
+  static final ValueNotifier<int> playHistoryVersion = ValueNotifier(0);
+
   static Future<Database> get database async {
     if (_database != null) return _database!;
     _database = await initDB();
@@ -82,7 +86,7 @@ class DatabaseManager {
     try {
       final db = await openDatabase(
         path,
-        version: 10,
+        version: 11,
         onCreate: (db, version) async {
           _logger.info('Creating new database tables...');
           await db.execute('''
@@ -94,6 +98,7 @@ class DatabaseManager {
             playCount INTEGER DEFAULT 0,
             lastPlayed INTEGER,
             createdAt INTEGER,
+            qualityId INTEGER,
             PRIMARY KEY (bvid, cid)
           )
         ''');
@@ -404,6 +409,12 @@ class DatabaseManager {
           if (oldVersion <= 9) {
             // 本地音乐曲库表（导入的设备音频文件，与 B 站缓存体系无关）
             await _createLocalMusicTable(db);
+          }
+          if (oldVersion <= 10) {
+            // 缓存文件的音质档位：从缓存播放时音质弹窗据此高亮当前档位
+            //（旧缓存为 NULL，即未知）
+            await db.execute(
+                'ALTER TABLE $cacheTable ADD COLUMN qualityId INTEGER');
           }
         },
       );
@@ -739,7 +750,9 @@ class DatabaseManager {
               'raw_title': entity.bvidTitle,
               'cached': true
             });
-        return LazyAudioSource(bvid, cid, localFile: file, tag: tag);
+        // 下载表无 qualityId 列，取到 null 即未知档位
+        return LazyAudioSource(bvid, cid, localFile: file, tag: tag)
+          ..qualityId = results.first['qualityId'] as int?;
       } else {
         _logger.info('No cached audio found for bvid: $bvid, cid: $cid');
       }
@@ -835,7 +848,8 @@ class DatabaseManager {
     }
   }
 
-  static Future<void> saveCacheMetadata(String bvid, int cid, File file) async {
+  static Future<void> saveCacheMetadata(String bvid, int cid, File file,
+      {int? qualityId}) async {
     try {
       final db = await database;
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -846,12 +860,14 @@ class DatabaseManager {
         // 缓存淘汰评分随之退化为近似 FIFO
         final ret = await txn.rawInsert('''
           INSERT INTO $cacheTable
-            (bvid, cid, filePath, fileSize, playCount, lastPlayed, createdAt)
-          VALUES (?, ?, ?, ?, 0, ?, ?)
+            (bvid, cid, filePath, fileSize, playCount, lastPlayed, createdAt,
+             qualityId)
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?)
           ON CONFLICT(bvid, cid) DO UPDATE SET
             filePath = excluded.filePath,
-            fileSize = excluded.fileSize
-        ''', [bvid, cid, file.path, await file.length(), now, now]);
+            fileSize = excluded.fileSize,
+            qualityId = excluded.qualityId
+        ''', [bvid, cid, file.path, await file.length(), now, now, qualityId]);
         if (ret != 0) {
           _logger.info('audio cache metadata saved');
         }
@@ -1432,10 +1448,14 @@ class DatabaseManager {
     if (deleted > 0) {
       final batch = db.batch();
       for (final row in counts) {
+        // synced_count 同步扣减：否则缓存条数低于上次全量同步数，此后
+        // 每次进入详情页都被判为「缓存不完整」而重新全量拉取
         batch.rawUpdate(
-          'UPDATE $favListTable SET mediaCount = MAX(mediaCount - ?, 0) '
+          'UPDATE $favListTable SET mediaCount = MAX(mediaCount - ?, 0), '
+          'synced_count = CASE WHEN synced_count > 0 '
+          'THEN MAX(synced_count - ?, 0) ELSE synced_count END '
           'WHERE id = ?',
-          [row['c'], row['mid']],
+          [row['c'], row['c'], row['mid']],
         );
       }
       await batch.commit(noResult: true);
@@ -1755,6 +1775,7 @@ class DatabaseManager {
         );
       }
     });
+    if (playcnt > 0) playHistoryVersion.value++;
   }
 
   static Future<PlayStat?> getPlayStat(String bvid) async {

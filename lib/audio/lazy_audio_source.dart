@@ -24,6 +24,17 @@ class LazyAudioSource extends StreamAudioSource {
   final String bvid;
   final int cid;
   final AsyncMemoizer<Uri> _uriMemoizer = AsyncMemoizer();
+
+  /// 与 [uri] 同次解析得到的其余候选地址（backup_url），主地址连接失败时
+  /// 依次回退
+  List<Uri> _fallbackUris = const [];
+
+  /// 建连超时：PCDN 节点失联时 TCP 可能长时间无响应，HttpClient 默认
+  /// 不超时，表现为一直加载、点了没反应
+  static const connectTimeout = Duration(seconds: 8);
+
+  /// 建连后等待响应头的超时
+  static const responseHeaderTimeout = Duration(seconds: 12);
   final Future<File> localFile;
   int _progress = 0;
   final bool isLocal;
@@ -33,6 +44,10 @@ class LazyAudioSource extends StreamAudioSource {
   final Uri? debugAudioUri;
   @visibleForTesting
   final bool debugSkipCacheMetadata;
+
+  /// 与 [debugAudioUri] 配套的备用地址注入点
+  @visibleForTesting
+  final List<Uri> debugFallbackUris;
 
   final _requests = <_StreamingByteRangeRequest>[];
   final _downloadProgressSubject = BehaviorSubject<double>();
@@ -98,7 +113,8 @@ class LazyAudioSource extends StreamAudioSource {
   StreamSubscription<List<int>>? _subscription;
   HttpClient? _httpClient;
   IOSink? _sink;
-  final _inProgressResponses = <_InProgressCacheResponse>[];
+  /// 当前这次下载的落盘进度；跟随读取的响应流据此从 .part 读数据
+  _DownloadTail? _tail;
 
   /// Creates a [LockCachingAudioSource] to that provides [uri] to the player
   /// while simultaneously caching it to [file]. If no cache file is
@@ -113,6 +129,7 @@ class LazyAudioSource extends StreamAudioSource {
     super.tag,
     this.debugAudioUri,
     this.debugSkipCacheMetadata = false,
+    this.debugFallbackUris = const [],
   })  : localFile = localFile != null
             ? Future.value(localFile)
             : DatabaseManager.prepareFileForCaching(bvid, cid),
@@ -133,8 +150,49 @@ class LazyAudioSource extends StreamAudioSource {
         throw Exception('无法解析音频地址：B 站接口未返回可播放流（可能触发风控，请稍后重试）');
       }
       qualityId = first.id;
-      return Uri.parse(first.baseUrl);
+      final ordered = orderCdnCandidates(
+          [first.baseUrl, ...first.backupUrl].where((u) => u.isNotEmpty));
+      _fallbackUris = ordered.skip(1).toList();
+      return ordered.first;
     });
+  }
+
+  /// PCDN（用户侧节点，如 xy*.mcdn.bilivideo.cn:8082、*.szbdyd.com）常
+  /// 连不上或建连后直接断开（#22 日志：Connection closed before full
+  /// header was received），排到 upos 等正规 CDN 之后；同类保持原顺序
+  @visibleForTesting
+  static List<Uri> orderCdnCandidates(Iterable<String> urls) {
+    final uris = <Uri>[];
+    for (final u in urls) {
+      final uri = Uri.tryParse(u);
+      if (uri != null && uri.host.isNotEmpty && !uris.contains(uri)) {
+        uris.add(uri);
+      }
+    }
+    bool isPcdn(Uri u) =>
+        u.host.contains('.mcdn.bilivideo.') || u.host.endsWith('.szbdyd.com');
+    return [...uris.where((u) => !isPcdn(u)), ...uris.where(isPcdn)];
+  }
+
+  /// 依次尝试候选地址直到拿到响应头；只回退连接层失败（拒绝、重置、
+  /// 超时、TLS），HTTP 状态码交给调用方处理
+  Future<(Uri, HttpClientResponse)> _openFirstReachable(HttpClient client,
+      List<Uri> candidates, Map<String, String>? headers) async {
+    Object? lastError;
+    StackTrace? lastStack;
+    for (final candidate in candidates) {
+      try {
+        final request = await _getUrl(client, candidate, headers: headers);
+        final response = await request.close().timeout(responseHeaderTimeout);
+        return (candidate, response);
+      } on Object catch (e, st) {
+        if (e is! IOException && e is! TimeoutException) rethrow;
+        _logger.warning('[$bvid:$cid] fetch: ${candidate.host} failed: $e');
+        lastError = e;
+        lastStack = st;
+      }
+    }
+    Error.throwWithStackTrace(lastError!, lastStack!);
   }
 
   Future<void> _init() async {
@@ -198,13 +256,8 @@ class LazyAudioSource extends StreamAudioSource {
       req.fail(Exception('download cancelled'));
     }
     _requests.clear();
-    for (final res in _inProgressResponses) {
-      if (!res.controller.isClosed) {
-        res.controller.addError(Exception('download cancelled'));
-        res.controller.close();
-      }
-    }
-    _inProgressResponses.clear();
+    _tail?.fail(Exception('download cancelled'), StackTrace.current);
+    _tail = null;
     try {
       final part = await _partialCacheFile;
       if (part.existsSync()) await part.delete();
@@ -354,9 +407,20 @@ class LazyAudioSource extends StreamAudioSource {
         ? null
         : (await BilibiliService.instance).headers;
 
-    final httpClient = _httpClient = HttpClient();
-    var httpRequest = await _getUrl(httpClient, uri, headers: headers);
-    var response = await httpRequest.close();
+    final httpClient = _httpClient = HttpClient()
+      ..connectionTimeout = connectTimeout;
+    HttpClientRequest httpRequest;
+    HttpClientResponse response;
+    try {
+      (uri, response) = await _openFirstReachable(httpClient,
+          [
+        uri,
+        ...(debugAudioUri != null ? debugFallbackUris : _fallbackUris)
+      ], headers);
+    } catch (_) {
+      httpClient.close(force: true);
+      rethrow;
+    }
     _logger.info(
         '[$bvid:$cid] fetch: CDN response ${response.statusCode} (${sw.elapsed})');
     // B 站 playurl 的 baseUrl/backup 均有有效期（TTL 几小时），过期后可能返回
@@ -419,7 +483,7 @@ class LazyAudioSource extends StreamAudioSource {
     final acceptRanges = response.headers.value(HttpHeaders.acceptRangesHeader);
     final originSupportsRangeRequests =
         acceptRanges != null && acceptRanges != 'none';
-    final inProgressResponses = _inProgressResponses;
+    final tail = _tail = _DownloadTail();
     late StreamSubscription<List<int>> subscription;
     var percentProgress = 0;
     void updateProgress(int newPercentProgress) {
@@ -524,13 +588,7 @@ class LazyAudioSource extends StreamAudioSource {
         req.fail(error, stackTrace);
       }
       _requests.clear();
-      for (final res in inProgressResponses) {
-        if (!res.controller.isClosed) {
-          res.controller.addError(error, stackTrace);
-          res.controller.close();
-        }
-      }
-      inProgressResponses.clear();
+      tail.fail(error, stackTrace);
       _downloading = false;
       if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
         _inflightDownloads.remove(_downloadKey);
@@ -541,62 +599,44 @@ class LazyAudioSource extends StreamAudioSource {
     }
 
     subscription = _subscription = response.listen((data) async {
-      if (_progress == 0) {
-        // 首个数据块：内容魔数最权威，总是覆盖响应头/URL 推断（CDN 可能
-        // 把 fMP4 错标为 audio/mpeg，AVPlayer 会用 MP3 解析器扫全文件，
-        // 拖到快下完才开播）；魔数无法识别时才回退到既有推断。
-        final sniffed = sniffMimeFromBytes(data);
-        if (sniffed != null) {
-          mimeType = sniffed;
-        } else if (mimeType.isEmpty) {
-          mimeType = 'audio/mpeg';
-        }
-        _logger.info(
-            '[$bvid:$cid] fetch: first chunk ${data.length}B (${sw.elapsed}), '
-            'mime=$mimeType, pendingRequests=${_requests.length}');
-      }
-      probeMoovPosition(data);
-      _progress += data.length;
-      final newPercentProgress = (sourceLength == null)
-          ? 0
-          : (sourceLength == 0)
-              ? 100
-              // CDN 实发可能多于 Content-Length：钳制防进度超 100%
-              : min(100, 100 * _progress ~/ sourceLength);
-      updateProgress(newPercentProgress);
-      sink.add(data);
-      final readyRequests = _requests
-          .where((request) =>
-              !originSupportsRangeRequests ||
-              request.start == null ||
-              (request.start!) < _progress)
-          .toList();
-      final notReadyRequests = _requests
-          .where((request) =>
-              originSupportsRangeRequests &&
-              request.start != null &&
-              (request.start!) >= _progress)
-          .toList();
-      // Add this live data to any responses in progress.
-      for (var cacheResponse in inProgressResponses) {
-        final end = cacheResponse.end;
-        if (end != null && _progress >= end) {
-          // We've received enough data to fulfill the byte range request.
-          final subEnd =
-              min(data.length, max(0, data.length - (_progress - end)));
-          cacheResponse.controller.add(data.sublist(0, subEnd));
-          cacheResponse.controller.close();
-        } else {
-          cacheResponse.controller.add(data);
-        }
-      }
-      inProgressResponses.removeWhere((element) => element.controller.isClosed);
-      if (_requests.isEmpty) return;
-      // Prevent further data coming from the HTTP source until we have set up
-      // an entry in inProgressResponses to continue receiving live HTTP data.
+      // 逐块串行：处理期间暂停 HTTP 流，本块写盘并 flush 后才接收下一块
+      //（含 onDone）。跟随读取的响应据此保证读到的都是已落盘数据，
+      // 下载完成时 .part 也已完整。
       subscription.pause();
       try {
+        if (_progress == 0) {
+          // 首个数据块：内容魔数最权威，总是覆盖响应头/URL 推断（CDN 可能
+          // 把 fMP4 错标为 audio/mpeg，AVPlayer 会用 MP3 解析器扫全文件，
+          // 拖到快下完才开播）；魔数无法识别时才回退到既有推断。
+          final sniffed = sniffMimeFromBytes(data);
+          if (sniffed != null) {
+            mimeType = sniffed;
+          } else if (mimeType.isEmpty) {
+            mimeType = 'audio/mpeg';
+          }
+          _logger.info(
+              '[$bvid:$cid] fetch: first chunk ${data.length}B (${sw.elapsed}), '
+              'mime=$mimeType, pendingRequests=${_requests.length}');
+        }
+        probeMoovPosition(data);
+        sink.add(data);
         await sink.flush();
+        _progress += data.length;
+        tail.advance(_progress);
+        final newPercentProgress = (sourceLength == null)
+            ? 0
+            : (sourceLength == 0)
+                ? 100
+                // CDN 实发可能多于 Content-Length：钳制防进度超 100%
+                : min(100, 100 * _progress ~/ sourceLength);
+        updateProgress(newPercentProgress);
+        if (_requests.isEmpty) return;
+        final readyRequests = _requests
+            .where((request) =>
+                !originSupportsRangeRequests ||
+                request.start == null ||
+                (request.start!) < _progress)
+            .toList();
         // Process any requests that start within the cache.
         for (var request in readyRequests) {
           _requests.remove(request);
@@ -623,21 +663,14 @@ class LazyAudioSource extends StreamAudioSource {
               effectiveEnd > advertised) {
             effectiveEnd = advertised;
           }
-          Stream<List<int>> responseStream;
-          if (effectiveEnd != null && effectiveEnd <= _progress) {
-            responseStream =
-                getEffectiveCacheFile().openRead(effectiveStart, effectiveEnd);
-          } else {
-            final cacheResponse = _InProgressCacheResponse(end: effectiveEnd);
-            inProgressResponses.add(cacheResponse);
-            responseStream = Rx.concatEager([
-              // NOTE: The cache file part of the stream must not overlap with
-              // the live part. "_progress" should
-              // to the cache file at the time
-              getEffectiveCacheFile().openRead(effectiveStart, _progress),
-              cacheResponse.controller.stream,
-            ]);
-          }
+          // 未下载到的部分不再缓冲在内存（原 ReplaySubject 会把整段数据
+          // 留在内存直到音频源销毁：每首播过的歌常驻一个文件大小，每次
+          // 拖动再叠加一份，数小时的合集视频可达数百 MB 被系统杀进程）
+          final responseStream =
+              effectiveEnd != null && effectiveEnd <= _progress
+                  ? getEffectiveCacheFile().openRead(effectiveStart, effectiveEnd)
+                  : _followDownload(
+                      tail, getEffectiveCacheFile, effectiveStart, effectiveEnd);
           if (_serveAsLiveStream) {
             request.complete(StreamAudioResponse(
               rangeRequestsSupported: false,
@@ -645,7 +678,7 @@ class LazyAudioSource extends StreamAudioSource {
               contentLength: null,
               offset: null,
               contentType: mimeType,
-              stream: responseStream.asBroadcastStream(),
+              stream: responseStream,
             ));
           } else {
             request.complete(StreamAudioResponse(
@@ -655,7 +688,7 @@ class LazyAudioSource extends StreamAudioSource {
                   effectiveEnd != null ? effectiveEnd - effectiveStart : null,
               offset: start,
               contentType: mimeType,
-              stream: responseStream.asBroadcastStream(),
+              stream: responseStream,
             ));
           }
         }
@@ -663,6 +696,12 @@ class LazyAudioSource extends StreamAudioSource {
         // 中途抛错必须恢复订阅，否则订阅永久 pause、下载停摆
         subscription.resume();
       }
+      final notReadyRequests = _requests
+          .where((request) =>
+              originSupportsRangeRequests &&
+              request.start != null &&
+              (request.start!) >= _progress)
+          .toList();
       // Process any requests that start beyond the cache.
       // 注：此处如实宣告真实 sourceLength（不做截断）——截断宣告后 AVPlayer
       // 视资源为 N MB，只有拖动越过宣告边界时才可能产生这类请求，此时
@@ -671,7 +710,7 @@ class LazyAudioSource extends StreamAudioSource {
         _requests.remove(request);
         final start = request.start!;
         final end = request.end ?? sourceLength;
-        final httpClient = HttpClient();
+        final httpClient = HttpClient()..connectionTimeout = connectTimeout;
 
         final rangeRequest = _HttpRangeRequest(start, end);
         _getUrl(httpClient, uri, headers: {
@@ -689,7 +728,7 @@ class LazyAudioSource extends StreamAudioSource {
             contentLength: end != null ? end - start : null,
             offset: start,
             contentType: mimeType,
-            stream: response.asBroadcastStream(),
+            stream: response,
           ));
         }, onError: (dynamic e, StackTrace? stackTrace) {
           request.fail(e, stackTrace);
@@ -711,11 +750,6 @@ class LazyAudioSource extends StreamAudioSource {
       if (sourceLength == null) {
         updateProgress(100);
       }
-      for (var cacheResponse in inProgressResponses) {
-        if (!cacheResponse.controller.isClosed) {
-          cacheResponse.controller.close();
-        }
-      }
       // 防御式改名：.part 可能已被并发清理（取消/其他实例）。主文件已
       // 存在视为成功（同路径在途下载已完成并改名）；两者都不存在则
       // 下载产物丢失，按失败收尾（不落库、以错误完成 completer）。
@@ -729,6 +763,7 @@ class LazyAudioSource extends StreamAudioSource {
       }
       if (!localFile.existsSync()) {
         _logger.severe('[$bvid:$cid] download artifact missing after done');
+        tail.fail(StateError('download artifact missing'), StackTrace.current);
         _response = null; // 与失败路径一致：允许后续 request 重启下载
         _downloading = false;
         if (identical(_inflightDownloads[_downloadKey], downloadComplete)) {
@@ -742,6 +777,24 @@ class LazyAudioSource extends StreamAudioSource {
         httpClient.close();
         return;
       }
+      // 数据已全部落盘（逐块 flush）且已改名：跟随读取者读完即结束
+      tail.finish();
+      // 最后一块之后、改名之前到达的请求：不会再有数据块触发处理，
+      // 直接按正式缓存文件响应（否则挂起直到播放器超时报错）
+      if (_requests.isNotEmpty) {
+        final length = localFile.lengthSync();
+        for (final request in _requests.toList()) {
+          _requests.remove(request);
+          request.complete(StreamAudioResponse(
+            rangeRequestsSupported: true,
+            sourceLength: request.start != null ? length : null,
+            contentLength: (request.end ?? length) - (request.start ?? 0),
+            offset: request.start,
+            contentType: mimeType,
+            stream: localFile.openRead(request.start, request.end),
+          ));
+        }
+      }
       // 最终确定的 mime（可能来自内容嗅探）在下载完成后写入
       await (await _mimeFile).writeAsString(mimeType);
       await subscription.cancel();
@@ -750,7 +803,8 @@ class LazyAudioSource extends StreamAudioSource {
 
       // Save cache metadata first
       if (!debugSkipCacheMetadata) {
-        await DatabaseManager.saveCacheMetadata(bvid, cid, localFile);
+        await DatabaseManager.saveCacheMetadata(bvid, cid, localFile,
+            qualityId: qualityId);
       }
 
       // 文件已改名、元数据已落库：此刻起换源监听者可安全使用主文件
@@ -844,38 +898,126 @@ class LazyAudioSource extends StreamAudioSource {
         return Future<HttpClientResponse>.error(error as Object, stackTrace);
       });
     }
-    return byteRangeRequest.future.then((response) {
-      response.stream.listen((event) {}, onError: (Object e, StackTrace st) {
-        // So that we can restart later
-        _response = null;
-        // Cancel any pending request
-        for (final req in _requests) {
-          req.fail(e, st);
-        }
-      });
-      return response;
-    });
+    // 响应流均为单订阅：播放器断开（切歌/拖动）即取消，跟随读取随之
+    // 停止。下载失败的复位（_response = null、失败挂起请求）由
+    // failDownload 统一完成，不再挂旁路监听——旧实现为此把流转成广播流，
+    // 断开后上游永不取消
+    return byteRangeRequest.future;
   }
 }
 
-/// When a byte range request on a [LockCachingAudioSource] overlaps partially
-/// with the cache file and partially with the live HTTP stream, the consumer
-/// needs to first consume the cached part before the live part. This class
-/// provides a place to buffer the live part until the consumer reaches it, and
-/// also keeps track of the [end] of the byte range so that the producer knows
-/// when to stop adding data.
-class _InProgressCacheResponse {
-  // NOTE: This isn't necessarily memory efficient. Since the entire audio file
-  // will likely be downloaded at a faster rate than the rate at which the
-  // player is consuming audio data, it is also likely that this buffered data
-  // will never be used.
-  // TODO: Improve this code.
-  // ignore: close_sinks
-  final controller = ReplaySubject<List<int>>();
-  final int? end;
-  _InProgressCacheResponse({
-    required this.end,
-  });
+/// 一次下载的落盘进度与结局，供跟随读取的响应流等待新数据。每次
+/// _fetch 新建一个：取消/重启后旧响应仍绑定旧实例，不会读到新下载的数据。
+class _DownloadTail {
+  int flushed = 0;
+  bool finished = false;
+  Object? error;
+  StackTrace? errorStack;
+  final _changes = StreamController<void>.broadcast();
+
+  bool get settled => finished || error != null;
+
+  /// 下一次进度/结局变化
+  Future<void> get changed => _changes.stream.first;
+
+  void advance(int bytes) {
+    flushed = bytes;
+    _changes.add(null);
+  }
+
+  void finish() {
+    if (settled) return;
+    finished = true;
+    _changes.add(null);
+  }
+
+  void fail(Object e, StackTrace st) {
+    if (settled) return;
+    error = e;
+    errorStack = st;
+    _changes.add(null);
+  }
+}
+
+/// 跟随下载进度从缓存文件读取 [start, end) 的响应流。只读已落盘的数据，
+/// 内存占用与文件大小无关；消费方暂停（播放器缓冲已满）时停止读取，
+/// 取消（切歌/拖动）时立即结束。每块读取都重新打开文件：下载完成时
+/// .part 会改名为正式缓存（[fileOf] 随之返回新路径），也避免长期持有
+/// 句柄妨碍改名（Windows）。
+Stream<List<int>> _followDownload(
+    _DownloadTail tail, File Function() fileOf, int start, int? end) {
+  const chunkBytes = 256 * 1024;
+  late final StreamController<List<int>> controller;
+  final cancelled = Completer<void>();
+  var position = start;
+  var pumping = false;
+
+  Future<List<int>> readChunk(int length) async {
+    RandomAccessFile raf;
+    try {
+      raf = await fileOf().open();
+    } on FileSystemException {
+      // 恰逢 .part 改名的瞬间：按改名后的路径再试一次
+      raf = await fileOf().open();
+    }
+    try {
+      await raf.setPosition(position);
+      return await raf.read(length);
+    } finally {
+      await raf.close();
+    }
+  }
+
+  Future<void> pump() async {
+    if (pumping) return;
+    pumping = true;
+    try {
+      while (!cancelled.isCompleted && !controller.isPaused) {
+        if (end != null && position >= end) {
+          controller.close();
+          return;
+        }
+        final available = end == null ? tail.flushed : min(end, tail.flushed);
+        if (position < available) {
+          final chunk = await readChunk(min(available - position, chunkBytes));
+          if (cancelled.isCompleted) return;
+          if (chunk.isEmpty) {
+            throw StateError('cache file shorter than download progress');
+          }
+          position += chunk.length;
+          controller.add(chunk);
+          continue;
+        }
+        final error = tail.error;
+        if (error != null) {
+          controller.addError(error, tail.errorStack);
+          controller.close();
+          return;
+        }
+        if (tail.finished) {
+          controller.close();
+          return;
+        }
+        await Future.any([tail.changed, cancelled.future]);
+      }
+    } catch (e, st) {
+      if (!cancelled.isCompleted && !controller.isClosed) {
+        controller.addError(e, st);
+        controller.close();
+      }
+    } finally {
+      pumping = false;
+    }
+  }
+
+  controller = StreamController<List<int>>(
+    onListen: pump,
+    onResume: pump,
+    onCancel: () {
+      if (!cancelled.isCompleted) cancelled.complete();
+    },
+  );
+  return controller.stream;
 }
 
 /// Request parameters for a [StreamAudioSource].

@@ -34,6 +34,7 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:audio_service/audio_service.dart';
+import 'package:audio_session/audio_session.dart';
 import 'package:bmsc/util/art_cache.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -707,6 +708,14 @@ class _PlayerAudioHandler extends BaseAudioHandler
       await skipToQueueItem(0);
     }
     if (!_playing) {
+      // 通知栏/锁屏/耳机/蓝牙按键的播放直接走到这里，绕过 just_audio
+      // AudioPlayer.play() 里的 session.setActive(true)：冷启动后从通知栏
+      // 首次播放、或焦点被其他应用永久夺走（audio_session 会随之放弃焦点）
+      // 后再从通知栏恢复，都会在不持有音频焦点的情况下出声——与其他
+      // 应用同时播放、来电不暂停、拔耳机不暂停（noisy 广播接收器只在
+      // 申请到焦点时注册）。已持有焦点时 setActive 立即返回 true
+      if (!await (await AudioSession.instance).setActive(true)) return;
+      if (_playing) return;
       _updatePosition();
       customEvent.add(_PlayingEvent(_playing = true));
       _broadcastState();

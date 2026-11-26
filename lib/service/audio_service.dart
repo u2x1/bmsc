@@ -211,6 +211,12 @@ class AudioService {
   StreamSubscription<AudioInterruptionEvent>? _interruptionEventSubscription;
   bool _playInterrupted = false;
   bool _hijacking = false;
+
+  /// 播放请求代号：每个「点歌」入口开始时自增。入口内的解析/查库可能
+  /// 耗时数秒（慢网络），期间用户又点了别的曲目时，先发后至的旧请求
+  /// 不得再改队列、跳转或开播——否则最终播放的是先点的那首
+  int _playGeneration = 0;
+  bool _isStalePlay(int gen) => gen != _playGeneration;
   final _sourceRecoveryPolicy = AudioRecoveryPolicy();
   Timer? _sourceRecoveryResetTimer;
   double? _volumeBeforeDuck;
@@ -240,43 +246,28 @@ class AudioService {
       // preload: false 挂载：不触发原生 load，又保证 playlist 修改正常传播。
       // 慢网络下 preload 等待首批流数据可能长时间挂起（iOS 需经 localhost
       // 代理拉流），超时放行让初始化继续，底层加载完成后播放器状态自愈。
+      //
+      // 曲目与进度随 setAudioSource 一并交给原生端加载：原先先加载第 0 首、
+      // 再 seek 到保存的曲目（2 秒超时）、再等就绪后 seek 进度——慢网络下
+      // 首个 seek 超时即整段跳过，进度丢失从 0 开始（#22 日志：seek index
+      // failed, skip restore），且白白下载了第 0 首。initialIndex/
+      // initialPosition 属于加载请求本身，超时放行后仍会生效
+      final position = await SharedPreferencesService.getPlayPosition();
+      final restoreIndex = restored != null && restored.$2 < x.playlist.length
+          ? restored.$2
+          : null;
       try {
         await x.player
             .setAudioSource(x.playlist,
-                preload: x.playlist.children.isNotEmpty)
+                preload: x.playlist.children.isNotEmpty,
+                initialIndex: restoreIndex,
+                initialPosition: restoreIndex != null && position > 0
+                    ? Duration(seconds: position)
+                    : null)
             .timeout(const Duration(seconds: 5));
       } catch (e) {
         _logger.warning(
             'AudioService._init: setAudioSource failed/timeout: $e');
-      }
-      final position = await SharedPreferencesService.getPlayPosition();
-      if (restored != null && restored.$2 < x.playlist.length) {
-        // 以下 seek 在 iOS 上曾因 AVPlayer 等待流数据而挂起，现已有
-        // 兜底超时保护：恢复失败只记录警告，不阻塞初始化。
-        try {
-          await x.player
-              .seek(null, index: restored.$2)
-              .timeout(const Duration(seconds: 2));
-        } catch (e) {
-          _logger.warning('AudioService._init: seek index failed, skip restore');
-        }
-        // 等待播放器就绪后再恢复进度。iOS 上曾因 AVPlayer 等待流数据而
-        // 挂起，缩短兜底为 1 秒；Android 保留 3 秒避免慢网络下频繁超时。
-        try {
-          await x.player.processingStateStream
-              .firstWhere((s) => s == ProcessingState.ready)
-              .timeout(Duration(seconds: Platform.isIOS ? 1 : 3),
-                  onTimeout: () => ProcessingState.ready);
-        } catch (e) {
-          _logger.warning('AudioService._init: wait ready failed');
-        }
-        try {
-          await x.player
-              .seek(Duration(seconds: position))
-              .timeout(const Duration(seconds: 2));
-        } catch (e) {
-          _logger.warning('AudioService._init: seek position failed');
-        }
       }
       await x.restorePlayMode();
 
@@ -699,6 +690,18 @@ class AudioService {
       }
     });
 
+    // 暂停状态下拖动进度：定时保存不运行，不落盘的话进程被回收后
+    // 恢复到拖动前的位置
+    player.positionDiscontinuityStream.listen((d) {
+      if (d.reason != PositionDiscontinuityReason.seek ||
+          player.playing ||
+          player.sequence.isEmpty) {
+        return;
+      }
+      unawaited(SharedPreferencesService.setPlayPosition(
+          d.event.updatePosition.inSeconds));
+    });
+
     player.playerStateStream.listen((state) async {
       final enableHistoryReport =
           await SharedPreferencesService.getHistoryReported();
@@ -711,6 +714,13 @@ class AudioService {
       } else {
         _stopHistoryReporting();
         _stopPlayPositionSaving();
+        // 暂停时也落盘：定时保存只在播放中每 5 秒一次，暂停后（前台服务
+        // 随之退出，进程易被回收）重开会回退到最多 5 秒前
+        if (state.processingState != ProcessingState.idle &&
+            player.sequence.isNotEmpty) {
+          unawaited(SharedPreferencesService.setPlayPosition(
+              player.position.inSeconds));
+        }
       }
 
     });
@@ -1367,6 +1377,13 @@ class AudioService {
     // 插入/删除让 sequenceState 反复错位，真机实测级联在数秒内解析了
     // 44 个视频的整个队列并使播放条反复跳变）
     if (isCurrentChanged) {
+      // 持久化当前序号与位置：序号原先只在队列变更（doAndSavePlaylist）
+      // 时保存，而下一首通常已被预解析为真实源，自然切歌不经过它——
+      // 多 P 连播、本地音乐、回到已解析曲目时，进程在后台被杀后恢复成
+      // 「上一首 + 新曲目的进度」
+      unawaited(SharedPreferencesService.setCurrentIndex(index));
+      unawaited(
+          SharedPreferencesService.setPlayPosition(player.position.inSeconds));
       // 播放计数的 tick 起点随真实切歌重置：原先在 playerState
       // ready&&playing 事件上清零，暂停/恢复、卡顿恢复都会再次触发，
       // 每次恢复播放 playCount 都被多计 1
@@ -1630,6 +1647,7 @@ class AudioService {
   /// 为空或找不到（被屏蔽等）时从第一个分 P 开始
   Future<void> playByBvid(String bvid, {int? preferCid}) async {
     _logger.info('Playing by BVID: $bvid (preferCid: $preferCid)');
+    final gen = ++_playGeneration;
     await player.pause();
     List<IndexedAudioSource>? srcs;
     try {
@@ -1646,6 +1664,7 @@ class AudioService {
     for (var cid in excludedCids) {
       srcs.removeWhere((src) => src.tag.extras?['cid'] == cid);
     }
+    if (_isStalePlay(gen)) return;
 
     final idx = await _addUniqueSourcesToPlaylist(srcs,
         insertIndex: (player.currentIndex ?? playlist.length - 1) + 1);
@@ -1653,7 +1672,7 @@ class AudioService {
       // 定位与 seek 同处变更互斥窗口：其间在途的解析/预解析不会插入
       // 删除队列项，target 计算与 seek 落点一致（否则多 P 插入会使
       // seek 落到错误曲目）
-      if (!await _waitMutationFree()) return;
+      if (!await _waitMutationFree() || _isStalePlay(gen)) return;
       _hijacking = true;
       try {
         int target = idx;
@@ -1670,30 +1689,73 @@ class AudioService {
             _logger.info('Located to part cid=$preferCid at index $i');
           }
         }
-        await player.seek(Duration.zero, index: target);
+        await _seekToIndex(target);
       } finally {
         _hijacking = false;
       }
+      if (_isStalePlay(gen)) return;
     }
     await player.play();
+  }
+
+  /// 定位到队列第 [index] 项（播放入口专用）。
+  ///
+  /// just_audio 0.10.6 缺陷：_init 对空队列以 preload:false 挂载时播放器
+  /// 本就未激活，_setPlatformActive(false) 直接返回，残留的
+  /// _PluginLoadRequest 永不清除；idle 期间 seek 只把它的 initialIndex
+  /// 置 null，而首次激活取 `request?.initialSeekValues ?? currentIndex`
+  /// ——getter 恒返回非空 record，回退不生效，从索引 0 开始加载。表现为
+  /// 全新安装/启动时队列为空，首次点歌「点第 N 首播第 1 首」。
+  /// idle 态改为带 initialIndex 重新挂载并加载（dummy 为本地静音源，
+  /// 加载很快），此后即为正常的激活态。
+  Future<void> _seekToIndex(int index,
+      {Duration position = Duration.zero}) async {
+    if (player.processingState != ProcessingState.idle) {
+      await player.seek(position, index: index);
+      return;
+    }
+    try {
+      await player
+          .setAudioSource(playlist,
+              initialIndex: index, initialPosition: position)
+          .timeout(const Duration(seconds: 5));
+    } catch (e) {
+      // 超时则底层加载继续，激活仍按 initialIndex 进行
+      _logger.warning('_seekToIndex: setAudioSource failed/timeout: $e');
+    }
   }
 
   Future<void> playByBvids(List<String> bvids, {int index = 0}) async {
     if (bvids.isEmpty) {
       return;
     }
-    final metas = await DatabaseManager.getMetas(bvids);
+    // getMetas 会跳过缺元数据的 bvid，srcs 可能短于 bvids 且其后条目
+    // 整体前移：按 bvid 而非下标定位点击曲目（原实现直接用下标，越界
+    // 钳制到 0）
+    final targetBvid =
+        index >= 0 && index < bvids.length ? bvids[index] : null;
+    final gen = ++_playGeneration;
+    var metas = await DatabaseManager.getMetas(bvids);
+    if (targetBvid != null && !metas.any((m) => m.bvid == targetBvid)) {
+      // 点击曲目本身缺元数据：补拉后重查（getVidDetail 会落库）
+      await (await BilibiliService.instance).getVidDetail(bvid: targetBvid);
+      metas = await DatabaseManager.getMetas(bvids);
+    }
     final srcs = <UriAudioSource>[];
     for (final meta in metas) {
       srcs.add(await getDummyAudioSource(meta));
     }
-    // 部分 bvid 缺元数据时 srcs 短于 bvids：钳制防 seek 越界
-    //（playLocalTracks 已有同款钳制）
-    if (index >= srcs.length) index = 0;
+    if (srcs.isEmpty) return;
+    index = targetBvid == null
+        ? 0
+        : metas.indexWhere((m) => m.bvid == targetBvid);
+    // 补拉仍失败：退回首曲（playLocalTracks 同款钳制）
+    if (index < 0) index = 0;
+    if (_isStalePlay(gen)) return;
     await player.pause();
     // 等在途的解析/换源/预解析变更完成再换队列：原实现直接覆写
     // _hijacking 旗标，与在途变更并发执行 clear/addAll 会互相改坏队列
-    if (!await _waitMutationFree()) return;
+    if (!await _waitMutationFree() || _isStalePlay(gen)) return;
     _hijacking = true;
     try {
       await doAndSavePlaylist(() async {
@@ -1704,7 +1766,7 @@ class AudioService {
       // 删除不会发生，[index] 一定落在点击的曲目上。原实现解析先于
       // seek 且此刻旗标已释放，多 P 视频的插入会使 seek 落到错误曲目
       //（随机播放下预解析目标分散在队列各处，错位概率更高）
-      await player.seek(Duration.zero, index: index);
+      await _seekToIndex(index);
       // 启动恢复等场景下播放器可能仍在 loading，just_audio 会把该
       // seek 静默丢弃——等就绪后重试一次，确保定位到点击曲目
       if (index < srcs.length &&
@@ -1723,6 +1785,7 @@ class AudioService {
     }
     // 直接传 dummy 实例（而非索引捕获）：取锁同步进行，与 seek/resync
     // 触发的索引事件经 _resolvingDummies 去重，不会重复解析。
+    if (_isStalePlay(gen)) return;
     if (index < srcs.length) {
       unawaited(_resolveDummySource(srcs[index]));
     }
@@ -1730,9 +1793,10 @@ class AudioService {
   }
 
   Future<void> playLocalAudio(String bvid, int cid) async {
+    final gen = ++_playGeneration;
     await player.pause();
     final cachedSource = await DatabaseManager.getLocalAudio(bvid, cid);
-    if (cachedSource == null) {
+    if (cachedSource == null || _isStalePlay(gen)) {
       return;
     }
     final idx = await _addUniqueSourcesToPlaylist([cachedSource],
@@ -1740,14 +1804,15 @@ class AudioService {
 
     if (idx != null) {
       // 同 playByBvid：定位 seek 与队列变更互斥，防索引错位
-      if (!await _waitMutationFree()) return;
+      if (!await _waitMutationFree() || _isStalePlay(gen)) return;
       _hijacking = true;
       try {
-        await player.seek(Duration.zero, index: idx);
+        await _seekToIndex(idx);
       } finally {
         _hijacking = false;
       }
     }
+    if (_isStalePlay(gen)) return;
     await player.play();
   }
 
@@ -1773,8 +1838,9 @@ class AudioService {
     _logger.info(
         'Playing ${tracks.length} local tracks from index $index (shuffle=$shuffle)');
     final srcs = tracks.map(LocalMusicService.buildSource).toList();
+    final gen = ++_playGeneration;
     await player.pause();
-    if (!await _waitMutationFree()) return;
+    if (!await _waitMutationFree() || _isStalePlay(gen)) return;
     _hijacking = true;
     try {
       await doAndSavePlaylist(() async {
@@ -1782,7 +1848,7 @@ class AudioService {
         await playlist.addAll(srcs);
       });
       if (index >= srcs.length) index = 0;
-      await player.seek(Duration.zero, index: index);
+      await _seekToIndex(index);
       // loading 态（启动恢复期间）seek 会被静默丢弃，就绪后重试一次
       if (index < srcs.length &&
           !identical(player.sequenceState.currentSource, srcs[index])) {

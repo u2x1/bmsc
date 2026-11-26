@@ -13,6 +13,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   dio: ^5.9.2
   just_audio: ^0.10.6
   just_audio_media_kit: ^2.1.0

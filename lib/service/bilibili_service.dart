@@ -263,7 +263,8 @@ class BilibiliService {
   Future<VidResult?> getVidDetail({String? bvid, String? aid}) async {
     final ret = await _bilibiliAPI.getVidDetail(bvid: bvid, aid: aid);
     if (ret != null) {
-      DatabaseManager.cacheMetas([
+      // 须等落库：playByBvids 补拉缺失元数据后会立即重查
+      await DatabaseManager.cacheMetas([
         Meta(
           bvid: ret.bvid,
           aid: ret.aid,
