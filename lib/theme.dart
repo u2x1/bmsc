@@ -70,6 +70,22 @@ class ThemeProvider extends ChangeNotifier {
     }
   }
 
+  /// 弹出菜单外观：与 App 卡片一致的 12 圆角、无着色的浅层容器色、
+  /// 轻阴影，自按钮下方展开（Material 3 默认 4 圆角、覆盖在按钮上）。
+  /// 动画见 component/app_menu.dart 的 kMenuAnimationStyle
+  static PopupMenuThemeData _popupMenuTheme(ColorScheme cs) =>
+      PopupMenuThemeData(
+        color: cs.surfaceContainerHigh,
+        surfaceTintColor: Colors.transparent,
+        elevation: 3,
+        shadowColor: Colors.black.withValues(alpha: 0.3),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        menuPadding: const EdgeInsets.symmetric(vertical: 6),
+        position: PopupMenuPosition.under,
+        labelTextStyle: WidgetStatePropertyAll(
+            TextStyle(fontSize: 15, color: cs.onSurface)),
+      );
+
   static final ColorScheme _lightColorScheme = ColorScheme.fromSeed(
     seedColor: Colors.blue,
     brightness: Brightness.light,
@@ -79,6 +95,7 @@ class ThemeProvider extends ChangeNotifier {
     useMaterial3: true,
     brightness: Brightness.light,
     colorScheme: _lightColorScheme,
+    popupMenuTheme: _popupMenuTheme(_lightColorScheme),
     snackBarTheme: SnackBarThemeData(
       backgroundColor: _lightColorScheme.surfaceContainer,
       actionTextColor: _lightColorScheme.onSurface.withValues(alpha: 0.7),
@@ -115,6 +132,7 @@ class ThemeProvider extends ChangeNotifier {
           TextStyle(color: _darkColorScheme.onSurface.withValues(alpha: 0.7)),
     ),
     colorScheme: _darkColorScheme,
+    popupMenuTheme: _popupMenuTheme(_darkColorScheme),
     textTheme: const TextTheme(
       bodyLarge: TextStyle(color: Color(0xFFE0E0E0)),
       bodyMedium: TextStyle(color: Color(0xFFE0E0E0)),
@@ -136,6 +154,7 @@ class ThemeProvider extends ChangeNotifier {
 
   static final ThemeData darkThemeOled = darkTheme.copyWith(
     colorScheme: _oledColorScheme,
+    popupMenuTheme: _popupMenuTheme(_oledColorScheme),
     scaffoldBackgroundColor: Colors.black,
   );
 

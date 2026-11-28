@@ -3,6 +3,7 @@ import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/screen/cloud_history_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/util/string.dart';
+import 'package:bmsc/component/app_menu.dart';
 import 'package:flutter/material.dart';
 import '../component/track_tile.dart';
 import '../model/play_stat.dart';
@@ -46,44 +47,20 @@ class _LocalHistoryScreenState extends State<LocalHistoryScreen> {
           ),
           PopupMenuButton<OrderBy>(
             icon: const Icon(Icons.sort),
+            tooltip: '排序',
+            popUpAnimationStyle: kMenuAnimationStyle,
             onSelected: (OrderBy result) {
               // Call loadMore with the selected order
               loadMore(orderBy: result);
             },
             itemBuilder: (BuildContext context) => <PopupMenuEntry<OrderBy>>[
-              PopupMenuItem<OrderBy>(
-                value: OrderBy.lastplay,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('最后播放时间'),
-                    if (_orderBy == OrderBy.lastplay)
-                      const Icon(Icons.check, size: 18),
-                  ],
-                ),
-              ),
-              PopupMenuItem<OrderBy>(
-                value: OrderBy.playcnt,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('播放次数'),
-                    if (_orderBy == OrderBy.playcnt)
-                      const Icon(Icons.check, size: 18),
-                  ],
-                ),
-              ),
-              PopupMenuItem<OrderBy>(
-                value: OrderBy.playtime,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Text('总播放时长'),
-                    if (_orderBy == OrderBy.playtime)
-                      const Icon(Icons.check, size: 18),
-                  ],
-                ),
-              ),
+              for (final (order, label) in const [
+                (OrderBy.lastplay, '最后播放时间'),
+                (OrderBy.playcnt, '播放次数'),
+                (OrderBy.playtime, '总播放时长'),
+              ])
+                appMenuItem(
+                    value: order, label: label, selected: _orderBy == order),
             ],
           ),
         ],

@@ -1,17 +1,29 @@
 /// changelog.md 解析（纯 Dart，便于单元测试）：
-/// 按 `# ` 分节，返回 (版本号, 条目文本) 列表，保持文件顺序（最新在前）。
+/// 按行首 `# ` 一级标题分节，返回 (版本号, 条目文本) 列表，保持文件顺序
+/// （最新在前）。只认行首标题：条目里的 issue 编号（如 `#22`）不能分节
+/// ——旧实现按任意 `#` 切分，引用 issue 后更新历史整个错乱。
 List<(String, String)> parseChangelog(String markdown) {
-  return markdown
-      .split('#')
-      .map((e) => e.trim())
-      .map((e) => e
-          .split('\n')
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty)
-          .toList())
-      .where((e) => e.isNotEmpty)
-      .map((e) => (e[0], e.sublist(1).join('\n')))
-      .toList();
+  final entries = <(String, String)>[];
+  String? title;
+  final body = <String>[];
+  void flush() {
+    if (title != null && title.isNotEmpty) {
+      entries.add((title, body.join('\n')));
+    }
+    body.clear();
+  }
+
+  for (final raw in markdown.split('\n')) {
+    final line = raw.trim();
+    if (line.startsWith('# ') || line == '#') {
+      flush();
+      title = line.substring(1).trim();
+    } else if (line.isNotEmpty && title != null) {
+      body.add(line);
+    }
+  }
+  flush();
+  return entries;
 }
 
 /// changelog 条目的分组 key

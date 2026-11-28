@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:bmsc/component/cover_frame.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 
@@ -101,8 +102,9 @@ class TrackTile extends StatelessWidget {
                 children: [
                   Row(
                     children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
+                      // 列表项只描边不投影：长列表滚动时不增加模糊阴影绘制
+                      CoverFrame(
+                        shadow: 0,
                         child: Semantics(
                           button: onPicTap != null,
                           label: onPicTap != null ? '查看封面' : null,

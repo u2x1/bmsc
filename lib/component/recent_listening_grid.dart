@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:bmsc/component/cover_frame.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 
@@ -213,8 +214,8 @@ class _RecentListeningGridState extends State<RecentListeningGrid> {
         children: [
           AspectRatio(
             aspectRatio: 16 / 9,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(6),
+            child: CoverFrame(
+              shadow: 0.7,
               child: Stack(
                 fit: StackFit.expand,
                 children: [

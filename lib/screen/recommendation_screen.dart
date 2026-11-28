@@ -148,11 +148,13 @@ class _RecommendationScreenState extends State<RecommendationScreen> {
     _logger.info('Selected video for recommendation: ${selectedVideo.bvid}');
 
     // 获取相关推荐
-    final relatedVideos = await BilibiliService.instance
-        .then((x) => x.getRecommendations([selectedVideo]));
-    final newVideos = (relatedVideos ?? [])
-        .where((v) => !existingBvids.contains(v.bvid))
-        .toList();
+    // 排除当前列表与收藏夹已有的视频（原实现只取一首、挑完才过滤，
+    // 那一首恰好重复时直接报「无法获取」）
+    final relatedVideos = await BilibiliService.instance.then((x) =>
+        x.getRecommendations([selectedVideo],
+            count: 1,
+            exclude: {...existingBvids, ...favVideos.map((v) => v.bvid)}));
+    final newVideos = relatedVideos ?? [];
     if (!mounted) return;
     if (newVideos.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(

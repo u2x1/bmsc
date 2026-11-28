@@ -7,9 +7,11 @@ import 'package:bmsc/audio/lazy_audio_source.dart';
 import 'package:bmsc/model/myinfo.dart';
 import 'package:bmsc/model/recognition_attempt.dart';
 import 'package:bmsc/model/playlist_data.dart';
+import 'package:bmsc/util/home_toolbar.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:bmsc/util/section_habit.dart';
 import 'package:bmsc/util/silent_audio.dart';
+import 'package:flutter/foundation.dart' show ValueNotifier;
 import 'package:just_audio/just_audio.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -57,6 +59,21 @@ class SharedPreferencesService {
       if (!order.contains(key)) order.add(key);
     }
     return order;
+  }
+
+  /// 主页顶栏布局：主页监听它即时重建，设置页改动无需返回即生效
+  static final homeToolbar =
+      ValueNotifier<List<HomeToolbarEntry>>(kDefaultHomeToolbar);
+
+  static Future<void> loadHomeToolbar() async {
+    final prefs = await instance;
+    homeToolbar.value = parseHomeToolbar(prefs.getString('home_toolbar'));
+  }
+
+  static Future<void> setHomeToolbar(List<HomeToolbarEntry> entries) async {
+    homeToolbar.value = List.unmodifiable(entries);
+    final prefs = await instance;
+    await prefs.setString('home_toolbar', encodeHomeToolbar(entries));
   }
 
   static Future<void> setHomeSectionOrder(List<String> order) async {

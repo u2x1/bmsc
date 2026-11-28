@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:bmsc/util/changelog.dart';
 import 'package:test/test.dart';
 
@@ -16,6 +18,33 @@ void main() {
       const md = '# 1.2.0\n- feat a\n\n\n  - fix b  \n';
       final entries = parseChangelog(md);
       expect(entries.single.$2, '- feat a\n- fix b');
+    });
+
+    test('条目中的 issue 编号不分节', () {
+      const md = '# 2.3.0\n- fix 断流（#20、#22）\n- fix 搜索 #23\n\n'
+          '# 2.2.5\n- feat 合集（#9）\n';
+      final entries = parseChangelog(md);
+      expect(entries.map((e) => e.$1).toList(), ['2.3.0', '2.2.5']);
+      expect(entries[0].$2, '- fix 断流（#20、#22）\n- fix 搜索 #23');
+      expect(entries[1].$2, '- feat 合集（#9）');
+    });
+
+    test('只认行首一级标题：## 与首个标题前的内容不分节', () {
+      const md = '前言\n# 1.0.0\n## 小节\n- fix a\n';
+      final entries = parseChangelog(md);
+      expect(entries.single.$1, '1.0.0');
+      expect(entries.single.$2, '## 小节\n- fix a');
+    });
+
+    test('仓库 changelog.md 每节标题都是版本号', () {
+      final md = File('changelog.md').readAsStringSync();
+      final entries = parseChangelog(md);
+      expect(entries, isNotEmpty);
+      for (final e in entries) {
+        expect(e.$1, matches(RegExp(r'^\d+\.\d+\.\d+$')),
+            reason: '非版本号标题: ${e.$1}');
+        expect(e.$2, isNotEmpty, reason: '${e.$1} 无条目');
+      }
     });
 
     test('空输入返回空列表', () {

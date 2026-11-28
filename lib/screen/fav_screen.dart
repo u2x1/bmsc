@@ -12,6 +12,7 @@ import 'package:bmsc/service/local_music_service.dart';
 import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/util/string.dart' as str_util;
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:bmsc/component/cover_frame.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_sticky_header/flutter_sticky_header.dart';
 import '../service/shared_preferences_service.dart';
@@ -953,8 +954,7 @@ class FavScreenState extends State<FavScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // 封面堆叠：三张 16:9 卡片按固定步长向 ↗ 错位；
-          // 圆角 6px 由堆叠内部各层自裁剪（见 _buildFavCover），
-          // 不再包外层 ClipRRect（省一个 saveLayer）
+          // 各层自带圆角描边投影（见 _buildFavCover）
           _buildFavCover(covers, scheme),
           const SizedBox(height: 4),
           Row(
@@ -1013,18 +1013,17 @@ class FavScreenState extends State<FavScreen> {
     if (covers.isEmpty) {
       return AspectRatio(
         aspectRatio: 16 / 9,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(6),
-          child: placeholder,
-        ),
+        child: CoverFrame(child: placeholder),
       );
     }
 
     // i 为 null 时用纯色卡片垫底，半透明黑罩压暗分层次；
     // 黑罩替代 ColorFiltered(darken)：对半透明黑色两者效果一致
-    //（均为 (1-a)·I），但省去每层的 ColorFiltered saveLayer
-    Widget layer(int? i, double scrim) => ClipRRect(
-          borderRadius: BorderRadius.circular(6),
+    //（均为 (1-a)·I），但省去每层的 ColorFiltered saveLayer。
+    // 每层带描边；只有主体带投影（投影落在背层上即可分出层次），
+    // 每个收藏夹只画一个模糊阴影，网格滚动时开销最小
+    Widget layer(int? i, double scrim, double shadow) => CoverFrame(
+          shadow: shadow,
           child: Stack(
             fit: StackFit.expand,
             children: [
@@ -1047,6 +1046,8 @@ class FavScreenState extends State<FavScreen> {
         return SizedBox(
           height: cardH + step * 2,
           child: Stack(
+            // 投影会画到堆叠边界之外，不能裁掉
+            clipBehavior: Clip.none,
             children: [
               // 底层（第三张或纯色层）：最右上
               Positioned(
@@ -1054,7 +1055,7 @@ class FavScreenState extends State<FavScreen> {
                 top: 0,
                 width: cardW,
                 height: cardH,
-                child: layer(covers.length > 2 ? 2 : null, 0.3),
+                child: layer(covers.length > 2 ? 2 : null, 0.3, 0),
               ),
               // 中层（第二张或纯色层）：向左下退一个步长
               Positioned(
@@ -1062,7 +1063,7 @@ class FavScreenState extends State<FavScreen> {
                 top: step,
                 width: cardW,
                 height: cardH,
-                child: layer(covers.length > 1 ? 1 : null, 0.15),
+                child: layer(covers.length > 1 ? 1 : null, 0.15, 0),
               ),
               // 主体（第一张）：左下
               Positioned(
@@ -1070,7 +1071,7 @@ class FavScreenState extends State<FavScreen> {
                 bottom: 0,
                 width: cardW,
                 height: cardH,
-                child: layer(0, 0),
+                child: layer(0, 0, 1),
               ),
             ],
           ),

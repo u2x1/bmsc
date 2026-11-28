@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:bmsc/api/bilibili.dart';
 import 'package:bmsc/audio/lazy_audio_source.dart';
@@ -19,6 +20,7 @@ import 'package:bmsc/model/vid.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/util/bili_sign.dart';
 import 'package:bmsc/util/crypto.dart' as crypto;
+import 'package:bmsc/util/daily_recommend.dart';
 import 'package:bmsc/util/logger.dart';
 import 'package:flutter/material.dart';
 import 'package:audio_service/audio_service.dart' show MediaItem;
@@ -615,37 +617,51 @@ class BilibiliService {
     return _bilibiliAPI.batchDelFavResources(mediaId, bvids);
   }
 
-  Future<List<Meta>?> getRecommendations(List<Meta> tracks) async {
+  /// 以 [tracks] 为种子生成推荐：限并发拉取相关视频，按种子轮转挑选
+  /// [count] 首（默认每日推荐条数），排除 [exclude] 与近期推荐过的视频
+  Future<List<Meta>?> getRecommendations(List<Meta> tracks,
+      {int count = dailyRecommendCount,
+      Set<String> exclude = const {}}) async {
     if (tracks.isEmpty) {
       return null;
     }
 
     final prefs = await SharedPreferencesService.instance;
     final recommendHistory = prefs.getString('recommend_history');
-    Set<String> history = recommendHistory != null
-        ? Set<String>.from(jsonDecode(recommendHistory))
-        : {};
+    final history = recommendHistory != null
+        ? List<String>.from(jsonDecode(recommendHistory))
+        : <String>[];
 
-    const tidWhitelist = [130, 193, 267, 28, 59];
-
-    // Fetch all related videos concurrently
-    final relatedVideosResults = await Future.wait(tracks.map(
-        (track) => getRelatedVideos(track.aid, tidWhitelist: tidWhitelist)));
-
-    List<Meta> recommendedVideos = [];
-    for (final videos in relatedVideosResults) {
-      if (videos != null && videos.isNotEmpty) {
-        for (final video in videos) {
-          if (!history.contains(video.bvid) && video.duration >= 60) {
-            recommendedVideos.add(video);
-            history.add(video.bvid);
-            break;
-          }
+    final related = List<List<Meta>>.filled(tracks.length, const []);
+    var next = 0;
+    Future<void> worker() async {
+      while (next < tracks.length) {
+        final i = next++;
+        try {
+          related[i] = await getRelatedVideos(tracks[i].aid,
+                  tidWhitelist: recommendMusicTids) ??
+              const [];
+        } catch (e) {
+          _logger.warning('related videos of ${tracks[i].bvid} failed: $e');
         }
       }
     }
 
-    await prefs.setString('recommend_history', jsonEncode(history.toList()));
+    await Future.wait(List.generate(
+        min(dailyRecommendConcurrency, tracks.length), (_) => worker()));
+    final emptySeeds = related.where((r) => r.isEmpty).length;
+    if (emptySeeds > 0) {
+      _logger.info('recommendations: $emptySeeds/${tracks.length} seeds '
+          'yielded no music candidates');
+    }
+
+    final recommendedVideos = pickRecommendations(related,
+        count: count, seen: history.toSet(), exclude: exclude);
+
+    await prefs.setString(
+        'recommend_history',
+        jsonEncode(appendRecommendHistory(
+            history, recommendedVideos.map((v) => v.bvid))));
     await DatabaseManager.cacheMetas(recommendedVideos);
     return recommendedVideos;
   }
@@ -684,10 +700,21 @@ class BilibiliService {
 
       if (favVideos.isEmpty) return null;
 
-      favVideos.shuffle();
-      final selectedVideos = favVideos.take(30).toList();
-
-      final recommendedVideos = await getRecommendations(selectedVideos) ?? [];
+      // 已在收藏夹里的不必再推荐
+      final favBvids = favVideos.map((v) => v.bvid).toSet();
+      final seeds = [...favVideos]..shuffle();
+      final recommendedVideos = await getRecommendations(
+              seeds.take(dailyRecommendSeedCount).toList(),
+              exclude: favBvids) ??
+          [];
+      // 全部种子都没拉到（断网/风控）：保留已有推荐，不用空列表覆盖
+      if (recommendedVideos.isEmpty &&
+          recommendations != null &&
+          !folderChanged) {
+        _logger.warning('daily recommendations empty, keep cached list');
+        final List<dynamic> decoded = jsonDecode(recommendations);
+        return decoded.map((v) => Meta.fromJson(v)).toList();
+      }
 
       await prefs.setString(
           'last_recommendations_update', now.toIso8601String());

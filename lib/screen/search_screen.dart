@@ -135,8 +135,10 @@ class _SearchScreenState extends State<SearchScreen> {
           autofocus: true,
           focusNode: _focusNode,
           controller: fieldTextController,
+          // 键盘回车键显示「搜索」；提示可粘贴链接（合集/b23 等）
+          textInputAction: TextInputAction.search,
           decoration: const InputDecoration(
-            hintText: '搜索歌曲...',
+            hintText: '搜索或粘贴链接',
             border: InputBorder.none,
           ),
           onChanged: _onSearchChanged,

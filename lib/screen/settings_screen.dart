@@ -10,6 +10,8 @@ import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/stats_service.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:bmsc/component/home_toolbar_meta.dart';
+import 'package:bmsc/util/home_toolbar.dart';
 import 'package:flutter/material.dart';
 import '../service/shared_preferences_service.dart';
 import '../theme.dart';
@@ -207,6 +209,88 @@ class _SettingsScreenState extends State<SettingsScreen> {
         const SnackBar(content: Text('已手动调整顺序，智能排序已自动关闭')),
       );
     }
+  }
+
+  /// 主页顶栏设置：与「主页板块」同样的形式——开关决定入口在顶栏还是
+  /// 「更多」里，拖拽调整顺序。即时保存，主页即时生效
+  Future<void> _showHomeToolbarDialog() async {
+    await SharedPreferencesService.loadHomeToolbar();
+    final entries = List.of(SharedPreferencesService.homeToolbar.value);
+    if (!mounted) return;
+    void save() => SharedPreferencesService.setHomeToolbar(entries);
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('主页顶栏'),
+          content: SizedBox(
+            width: 360,
+            child: ReorderableListView(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              buildDefaultDragHandles: false,
+              onReorderItem: (oldIndex, newIndex) {
+                // Flutter 3.41+ 的 onReorderItem 已把 newIndex
+                // 调整为「移除后插入」的最终下标
+                setDialogState(() {
+                  entries.insert(newIndex, entries.removeAt(oldIndex));
+                });
+                save();
+              },
+              children: [
+                for (final (index, entry) in entries.indexed)
+                  ListTile(
+                    key: ValueKey(entry.item),
+                    dense: true,
+                    contentPadding: const EdgeInsets.only(left: 8),
+                    leading: Icon(kHomeToolbarMeta[entry.item]!.$1, size: 20),
+                    title: Text(kHomeToolbarMeta[entry.item]!.$2),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Switch(
+                          value: entry.pinned,
+                          onChanged: (value) {
+                            setDialogState(() {
+                              entries[index] =
+                                  (item: entry.item, pinned: value);
+                            });
+                            save();
+                          },
+                        ),
+                        ReorderableDragStartListener(
+                          index: index,
+                          child: const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: Icon(Icons.drag_handle, size: 20),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                setDialogState(() {
+                  entries
+                    ..clear()
+                    ..addAll(kDefaultHomeToolbar);
+                });
+                save();
+              },
+              child: const Text('重置默认'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('完成'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildSectionTitle(String title) {
@@ -697,8 +781,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ListTile(
             title: const Text('主页板块'),
             leading: const Icon(Icons.dashboard_outlined),
-            subtitle: const Text('各板块的显示开关与排列顺序'),
+            subtitle: const Text('显示的板块及顺序'),
             onTap: _showHomeSectionsDialog,
+          ),
+          ListTile(
+            title: const Text('主页顶栏'),
+            leading: const Icon(Icons.view_agenda_outlined),
+            subtitle: const Text('顶栏显示的入口及顺序'),
+            onTap: _showHomeToolbarDialog,
           ),
           _buildSectionTitle('隐私'),
           SwitchListTile(

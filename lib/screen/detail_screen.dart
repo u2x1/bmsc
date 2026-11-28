@@ -13,6 +13,7 @@ import 'package:bmsc/screen/user_detail_screen.dart';
 import 'package:bmsc/service/audio_service.dart';
 import 'package:bmsc/service/bilibili_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
+import 'package:bmsc/component/app_menu.dart';
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:rxdart/rxdart.dart';
@@ -615,9 +616,11 @@ class _DetailScreenState extends State<DetailScreen>
               ),
               softWrap: true,
               maxLines: _isTitleExpanded ? null : (compact ? 1 : 2),
+              // 省略号明示「还有内容」，点击展开（fade 在多行时只淡掉
+              // 末行下半截，看起来像被裁切）
               overflow: _isTitleExpanded
                   ? TextOverflow.clip
-                  : (compact ? TextOverflow.ellipsis : TextOverflow.fade),
+                  : TextOverflow.ellipsis,
               textAlign: compact ? TextAlign.left : TextAlign.center,
             ),
           ),
@@ -1747,22 +1750,11 @@ class _DetailScreenState extends State<DetailScreen>
         const SizedBox(width: 4),
         PopupMenuButton<int>(
           tooltip: '选择字幕',
+          popUpAnimationStyle: kMenuAnimationStyle,
           onSelected: (index) => _switchSubtitleTrack(index),
           itemBuilder: (context) => [
             for (var i = 0; i < tracks.length; i++)
-              PopupMenuItem<int>(
-                value: i,
-                child: Row(
-                  children: [
-                    i == selected
-                        ? Icon(Icons.check,
-                            size: 18, color: colorScheme.primary)
-                        : const SizedBox(width: 18),
-                    const SizedBox(width: 8),
-                    Text(tracks[i].$1),
-                  ],
-                ),
-              ),
+              appMenuItem(value: i, label: tracks[i].$1, selected: i == selected),
           ],
           child: Row(
             mainAxisSize: MainAxisSize.min,

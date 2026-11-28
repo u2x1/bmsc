@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
+import 'package:bmsc/component/home_toolbar_meta.dart';
 import 'package:bmsc/component/track_tile.dart';
 import 'package:bmsc/database_manager.dart';
 import 'package:bmsc/model/vid.dart';
@@ -15,6 +17,7 @@ import 'package:bmsc/service/section_habit_service.dart';
 import 'package:bmsc/service/shared_preferences_service.dart';
 import 'package:bmsc/service/stats_service.dart';
 import 'package:bmsc/service/update_service.dart';
+import 'package:bmsc/util/home_toolbar.dart';
 import 'package:bmsc/util/url.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -147,44 +150,40 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   String? _clipboardText;
   DateTime? _lastNavAt;
 
-  /// 顶部入口收进一个自定义下拉层（圆角列表 + 回弹展开 + 逐项错峰入场）
-  final _appsButtonKey = GlobalKey();
+  final _moreButtonKey = GlobalKey();
 
-  // 排序：搜索（最高频找歌）> 听歌识曲（招牌）> 动态 > 历史，设置惯例置底。
-  // 「关于」不在此列——点 AppBar 标题仍可进入。
-  static const _appsMenuItems = [
-    (icon: Icons.search, label: '搜索', value: 0),
-    (icon: Icons.graphic_eq, label: '听歌识曲', value: 1),
-    (icon: Icons.wind_power_outlined, label: '动态', value: 2),
-    (icon: Icons.history_outlined, label: '历史', value: 3),
-    (icon: Icons.settings_outlined, label: '设置', value: 4),
-  ];
+  /// 磁贴菜单打开期间隐藏原按钮：菜单层在同一位置画会变成 × 的按钮
+  bool _moreOpen = false;
 
-  Future<void> _openAppsMenu() async {
-    final ctx = _appsButtonKey.currentContext;
-    if (ctx == null) return;
-    final box = ctx.findRenderObject() as RenderBox;
-    final rect = box.localToGlobal(Offset.zero) & box.size;
-    final v = await Navigator.of(context)
-        .push(_AppsMenuRoute(anchorRect: rect, items: _appsMenuItems));
-    if (v != null) _onMenuSelected(v);
+  Future<void> _openMoreTiles(List<HomeToolbarItem> items) async {
+    final box = _moreButtonKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null) return;
+    final anchor = box.localToGlobal(Offset.zero) & box.size;
+    setState(() => _moreOpen = true);
+    final route = _TileMenuRoute(anchorRect: anchor, items: items);
+    // 收起动画（× 转回）播完再恢复原按钮；push 的结果在出栈瞬间即返回
+    unawaited(route.completed.then((_) {
+      if (mounted) setState(() => _moreOpen = false);
+    }));
+    final picked = await Navigator.of(context).push(route);
+    if (picked != null) _openToolbarItem(picked);
   }
 
-  void _onMenuSelected(int i) {
-    switch (i) {
-      case 0:
+  void _openToolbarItem(HomeToolbarItem item) {
+    switch (item) {
+      case HomeToolbarItem.search:
         _pushThrottled<Widget>(
             MaterialPageRoute<Widget>(builder: (_) => const SearchScreen()));
-      case 1:
-        _pushThrottled<Widget>(
-            MaterialPageRoute<Widget>(builder: (_) => const RecognitionScreen()));
-      case 2:
+      case HomeToolbarItem.recognition:
+        _pushThrottled<Widget>(MaterialPageRoute<Widget>(
+            builder: (_) => const RecognitionScreen()));
+      case HomeToolbarItem.dynamic:
         _pushThrottled<Widget>(
             MaterialPageRoute<Widget>(builder: (_) => const DynamicScreen()));
-      case 3:
-        _pushThrottled<Widget>(
-            MaterialPageRoute<Widget>(builder: (_) => const LocalHistoryScreen()));
-      case 4:
+      case HomeToolbarItem.history:
+        _pushThrottled<Widget>(MaterialPageRoute<Widget>(
+            builder: (_) => const LocalHistoryScreen()));
+      case HomeToolbarItem.settings:
         // 从设置页返回时总是刷新主页，使「显示每日推荐」等
         // 主页相关设置即时生效（设置页不会返回 shouldRefresh）
         _pushThrottled<bool>(
@@ -200,6 +199,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     ThemeProvider.instance.addListener(_updateSystemUiOverlay);
+    SharedPreferencesService.loadHomeToolbar();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _updateSystemUiOverlay();
       // 升级后首次启动的新版本欢迎弹窗（内部自行判断是否需要展示）
@@ -311,62 +311,104 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Tooltip(
-          message: '关于',
-          child: Semantics(
-            button: true,
-            label: '关于',
-            child: GestureDetector(
-              onTap: () => _pushThrottled<Widget>(
-                MaterialPageRoute<Widget>(builder: (_) => const AboutScreen()),
-              ),
-              child: Row(
-                children: [
-                  const Text("BiliMusic"),
-                  if (hasNewVersion)
-                    Tooltip(
-                      message: '有新版本',
-                      child: Icon(Icons.arrow_circle_up_outlined,
-                          color: Theme.of(context).colorScheme.error),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-        actions: [
-          // 入口收进一个自定义下拉层
-          IconButton(
-            key: _appsButtonKey,
-            tooltip: '更多',
-            icon: const Icon(Icons.apps),
-            onPressed: _openAppsMenu,
-          ),
-        ],
-      ),
-      body: FavScreen(
+    return ValueListenableBuilder<List<HomeToolbarEntry>>(
+      valueListenable: SharedPreferencesService.homeToolbar,
+      child: FavScreen(
         onInit: (state) => _favScreenState = state,
       ),
+      builder: (context, toolbar, body) {
+        final iconItems = [
+          for (final e in toolbar)
+            if (e.pinned) e.item,
+        ];
+        final menuItems = [
+          for (final e in toolbar)
+            if (!e.pinned) e.item,
+        ];
+        return Scaffold(
+          appBar: AppBar(
+            title: Tooltip(
+              message: '关于',
+              child: Semantics(
+                button: true,
+                label: '关于',
+                child: GestureDetector(
+                  onTap: () => _pushThrottled<Widget>(
+                    MaterialPageRoute<Widget>(
+                        builder: (_) => const AboutScreen()),
+                  ),
+                  child: Row(
+                    children: [
+                      // 顶栏图标较多时标题省略，不溢出
+                      const Flexible(
+                        child: Text("BiliMusic",
+                            maxLines: 1, overflow: TextOverflow.ellipsis),
+                      ),
+                      if (hasNewVersion)
+                        Tooltip(
+                          message: '有新版本',
+                          child: Icon(Icons.arrow_circle_up_outlined,
+                              color: Theme.of(context).colorScheme.error),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              for (final item in iconItems)
+                IconButton(
+                  tooltip: kHomeToolbarMeta[item]!.$2,
+                  icon: Icon(kHomeToolbarMeta[item]!.$1),
+                  onPressed: () => _openToolbarItem(item),
+                ),
+              // 「更多」：放进菜单的入口以悬浮磁贴弹出（_TileMenuRoute），
+              // 顺序同用户设置。全部入口都放到顶栏时不显示
+              if (menuItems.isNotEmpty)
+                IconButton(
+                  key: _moreButtonKey,
+                  tooltip: '更多',
+                  icon: Opacity(
+                      opacity: _moreOpen ? 0 : 1,
+                      child: const Icon(Icons.apps)),
+                  onPressed: () => _openMoreTiles(menuItems),
+                ),
+            ],
+          ),
+          body: body,
+        );
+      },
     );
   }
 }
 
-/// 入口下拉层路由：锚定按钮右上角，圆角列表卡片。
-/// 动画：卡片自锚点角回弹展开（easeOutBack 缩放+下滑+渐显），
-/// 列表项逐项错峰入场；收起快速渐隐。
-class _AppsMenuRoute extends PopupRoute<int> {
-  _AppsMenuRoute({required this.anchorRect, required this.items});
+/// 「更多」的悬浮磁贴菜单：没有面板也没有遮罩，每个入口是一块方形
+/// 「图标 + 文字」磁贴，排在**以按钮为圆心**的四分之一圆弧上（正下方
+/// 到左下方）——每块磁贴到按钮（手指刚点的位置）距离相同，展开时沿
+/// 各自半径从按钮射出、收起时缩回圆心，一眼可见出自这个按钮。弧线
+/// 不进入左上方，避免压住顶栏的其他图标；入口多时加大半径防止重叠。
+/// 展开期间按钮原位变成 ×（旋转交叉淡入），点它或点空白处收起——
+/// 在哪儿打开就在哪儿关闭
+class _TileMenuRoute extends PopupRoute<HomeToolbarItem> {
+  _TileMenuRoute({required this.anchorRect, required this.items});
 
   final Rect anchorRect;
-  final List<({IconData icon, String label, int value})> items;
+  final List<HomeToolbarItem> items;
+
+  static const _tileSize = 68.0;
+  static const _minGap = 8.0; // 相邻磁贴中心距至少 _tileSize + _minGap
+  static const _minRadius = 140.0;
+  // 弧线起止角（屏幕坐标，0 为正右、顺时针）：正下方 → 左下
+  static const _startAngle = 90 * pi / 180;
+  static const _endAngle = 150 * pi / 180;
+  static const _stagger = 0.1;
 
   @override
-  Duration get transitionDuration => const Duration(milliseconds: 320);
+  Duration get transitionDuration =>
+      Duration(milliseconds: 220 + 25 * (items.length - 1));
 
   @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 150);
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 140);
 
   @override
   bool get barrierDismissible => true;
@@ -375,107 +417,137 @@ class _AppsMenuRoute extends PopupRoute<int> {
   String? get barrierLabel => '关闭';
 
   @override
-  Color? get barrierColor => Colors.transparent;
+  Color? get barrierColor => null;
+
+  /// 弧线布局：半径与起始角互相依赖——相邻磁贴不重叠决定半径（弦长
+  /// 2R·sin(步进/2) ≥ 边长 + 间距），磁贴不越出屏幕右缘决定起始角
+  /// （按钮贴着右缘，正下方那块会出界，被钳回后与邻块重叠）。迭代
+  /// 几次即收敛；返回 (半径, 起始角)
+  (double, double) _layout(double maxCenterX) {
+    var start = _startAngle;
+    var radius = _minRadius;
+    for (var k = 0; k < 4; k++) {
+      if (items.length > 1) {
+        final step = (_endAngle - start) / (items.length - 1);
+        radius =
+            max(_minRadius, (_tileSize + _minGap) / (2 * sin(step / 2)));
+      }
+      final c = ((maxCenterX - anchorRect.center.dx) / radius).clamp(-1.0, 1.0);
+      start = max(_startAngle, acos(c));
+    }
+    return (radius, start);
+  }
+
+  double _angle(int i, double start) => items.length < 2
+      ? (start + _endAngle) / 2
+      : start + (_endAngle - start) * i / (items.length - 1);
 
   @override
   Widget buildPage(BuildContext context, Animation<double> animation,
       Animation<double> secondaryAnimation) {
-    final top = anchorRect.bottom + 8;
-    final right =
-        (MediaQuery.sizeOf(context).width - anchorRect.right).clamp(8.0, 1e9);
-    return Padding(
-      padding: EdgeInsets.only(top: top, right: right),
-      child: Align(
-        alignment: Alignment.topRight,
-        child: AnimatedBuilder(
-          animation: animation,
-          child: _buildCard(context, animation),
-          builder: (context, card) {
-            final enter = CurvedAnimation(
-              parent: animation,
-              curve: Curves.easeOutBack,
-              reverseCurve: Curves.easeIn,
-            );
-            return Opacity(
-              opacity: animation.value.clamp(0.0, 1.0),
-              child: Transform.scale(
-                scale: 0.88 + 0.12 * enter.value,
-                alignment: Alignment.topRight,
-                child: Transform.translate(
-                  offset: Offset(0, -10 * (1 - enter.value)),
-                  child: card,
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCard(BuildContext context, Animation<double> animation) {
-    final cs = Theme.of(context).colorScheme;
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 232),
-      child: Material(
-        color: cs.surfaceContainerHigh,
-        elevation: 8,
-        shadowColor: Colors.black45,
-        borderRadius: BorderRadius.circular(20),
-        clipBehavior: Clip.antiAlias,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              for (var i = 0; i < items.length; i++)
-                _tile(context, animation, i),
-            ],
+    final screen = MediaQuery.sizeOf(context);
+    final center = anchorRect.center;
+    final (radius, start) = _layout(screen.width - 8 - _tileSize / 2);
+    final n = items.length;
+    // 每块磁贴自身的动画时长占比（入口最多 5 个，span ≥ 0.6）
+    final span = 1 - _stagger * (n - 1);
+    return Stack(
+      children: [
+        Positioned.fromRect(
+          rect: anchorRect,
+          child: IconButton(
+            tooltip: '收起',
+            onPressed: () => Navigator.pop(context),
+            icon: AnimatedBuilder(
+              animation: animation,
+              builder: (context, _) {
+                final t = Curves.easeOutCubic.transform(animation.value);
+                return Transform.rotate(
+                  angle: t * pi / 2,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Opacity(
+                          opacity: 1 - t, child: const Icon(Icons.apps)),
+                      Opacity(opacity: t, child: const Icon(Icons.close)),
+                    ],
+                  ),
+                );
+              },
+            ),
           ),
         ),
-      ),
+        for (var i = 0; i < n; i++)
+          Builder(builder: (context) {
+            final target = center +
+                Offset(cos(_angle(i, start)), sin(_angle(i, start))) * radius;
+            // 终点钳制在屏幕内；动画沿「圆心 → 终点」直线进行
+            final end = Offset(
+              target.dx.clamp(8 + _tileSize / 2, screen.width - 8 - _tileSize / 2),
+              target.dy.clamp(8 + _tileSize / 2, screen.height - 8 - _tileSize / 2),
+            );
+            return Positioned(
+              left: end.dx - _tileSize / 2,
+              top: end.dy - _tileSize / 2,
+              width: _tileSize,
+              height: _tileSize,
+              child: AnimatedBuilder(
+                animation: animation,
+                builder: (context, child) {
+                  final double t;
+                  if (animation.status == AnimationStatus.reverse) {
+                    t = Curves.easeInCubic.transform(animation.value);
+                  } else {
+                    t = Curves.easeOutCubic.transform(
+                        ((animation.value - _stagger * i) / span)
+                            .clamp(0.0, 1.0));
+                  }
+                  return Opacity(
+                    opacity: t,
+                    child: Transform.translate(
+                      offset: (center - end) * (1 - t),
+                      child: Transform.scale(scale: 0.4 + 0.6 * t, child: child),
+                    ),
+                  );
+                },
+                child: _tile(context, items[i]),
+              ),
+            );
+          }),
+      ],
     );
   }
 
-  /// 单个列表项：色块圆角图标 + 文字，按序号错峰淡入上滑
-  Widget _tile(BuildContext context, Animation<double> animation, int i) {
+  Widget _tile(BuildContext context, HomeToolbarItem item) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final item = items[i];
-    final stagger = CurvedAnimation(
-      parent: animation,
-      curve: Interval(0.06 * i, (0.5 + 0.06 * i).clamp(0.0, 1.0),
-          curve: Curves.easeOutCubic),
-    );
-    return FadeTransition(
-      opacity: stagger,
-      child: SlideTransition(
-        position: Tween(begin: const Offset(0, 0.25), end: Offset.zero)
-            .animate(stagger),
+    final (icon, label) = kHomeToolbarMeta[item]!;
+    return Semantics(
+      button: true,
+      label: label,
+      excludeSemantics: true,
+      child: Material(
+        color: cs.secondaryContainer,
+        elevation: 2,
+        shadowColor: Colors.black.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(20),
+        clipBehavior: Clip.antiAlias,
         child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => Navigator.pop(context, item.value),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-            child: Row(
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    color: cs.secondaryContainer,
-                    borderRadius: BorderRadius.circular(13),
-                  ),
-                  child: Icon(item.icon,
-                      size: 22, color: cs.onSecondaryContainer),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(item.label, style: theme.textTheme.bodyLarge),
-                ),
-              ],
-            ),
+          onTap: () => Navigator.pop(context, item),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 26, color: cs.onSecondaryContainer),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelMedium?.copyWith(
+                    color: cs.onSecondaryContainer,
+                    fontWeight: FontWeight.w600),
+              ),
+            ],
           ),
         ),
       ),
